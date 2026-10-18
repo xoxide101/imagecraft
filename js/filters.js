@@ -53,10 +53,27 @@
   // Auto fix: levels, a gentle lift of the colours and a little sharpening, as a photo shop would
   const autoFix = (img) => sharpen(colour(autoLevels(img, { clip: 0.4 }), { vibrance: 18 }), { amount: 35, radius: 1 });
   // grey-world white balance: the picture's average made neutral (old photos that went yellow, red or blue)
-  function whiteBalance(img, { strength = 100 } = {}) {
-    const d = img.data; let r = 0, g = 0, b = 0, n = 0;
-    for (let i = 0; i < d.length; i += 4) { if (d[i + 3] < 128) continue; r += d[i]; g += d[i + 1]; b += d[i + 2]; n++; }
-    if (!n) return copy(img); r /= n; g /= n; b /= n; const m = (r + g + b) / 3, k = strength / 100, f = [1 + (m / r - 1) * k, 1 + (m / g - 1) * k, 1 + (m / b - 1) * k];
+  // Colour cast. Three ways: 'grey' (grey world: the average colour made neutral), 'white' (white patch: the brightest
+  // few percent of each colour made white; percent sets how few), 'pick' (ground truth: the colour of something that
+  // should be white or grey, picked on the picture, made neutral).
+  function whiteBalance(img, { strength = 100, method = 'grey', percent = 1, rgb } = {}) {
+    const d = img.data; let r = 0, g = 0, b = 0, n = 0, f;
+    if (method === 'pick' && rgb) { const m = (rgb[0] + rgb[1] + rgb[2]) / 3; f = rgb.map((v) => m / Math.max(1, v)); }
+    else if (method === 'auto') {
+      // only near-grey things (low colour) are made neutral: a sunset stays warm, a yellowed print is fixed; without
+      // enough of them nothing changes
+      for (let i = 0; i < d.length; i += 4) { if (d[i + 3] < 128) continue; const mx = Math.max(d[i], d[i + 1], d[i + 2]), mn = Math.min(d[i], d[i + 1], d[i + 2]); if (mx > 40 && mx < 250 && mx - mn < mx * 0.22) { r += d[i]; g += d[i + 1]; b += d[i + 2]; n++; } }
+      if (n < (d.length / 4) * 0.03) return copy(img); r /= n; g /= n; b /= n; const m = (r + g + b) / 3; f = [m / r, m / g, m / b];
+    }
+    else if (method === 'white') {
+      const H = [new Uint32Array(256), new Uint32Array(256), new Uint32Array(256)];
+      for (let i = 0; i < d.length; i += 4) { if (d[i + 3] < 128) continue; H[0][d[i]]++; H[1][d[i + 1]]++; H[2][d[i + 2]]++; n++; }
+      f = H.map((h) => { let c = 0, v = 255; while (v > 0 && c + h[v] < (n * percent) / 100) c += h[v--]; return 255 / Math.max(1, v); });
+    } else {
+      for (let i = 0; i < d.length; i += 4) { if (d[i + 3] < 128) continue; r += d[i]; g += d[i + 1]; b += d[i + 2]; n++; }
+      if (!n) return copy(img); r /= n; g /= n; b /= n; const m = (r + g + b) / 3; f = [m / r, m / g, m / b];
+    }
+    const k = strength / 100; f = f.map((v) => 1 + (v - 1) * k);
     const o = copy(img), od = o.data; for (let i = 0; i < od.length; i += 4) { od[i] = clamp(od[i] * f[0]); od[i + 1] = clamp(od[i + 1] * f[1]); od[i + 2] = clamp(od[i + 2] * f[2]); }
     return o;
   }
@@ -152,18 +169,25 @@
   // ------------------------------------------------------------------ size and shape
   // methods: 'smooth' (high quality), 'nearest' (square pixels, for pixel art), 'scale2x' / 'scale3x' (pixel art grown
   // with its diagonals filled in), 'smoothpixel' (pixel art grown with smooth, rounded edges)
-  function resize(img, { width, height, method = 'smooth' } = {}) {
+  // methods: 'smooth' / 'auto' (best: no-halo Lanczos to enlarge, averaging to shrink), the IC.resample methods
+  // ('area' pixel averaging, 'nohalo', 'lanczos', 'cubic', 'mitchell', 'linear'), 'nearest' (square pixels), 'scale2x' /
+  // 'scale3x' (pixel art grown with its diagonals filled in), 'smoothpixel' (pixel art with smooth, rounded edges).
+  // linear: average in linear light (default), as GIMP does.
+  function resize(img, { width, height, method = 'smooth', linear = true } = {}) {
     const W = Math.max(1, Math.round(width || img.width)), H = Math.max(1, Math.round(height || img.height));
     if (method === 'scale2x' || method === 'scale3x' || method === 'smoothpixel') {
-      let s = img, f = method === 'scale3x' ? 3 : 2;
-      while (s.width < W || s.height < H) s = f === 3 ? scale3x(s) : scale2x(s);
+      // smooth pixel art: grown well past the size with Scale2x, then averaged down, so each edge is anti-aliased
+      // from many sub-pixels (supersampling) instead of blurred
+      let s = img; const f = method === 'scale3x' ? 3 : 2, aim = method === 'smoothpixel' ? 3 : 1;
+      while ((s.width < W * aim || s.height < H * aim) && s.width * s.height * f * f <= 64e6) s = f === 3 ? scale3x(s) : scale2x(s);
       if (s.width === W && s.height === H) return s;
-      return resize(method === 'smoothpixel' ? blur(s, { radius: Math.max(1, Math.round(s.width / W / 2)) }) : s, { width: W, height: H, method: method === 'smoothpixel' ? 'smooth' : 'nearest' });
+      return resize(s, { width: W, height: H, method: 'area', linear });
     }
-    const src = canvasOf(img);
-    if (method === 'nearest') return draw(W, H, (x) => { x.imageSmoothingEnabled = false; x.drawImage(src, 0, 0, W, H); });
-    // big shrinks in halves, so fine detail averages properly instead of shimmering
-    let c = src, cw = img.width, ch = img.height;
+    if (method === 'nearest') { const src = canvasOf(img); return draw(W, H, (x) => { x.imageSmoothingEnabled = false; x.drawImage(src, 0, 0, W, H); }); }
+    const m = method === 'smooth' ? 'auto' : method;
+    if (IC.resample && W * H <= 60e6 && img.width * img.height <= 60e6) return IC.resample.resize(img, W, H, { method: m, linear });
+    // very big pictures: the browser's own scaling, shrinking in halves so fine detail averages instead of shimmering
+    let c = canvasOf(img), cw = img.width, ch = img.height;
     while (cw / 2 >= W && ch / 2 >= H) { const n = document.createElement('canvas'); n.width = Math.round(cw / 2); n.height = Math.round(ch / 2); const x = n.getContext('2d'); x.imageSmoothingQuality = 'high'; x.drawImage(c, 0, 0, n.width, n.height); c = n; cw = n.width; ch = n.height; }
     return draw(W, H, (x) => { x.imageSmoothingQuality = 'high'; x.drawImage(c, 0, 0, W, H); });
   }

@@ -261,11 +261,11 @@
   const DEPTHS = [['1', '1-bit · 2 colours'], ['2', '2-bit · 4 colours'], ['3', '3-bit · 8 colours'], ['4', '4-bit · 16 colours'], ['5', '5-bit · 32 colours'], ['6', '6-bit · 64 colours'], ['7', '7-bit · 128 colours'], ['8', '8-bit · 256 colours'], ['high15', '15-bit · 32,768 colours (high colour)'], ['high16', '16-bit · 65,536 colours (high colour)']];
   const LEVELS = [['0', 'Any colour (24-bit)'], ['8', 'Atari ST: from 512 colours'], ['16', 'Amiga / Atari STE: from 4,096'], ['4', 'EGA: from 64 colours'], ['64', 'VGA: from 262,144']];
   const PALS = [['adaptive', 'Best for this picture'], ...Object.entries(C.PALETTES).map(([k, p]) => [k, p.name])];
-  const UPS = [['smooth', 'Smooth (photos)'], ['nearest', 'Square pixels (pixel art, exact)'], ['scale2x', 'Pixel art, rounded corners (Scale2x)'], ['scale3x', 'Pixel art ×3 (Scale3x)'], ['smoothpixel', 'Pixel art made smooth'], ['ai-sharp', 'AI 2× (clean pictures)'], ['ai-photo', 'AI 4× (old photos)'], ['ai-jpeg', 'AI 4× (JPEG clean-up)']];
+  const UPS = [['smooth', 'Best (automatic)'], ['area', 'Pixel averaging (area)'], ['nohalo', 'Sharp, no halos'], ['lanczos', 'Lanczos (sharpest)'], ['cubic', 'Cubic'], ['mitchell', 'Soft (Mitchell)'], ['linear', 'Linear'], ['nearest', 'Square pixels (pixel art, exact)'], ['scale2x', 'Pixel art, rounded corners (Scale2x)'], ['scale3x', 'Pixel art ×3 (Scale3x)'], ['smoothpixel', 'Pixel art made smooth'], ['ai-sharp', 'AI 2× (clean pictures)'], ['ai-photo', 'AI 4× (old photos)'], ['ai-jpeg', 'AI 4× (JPEG clean-up)']];
   const ai = (k) => /^ai-/.test(k) ? k.slice(3) : null;
-  async function upscaleWith(img, method, factor, say) {
+  async function upscaleWith(img, method, factor, say, linear = true) {
     const k = ai(method);
-    if (!k) return X.resize(img, { width: img.width * factor, height: img.height * factor, method });
+    if (!k) return X.resize(img, { width: img.width * factor, height: img.height * factor, method, linear });
     if (!window.CRAFTAI) throw new Error('The AI helpers are missing.');
     say && say(`Getting the AI model ready (the first time it downloads)…`);
     const c = await CRAFTAI.upscale(X.canvasOf(img), k, (n, t) => say && say(`AI upscaling… ${n} of ${t}`));
@@ -273,14 +273,29 @@
     if (out.width !== img.width * factor) out = X.resize(out, { width: img.width * factor, height: img.height * factor });
     return out;
   }
+  // AI result averaged with the classic no-halo enlargement, pixel by pixel in linear light: below 100% it tames the
+  // AI's invented texture and keeps the original's look
+  function blendLight(a, b, t) {
+    const L = IC.resample.toLinear, o = new ImageData(a.width, a.height), d = o.data, x = a.data, y = b.data, g = 1 / 2.4;
+    for (let i = 0; i < d.length; i += 4) {
+      for (let c = 0; c < 3; c++) { const v = L[x[i + c]] * t + L[y[i + c]] * (1 - t); d[i + c] = 255 * (v <= 0.0031308 ? v * 12.92 : 1.055 * Math.pow(v, g) - 0.055); }
+      d[i + 3] = x[i + 3] * t + y[i + 3] * (1 - t);
+    }
+    return o;
+  }
+  // settings worked out from the picture itself (so the tools start right and the sliders are only for fine-tuning)
+  const clampN = (v) => Math.max(0, Math.min(100, Math.round(v)));
+  const nlmFor = (n) => ({ luma: clampN((1.7 * n.luma - 2) / 0.35), chroma: clampN((1.7 * n.chroma - 2) / 0.5) });
+  const kFor = (sigma) => clampN(33 * Math.log10(Math.max(1e-4, (3 * (sigma / 255) ** 2) / 1e-4)));
+  const measureNote = (n) => `<p class="hint">Measured noise: grain <b>${n.luma.toFixed(1)}</b>, colour <b>${n.chroma.toFixed(1)}</b> grey levels${n.luma < 1.5 && n.chroma < 1.5 ? ' (very clean already)' : ''}.</p>`;
   const bgEdge = (img) => { const d = img.data; return [d[0], d[1], d[2]]; };
   const TOOLS = {
-    resize: { title: 'Resize', icon: IK.resize, s: (img) => ({ w: img.width, h: img.height, keep: true, method: img.width * img.height < 90000 ? 'nearest' : 'smooth' }),
+    resize: { title: 'Resize', icon: IK.resize, s: (img) => ({ w: img.width, h: img.height, keep: true, method: img.width * img.height < 90000 ? 'nearest' : 'smooth', linear: true }),
       fields: [{ t: 'row', items: [{ t: 'num', k: 'w', label: 'Width (pixels)', min: 1, max: 20000 }, { t: 'num', k: 'h', label: 'Height (pixels)', min: 1, max: 20000 }] }, chk('keep', 'Keep its shape'),
         { t: 'btns', buttons: [['½', 0.5], ['¼', 0.25], ['2×', 2], ['3×', 3], ['4×', 4]].map(([l, k]) => ({ label: l, run: (s, b) => { s.w = Math.max(1, Math.round(b.width * k)); s.h = Math.max(1, Math.round(b.height * k)); } })) },
-        sel('method', 'How', UPS.filter(([k]) => !ai(k))), note('Square pixels keeps pixel art exactly as it is; the pixel-art ways round off the steps on diagonals. For AI upscaling use Clean up › Make bigger.')],
+        sel('method', 'How', UPS.filter(([k]) => !ai(k))), chk('linear', 'Average in linear light (truer colours and edges)', (s) => s.method !== 'nearest'), note('Square pixels keeps pixel art exactly as it is; the pixel-art ways round off the steps on diagonals. For AI upscaling use Clean up › Make bigger.')],
       change: (s, k, img) => { if (!s.keep) return; if (k === 'w') s.h = Math.max(1, Math.round((s.w * img.height) / img.width)); if (k === 'h') s.w = Math.max(1, Math.round((s.h * img.width) / img.height)); },
-      run: (img, s) => X.resize(img, { width: s.w, height: s.h, method: s.method }) },
+      run: (img, s) => X.resize(img, { width: s.w, height: s.h, method: s.method, linear: s.linear !== false }) },
     crop: { title: 'Crop', icon: IK.crop, live: false, s: (img) => ({ x: Math.round(img.width * 0.1), y: Math.round(img.height * 0.1), w: Math.round(img.width * 0.8), h: Math.round(img.height * 0.8), ratio: 'free' }),
       fields: [note('Drag the box or its handles, or drag out a new box on the picture.'), seg('ratio', 'Shape', Object.keys(RATIOS).map((k) => [k, k === 'free' ? 'Any' : k])),
         { t: 'row', items: [{ t: 'num', k: 'x', label: 'Left' }, { t: 'num', k: 'y', label: 'Top' }] }, { t: 'row', items: [{ t: 'num', k: 'w', label: 'Width' }, { t: 'num', k: 'h', label: 'Height' }] },
@@ -301,7 +316,12 @@
     colour: { title: 'Colour', icon: IK.colour, s: { saturation: 0, vibrance: 0, hue: 0, warmth: 0, tint: 0 },
       fields: [range('saturation', 'Saturation', -100, 100), range('vibrance', 'Vibrance (gentle)', -100, 100), range('hue', 'Hue (degrees)', -180, 180), range('warmth', 'Warmth (blue ↔ yellow)', -100, 100), range('tint', 'Tint (green ↔ magenta)', -100, 100)],
       run: (img, s) => X.colour(img, s) },
-    balance: { title: 'Fix a colour cast', icon: IK.balance, s: { strength: 80 }, fields: [range('strength', 'Strength', 0, 100), note('Makes the picture’s average colour neutral: for old photos that went yellow, red or blue.')], run: (img, s) => X.whiteBalance(img, s) },
+    balance: { title: 'Fix a colour cast', icon: IK.balance, s: { method: 'auto', strength: 80, percent: 1, rgb: null },
+      fields: [seg('method', 'How', [['auto', 'Greys to grey'], ['grey', 'Average to grey'], ['white', 'Brightest to white'], ['pick', 'Click something white']]),
+        range('percent', 'Brightest part used (%)', 0.1, 10, 0.1, (s) => s.method === 'white'), { t: 'swatch', k: 'rgb', label: 'Picked colour (click the picture)', show: (s) => s.method === 'pick' && s.rgb }, note('Click something in the picture that should be white or grey: a shirt, paper, a wall, a cloud.', (s) => s.method === 'pick' && !s.rgb),
+        range('strength', 'Strength', 0, 100),
+        note('Greys to grey makes only the nearly-grey things neutral, so a sunset stays warm. Average to grey suits most old photos that went yellow, red or blue (it can turn a mostly-blue scene too warm). Brightest to white suits pictures with something white in them. Clicking a white thing is the most exact.')],
+      pick: (s, rgb) => { s.method = 'pick'; s.rgb = rgb; }, live: (s) => s.method !== 'pick' || !!s.rgb, run: (img, s) => X.whiteBalance(img, s) },
     threshold: { title: 'Black and white (threshold)', icon: IK.threshold, s: { level: 128 }, fields: [range('level', 'Light enough to be white', 1, 254)], run: (img, s) => X.threshold(img, s) },
     posterize: { title: 'Posterize', icon: IK.posterize, s: { levels: 4 }, fields: [range('levels', 'Steps for each colour', 2, 16)], run: (img, s) => X.posterize(img, s) },
     sepia: { title: 'Sepia (old photo)', icon: IK.sepia, s: { strength: 100 }, fields: [range('strength', 'Strength', 0, 100)], run: (img, s) => X.sepia(img, s) },
@@ -317,6 +337,24 @@
       fields: [{ t: 'looks' }, seg('keep', 'Size', [[true, 'Keep my picture’s size'], [false, 'The real screen size']]), seg('fit', 'Fit', [['cover', 'Fill the screen'], ['contain', 'Whole picture']]), sel('dither', 'Dithering', [['', 'As that computer would'], ...C.DITHERS])],
       run: (img, s) => C.look(img, s.look, { keep: s.keep, fit: s.fit, dither: s.dither || undefined }) },
     denoise: { title: 'Smooth out noise', icon: IK.denoise, s: { strength: 40, radius: 2 }, fields: [range('strength', 'Strength', 0, 100), range('radius', 'Area', 1, 4), note('Evens out grain and noise but keeps edges sharp.')], run: (img, s) => X.denoise(img, s) },
+    nlm: { title: 'Remove noise (smart)', icon: IK.denoise, s: (img) => { const n = IC.restore.noiseLevel(img); return { ...nlmFor(n), patch: 1, search: 5, n }; },
+      fields: [{ t: 'html', html: (s) => measureNote(s.n) + '<p class="hint">Set from the noise measured in this picture; adjust if you like.</p>' }, range('luma', 'Grain (brightness noise)', 0, 100), range('chroma', 'Colour blotches (colour noise)', 0, 100), seg('patch', 'Compare', [[1, 'Fine detail'], [2, 'Bigger patches']]), seg('search', 'Look around', [[3, 'Near'], [5, 'Normal'], [7, 'Far (slower)']]),
+        note('Non-local means: each pixel is averaged with others nearby whose surroundings look alike, so texture and edges stay while grain goes. Grain and colour blotches are handled separately.')],
+      live: () => !!tool && tool.base.width * tool.base.height <= 700000, run: (img, s, say) => { say && say('Comparing patches…'); return IC.restore.nlm(img, { luma: s.luma, chroma: s.chroma, patch: +s.patch, search: +s.search }); } },
+    deblur: { title: 'Restore sharpness (deblur)', icon: IK.sharpen, s: (img) => { const m = IC.restore.measure(img), n = IC.restore.noiseLevel(img); return { how: n.luma > 3 ? 'careful' : 'quick', kind: 'gauss', radius: m ? Math.round(m.radius * 10) / 10 : 1.5, length: 8, angle: 0, noise: kFor(n.luma), strength: 100, measured: !!m, sigma: n.luma }; },
+      fields: [seg('how', 'Way', [['quick', 'Quick'], ['careful', 'Careful (noisy pictures)']]), seg('kind', 'What blurred it', [['gauss', 'Soft lens / scan'], ['disk', 'Out of focus'], ['motion', 'Camera shake']]),
+        range('radius', 'Blur size (pixels)', 0.3, 12, 0.1, (s) => s.kind !== 'motion'), range('length', 'Shake length (pixels)', 2, 60, 1, (s) => s.kind === 'motion'), range('angle', 'Shake direction (degrees)', -90, 90, 1, (s) => s.kind === 'motion'),
+        { t: 'btns', buttons: [{ label: 'Measure the blur', run: (st, b) => { const m = IC.restore.measure(b); if (!m) return toast('Not enough clear edges to measure the blur.'); st.kind = st.kind === 'motion' ? 'gauss' : st.kind; st.radius = Math.round(m.radius * 10) / 10; toast(`Edges take about ${m.width.toFixed(1)} pixels: blur size set to ${st.radius}.`); } }] },
+        range('noise', 'Noise in the picture (more = gentler)', 0, 100, 1, (s) => s.how !== 'careful'), range('strength', 'Strength (%)', 0, 100), { t: 'out' },
+        note('Careful takes turns undoing the blur and removing noise, a few rounds (plug-and-play restoration): cleaner on grainy pictures, but it takes a few seconds. Press Preview.', (s) => s.how === 'careful'),
+        note('The blur size and noise were measured from this picture’s edges and flat areas.', (s) => s.measured), note('A blurred picture is the sharp one spread out by a blur, plus noise: <i>g = h ∗ f + n</i>. This undoes the blur <i>h</i> with a Wiener filter, held back where noise <i>n</i> would be blown up. Match the blur size to the picture: too big gives ripples beside edges. Remove noise first on grainy pictures.')],
+      report: () => { const k = IC.restore.psf(tool.s), c = X.canvasOf(k); return `<p class="hint" style="display:flex;gap:8px;align-items:center"><img src="${c.toDataURL()}" width="${Math.min(64, k.width * 4)}" style="image-rendering:pixelated;border-radius:4px"> The blur being undone</p>`; },
+      live: (s) => s.how !== 'careful', run: async (img, s, say) => { say && say('Undoing the blur…'); await wait(30); return s.how === 'careful' ? IC.restore.deblurCareful(img, s, say) : IC.restore.deblur(img, s); } },
+    noisemap: { title: 'Where the noise is', icon: IK.denoise, s: {}, viewOnly: true, fields: [{ t: 'html', html: () => measureNote(IC.restore.noiseLevel(tool.base)) }, note('Yellow: noisy; blue: clean. Even noise means an untouched picture; clean flat areas with noisy edges mean it was already smoothed and sharpened (by a camera or a program).')], run: (img) => IC.restore.noiseMap(img) },
+    clahe: { title: 'Bring back faded detail', icon: IK.light, s: { clip: 2, tiles: 8, amount: 70, stretch: true },
+      fields: [chk('stretch', 'Stretch to full black and white first'), range('clip', 'Strength (contrast limit)', 1, 6, 0.1), range('tiles', 'Areas across', 2, 16), range('amount', 'Mix (%)', 0, 100), note('Adaptive histogram equalisation: each part of the picture gets its own contrast back, so faded and dark corners recover without the whole picture going harsh.')],
+      // the whole range stretched first (faded photos rarely reach black or white), then each area's own contrast
+      run: (img, s) => IC.restore.clahe(s.stretch ? X.autoLevels(img, { clip: 0.3, perChannel: false }) : img, s) },
     despeckle: { title: 'Dust and scratches', icon: IK.dust, s: { radius: 1, threshold: 40 }, fields: [range('radius', 'Size of the specks', 1, 3), range('threshold', 'Only bigger differences', 5, 150), note('Takes out small specks, dust and fine scratches from scans, leaving the rest alone.')], run: (img, s) => X.despeckle(img, s) },
     deblock: { title: 'Remove JPEG blocks', icon: IK.jpeg, s: { strength: 50 }, fields: [range('strength', 'Strength', 0, 100), note('Smooths the 8 × 8 squares and smudges of a picture saved too small as JPEG. For bigger and cleaner, try Make bigger › AI 4× (JPEG clean-up).')], run: (img, s) => X.deblock(img, s) },
     undither: { title: 'Undither', icon: IK.undither, s: { strength: 60 }, fields: [range('strength', 'Strength', 0, 100), note('Blends the dots of a dithered picture (old GIFs, 16-colour screens) back into smooth colour.')], run: (img, s) => X.undither(img, s) },
@@ -330,22 +368,33 @@
       fields: [{ t: 'swatch', k: 'rgb', label: 'Colour (click the picture to pick it)' }, range('tolerance', 'Close colours too', 0, 100), range('soft', 'Soft edge', 0, 60)],
       pick: (s, rgb) => { s.rgb = rgb; }, run: (img, s) => X.makeClear(img, s) },
     flatten: { title: 'Fill see-through parts', icon: IK.canvas, s: { colour: '#ffffff' }, fields: [{ t: 'colour', k: 'colour', label: 'Fill with' }], run: (img, s) => X.flatten(img, { fill: s.colour }) },
-    upscale: { title: 'Make bigger', icon: IK.upscale, s: (img) => ({ method: img.width * img.height < 90000 ? 'scale2x' : 'smooth', factor: 2 }),
-      fields: [sel('method', 'How', UPS), seg('factor', 'Times', [[2, '2×'], [3, '3×'], [4, '4×']], (s) => !ai(s.method)), { t: 'out' },
+    upscale: { title: 'Make bigger', icon: IK.upscale, s: (img) => ({ method: img.width * img.height < 90000 ? 'scale2x' : 'smooth', factor: 2, linear: true, mix: 100 }),
+      fields: [sel('method', 'How', UPS), seg('factor', 'Times', [[2, '2×'], [3, '3×'], [4, '4×']], (s) => !ai(s.method)),
+        chk('linear', 'Average in linear light (truer colours and edges)', (s) => !ai(s.method) && s.method !== 'nearest'),
+        range('mix', 'AI strength (%): less mixes in the classic enlargement', 0, 100, 5, (s) => !!ai(s.method)), { t: 'out' },
+        note('<b>Best</b> sharpens edges without the light and dark halos sharp filters leave, and averages light the way the eye sees it. <b>Pixel averaging</b> counts every pixel by how much it covers: crisp, honest, no invented detail.', (s) => !ai(s.method)),
         note('The AI ways download a model once (10–50 MB) and work offline after that. They take a few seconds for each 128 × 128 square.', (s) => !!ai(s.method))],
-      live: (s) => !ai(s.method), report: (img) => `<p class="hint">Becomes <b>${img.width} × ${img.height}</b> pixels.</p>`,
-      run: (img, s, say) => upscaleWith(img, s.method, ai(s.method) ? CRAFTAI.MODELS[ai(s.method)].scale : +s.factor, say) },
+      live: (s) => !ai(s.method) || !!(tool && tool.aiCache && tool.aiCache.k === s.method), report: (img) => `<p class="hint">Becomes <b>${img.width} × ${img.height}</b> pixels.</p>`,
+      run: async (img, s, say) => {
+        if (!ai(s.method)) return upscaleWith(img, s.method, +s.factor, say, s.linear);
+        // the AI result is kept, so moving the strength slider does not run the model again
+        const t = tool; if (!t.aiCache || t.aiCache.k !== s.method) t.aiCache = { k: s.method, img: await upscaleWith(img, s.method, CRAFTAI.MODELS[ai(s.method)].scale, say) };
+        const a = t.aiCache.img; if (+s.mix >= 100) return a;
+        return blendLight(a, X.resize(img, { width: a.width, height: a.height, method: 'nohalo' }), +s.mix / 100);
+      } },
     modern: { title: 'Modernise', icon: IK.modern, live: false, s: (img) => ({ kind: img.width * img.height < 90000 ? 'pixel' : 'photo', bigger: 2, useAi: false }),
       fields: [seg('kind', 'What kind of picture', [['pixel', 'Pixel art'], ['screen', 'Dithered screen'], ['photo', 'Old photo or scan'], ['jpeg', 'Blocky JPEG']]), seg('bigger', 'Make it bigger', [[1, 'No'], [2, '2×'], [4, '4×']]), chk('useAi', 'Use AI upscaling (slower; downloads a model once)', (s) => s.kind !== 'pixel' && +s.bigger > 1),
-        note('Pixel art: grown with smooth, rounded edges. Dithered screen: dots blended to smooth colour. Old photo: colour cast fixed, levels, dust, noise, sharpened. Blocky JPEG: blocks smoothed.'), note('Press Preview to see it first.')],
+        note('Pixel art: grown with smooth, rounded edges. Dithered screen: dots blended to smooth colour. Old photo: dust, smart noise removal, a gentle deblur, colour cast, levels and faded detail. Blocky JPEG: blocks smoothed.'), note('Press Preview to see it first.')],
       run: async (img, s, say) => {
         const k = +s.bigger; let o = img;
         if (s.kind === 'pixel') { if (k > 1) o = X.resize(img, { width: img.width * k, height: img.height * k, method: 'smoothpixel' }); return X.sharpen(o, { amount: 30, radius: 1 }); }
         if (s.kind === 'screen') { say && say('Blending the dots…'); o = X.undither(o, { strength: 65 }); }
-        if (s.kind === 'photo') { say && say('Fixing colour and dust…'); o = X.denoise(X.despeckle(X.autoLevels(X.whiteBalance(o, { strength: 60 }), { clip: 0.3 }), { radius: 1, threshold: 45 }), { strength: 30, radius: 2 }); }
+        // old photo, in the usual restoration order: dust, noise (grain and colour separately), a little deblur, then tone
+        if (s.kind === 'photo') { say && say('Dust and noise…'); o = X.despeckle(o, { radius: 1, threshold: 45 }); const n = IC.restore.noiseLevel(o); if (n.luma > 1 || n.chroma > 1) o = IC.restore.nlm(o, nlmFor(n)); say && say('Sharpness and tone…'); const m = IC.restore.measure(o); if (m && m.radius > 0.8) o = IC.restore.deblur(o, { kind: 'gauss', radius: Math.min(3, m.radius * 0.7), noise: kFor(IC.restore.noiseLevel(o).luma) + 20, strength: 60 }); o = IC.restore.clahe(X.autoLevels(X.whiteBalance(o, { method: 'auto', strength: 70 }), { clip: 0.2 }), { clip: 1.5, amount: 30 }); }
         if (s.kind === 'jpeg') { say && say('Smoothing the blocks…'); o = X.deblock(o, { strength: 60 }); }
         if (k > 1) o = s.useAi ? await upscaleWith(o, s.kind === 'jpeg' ? 'ai-jpeg' : s.kind === 'photo' ? 'ai-photo' : 'ai-sharp', k, say) : X.resize(o, { width: o.width * k, height: o.height * k });
-        return X.colour(X.sharpen(o, { amount: 50, radius: 1, threshold: 3 }), { vibrance: 12 });
+        // a light finish (an old photo was sharpened by the deblur already)
+        return s.kind === 'photo' ? X.colour(o, { vibrance: 6 }) : X.colour(X.sharpen(o, { amount: 50, radius: 1, threshold: 3 }), { vibrance: 12 });
       } },
     trace: { title: 'To SVG outlines', icon: IK.svg, s: { how: 'outlines', colours: 'auto', detail: 6, smooth: 1, removeBg: false },
       fields: [seg('how', 'Kind', [['outlines', 'Smooth outlines'], ['pixels', 'Exact pixels (pixel art)']]), sel('colours', 'Colours', [['auto', 'Best match'], ...[2, 3, 4, 6, 8, 12, 16, 24, 32].map((n) => [String(n), `${n} colours`])], (s) => s.how === 'outlines'),
@@ -388,11 +437,11 @@
   // ------------------------------------------------------------------ running a tool
   let tool = null, token = 0, timer = null;
   const isLive = (t) => (typeof t.def.live === 'function' ? t.def.live(t.s) : t.def.live !== false);
-  function openTool(id) {
+  function openTool(id, preset) {
     if (!pic()) { toast('Open a picture first.'); return; }
     if (tool) closeTool(true);
     const def = TOOLS[id], base = now();
-    tool = { def, base, s: JSON.parse(JSON.stringify(typeof def.s === 'function' ? def.s(base) : def.s)), preview: null };
+    tool = { def, base, s: { ...JSON.parse(JSON.stringify(typeof def.s === 'function' ? def.s(base) : def.s)), ...(preset || {}) }, preview: null };
     showSide('right'); renderProps(); if (def.enter) def.enter();
     if (isLive(tool)) schedule(0); else show();
   }
@@ -413,6 +462,7 @@
   }
   async function applyTool() {
     const t = tool; if (!t) return;
+    if (t.def.viewOnly) { closeTool(); return; }
     if (t.def.id === 'crop' || !t.preview || t.stale) { await runPreview(); if (tool !== t || !t.preview) return; }
     const r = t.preview; closeTool(true); push(t.def.title, r);
   }
@@ -436,6 +486,7 @@
     const build = (f, into) => {
       if (f.show && !f.show(t.s)) return;
       if (f.t === 'row') { const r = document.createElement('div'); r.className = 'row'; f.items.forEach((x) => build(x, r)); into.append(r); return; }
+      if (f.t === 'html') { const d0 = document.createElement('div'); d0.innerHTML = f.html(t.s); into.append(d0); return; }
       if (f.t === 'note') { const p = document.createElement('p'); p.className = 'hint'; p.innerHTML = f.html; into.append(p); return; }
       if (f.t === 'out') { const o = document.createElement('div'); o.id = 'tool-out'; into.append(o); return; }
       if (f.t === 'btns') { const r = document.createElement('div'); r.className = 'btns'; f.buttons.forEach((b) => { const e = document.createElement('button'); e.className = 'btn ' + (b.primary ? 'primary' : 'outline'); e.type = 'button'; e.textContent = b.label; e.onclick = () => { b.run(t.s, t.base); t.stale = true; renderProps(); if (d.id === 'crop') placeCrop(); else if (isLive(t)) schedule(0); }; r.append(e); }); into.append(r); return; }
@@ -455,7 +506,7 @@
     d.fields.forEach((f) => build(f, sec));
     const acts = document.createElement('div'); acts.className = 'sec';
     const live = isLive(t);
-    acts.innerHTML = `<div class="btns">${!live && d.id !== 'crop' ? '<button class="btn outline" data-a="preview">Preview</button>' : ''}<button class="btn" data-a="cancel">Cancel</button><button class="btn primary" data-a="apply">${esc(d.applyLabel || 'Apply')}</button></div>
+    acts.innerHTML = `<div class="btns">${!live && d.id !== 'crop' ? '<button class="btn outline" data-a="preview">Preview</button>' : ''}${d.viewOnly ? '<button class="btn primary" data-a="cancel">Close</button>' : `<button class="btn" data-a="cancel">Cancel</button><button class="btn primary" data-a="apply">${esc(d.applyLabel || 'Apply')}</button>`}</div>
       <label class="check"><input type="checkbox" data-a="compare" ${view.compare ? 'checked' : ''}> Compare with before (drag the line)</label>`;
     acts.onclick = (e) => { const a = e.target.dataset.a; if (a === 'apply') applyTool(); else if (a === 'cancel') closeTool(); else if (a === 'preview') runPreview(); };
     acts.querySelector('[data-a="compare"]').onchange = (e) => { view.compare = e.target.checked; show(); };
@@ -732,6 +783,8 @@
         ['See-through', [{ col: [B('Make a colour see-through', IK.clearC, T('clear')), B('Fill see-through parts', IK.canvas, T('flatten')), B('Remove background', IK.cutout, T('cutout'))] }]],
       ] },
       { id: 'clean', label: 'Clean up', hue: '#1e9e8a', groups: [
+        ['Old photo', [B('Restore old photo', IK.modern, () => openTool('modern', { kind: 'photo', bigger: 1 }), { big: true, title: 'Dust, noise, blur, colour cast and fading fixed in one go, measured from the picture' })]],
+        ['Restore', [B('Remove noise', IK.denoise, T('nlm'), { big: true, title: 'Smart noise removal (non-local means): grain and colour blotches' }), B('Deblur', IK.sharpen, T('deblur'), { big: true, title: 'Undo soft focus, out of focus or camera shake (Wiener deconvolution)' }), B('Faded detail', IK.light, T('clahe'), { big: true, title: 'Adaptive contrast for faded photos (CLAHE)' }), { col: [B('Where the noise is', IK.grid, T('noisemap'))] }]],
         ['Clean', [B('Smooth out noise', IK.denoise, T('denoise'), { big: true }), B('Dust and scratches', IK.dust, T('despeckle'), { big: true }), B('JPEG blocks', IK.jpeg, T('deblock'), { big: true, title: 'Remove JPEG blocks and smudges' }), B('Undither', IK.undither, T('undither'), { big: true, title: 'Blend dithering dots back into smooth colour' })]],
         ['Background', [B('Remove background', IK.cutout, T('cutout'), { big: true })]],
         ['Bigger', [B('Make bigger', IK.upscale, T('upscale'), { big: true, title: 'Smooth, pixel-art or AI upscaling' }), B('Modernise', IK.modern, T('modern'), { big: true })]],
@@ -754,7 +807,7 @@
     ['Image', [['Resize…', 'resize'], ['Crop…', 'crop'], ['Canvas size…', 'canvas'], ['Straighten…', 'straighten']].map(([l, k]) => ({ label: l, run: T(k), disabled: has })).concat([{ label: 'Turn left', run: () => quick('Turn left', (i) => X.rotate90(i, 270)), disabled: has }, { label: 'Turn right', run: () => quick('Turn right', (i) => X.rotate90(i, 90)), disabled: has }, { label: 'Flip across', run: () => quick('Flip across', (i) => X.flip(i, true)), disabled: has }])],
     ['Adjust', [{ label: 'Auto fix', run: () => quick('Auto fix', (i) => X.autoFix(i)), disabled: has }, ...[['Brightness and contrast…', 'light'], ['Colour…', 'colour'], ['Fix a colour cast…', 'balance'], ['Sharpen…', 'sharpen'], ['Blur…', 'blur'], ['Threshold…', 'threshold'], ['Posterize…', 'posterize']].map(([l, k]) => ({ label: l, run: T(k), disabled: has }))]],
     ['Colours', [['Colour depth…', 'depth'], ['Old computer looks…', 'looks'], ['Make a colour see-through…', 'clear'], ['Remove background…', 'cutout']].map(([l, k]) => ({ label: l, run: T(k), disabled: has }))],
-    ['Clean up', [['Smooth out noise…', 'denoise'], ['Dust and scratches…', 'despeckle'], ['Remove JPEG blocks…', 'deblock'], ['Undither…', 'undither'], ['Make bigger…', 'upscale'], ['Modernise…', 'modern']].map(([l, k]) => ({ label: l, run: T(k), disabled: has }))],
+    ['Clean up', [['Remove noise (smart)…', 'nlm'], ['Restore sharpness (deblur)…', 'deblur'], ['Bring back faded detail…', 'clahe'], ['Smooth out noise…', 'denoise'], ['Dust and scratches…', 'despeckle'], ['Remove JPEG blocks…', 'deblock'], ['Undither…', 'undither'], ['Make bigger…', 'upscale'], ['Modernise…', 'modern']].map(([l, k]) => ({ label: l, run: T(k), disabled: has }))],
     ['Convert', [{ label: 'SVG outlines…', run: T('trace'), disabled: has }, { label: 'Text art (ASCII / ANSI)…', run: T('text'), disabled: has }, { label: 'AI helpers…', run: () => CRAFTAI.openSettings() }]],
     ['Help', [{ label: 'How to use ImageCraft', run: help }]],
   ];

@@ -34,10 +34,19 @@ Classic formats fit the picture to that machine's screen and colours for you (th
 - **Dithering**: Floyd–Steinberg, Atkinson, Jarvis, Stucki, Burkes, Sierra, Sierra Lite, ordered 2 × 2 / 4 × 4 / 8 × 8, and noise, with a strength slider.
 - **Computer looks**: Atari ST, Amiga, Commodore 64, ZX Spectrum, Amstrad CPC, CGA, EGA, VGA, Macintosh, Game Boy, Apple II, PICO-8 and Teletext, at the real screen size (with tall or wide pixels where the machine had them) or kept at your picture's size.
 
+### Restore old photos
+
+- **Restore old photo** (Clean up tab): one click. It measures the picture's noise and blur, then takes out dust, removes grain and colour blotches, gently undoes blur, fixes a colour cast (only nearly-grey things are made neutral, so a sunset stays warm), levels and brings back faded detail.
+- **Remove noise**: non-local means. Each pixel is averaged with others nearby whose surroundings look alike, so texture and edges stay while grain goes; grain and colour blotches are handled separately. It opens already set to the noise measured in the picture.
+- **Deblur**: undoes soft focus, out of focus or camera shake. A degraded picture is the sharp one spread by a blur plus noise (*g = h ∗ f + n*); Deblur inverts that with a Wiener filter plus a gradient prior, with mirrored edges and no halos. **Measure the blur** reads the blur size from the picture's sharpest edges. **Careful** alternates undoing the blur with removing noise (plug-and-play restoration): slower, cleaner on grainy pictures.
+- **Faded detail**: adaptive histogram equalisation (CLAHE), each area of the picture getting its own contrast back.
+- **Fix a colour cast**: greys to grey, average to grey (grey world), brightest to white (white patch), or click something white.
+- **Where the noise is**: a noise map, which also shows whether a picture was already smoothed and sharpened.
+
 ### Clean up and modernise
 
 - **Smooth out noise** (edges stay sharp), **Dust and scratches**, **Remove JPEG blocks**, **Undither** (blends dithering dots back into smooth colour).
-- **Make bigger**: smooth, square pixels, Scale2x and Scale3x for pixel art, smooth pixel art, or **AI upscaling** (2× for clean pictures, 4× for old photos, 4× JPEG clean-up).
+- **Make bigger** and **Resize**: Best (sharp edges without halos), Pixel averaging (every pixel counted by how much it covers), Lanczos, Cubic, Soft (Mitchell), Linear, square pixels, Scale2x and Scale3x for pixel art, smooth pixel art (grown with Scale2x and averaged back down), or **AI upscaling** (2× for clean pictures, 4× for old photos, 4× JPEG clean-up) with an AI strength slider that mixes in the classic enlargement. Averaging is done in linear light, as light really adds up, so fine detail and edges keep their brightness.
 - **Modernise** in one go: pixel art, a dithered screen, an old photo or scan, or a blocky JPEG.
 - **Remove background**: by colour from the edges (click leftovers to take them too), or an **AI cut-out** for photos. Make a colour see-through, or fill see-through parts.
 
