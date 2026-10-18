@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ImageCraft</title>
+<link rel="stylesheet" href="fonts/fonts.css">
+<link rel="stylesheet" href="css/imagecraft.css">
+</head>
+<body>
+<div class="app" id="app">
+  <main class="work">
+    <aside class="side left" id="left">
+      <div class="tabs" role="tablist" aria-label="Side panel">
+        <button class="tab" data-tab="pics" role="tab" aria-selected="true">Pictures</button>
+        <button class="tab" data-tab="hist" role="tab">History</button>
+      </div>
+      <div class="tabbody" id="tab-pics"><div class="pics" id="pics"></div><div class="pad"><button class="btn outline wide" id="pics-open">Open pictures…</button><p class="hint" style="margin-top:8px">Open several at once (or drop them in) to convert them together with Batch convert.</p></div></div>
+      <div class="tabbody" id="tab-hist" hidden><ol class="hist" id="hist"></ol><p class="hint pad">Click a step to go back to it. Every step can be undone; nothing changes your file until you save.</p></div>
+    </aside>
+
+    <section class="desk" id="desk" aria-label="Picture">
+      <div class="stage check" id="stage" hidden>
+        <canvas id="view"></canvas>
+        <div class="before" id="before" hidden><canvas id="view0"></canvas></div>
+        <div class="split" id="split" hidden></div>
+        <span class="split-tag" id="tag-before" hidden style="left:8px">Before</span><span class="split-tag" id="tag-after" hidden style="right:8px">After</span>
+        <canvas class="gridlines" id="gridlines" hidden></canvas>
+        <div class="cropbox" id="cropbox" hidden><i data-h="nw"></i><i data-h="n"></i><i data-h="ne"></i><i data-h="e"></i><i data-h="se"></i><i data-h="s"></i><i data-h="sw"></i><i data-h="w"></i></div>
+      </div>
+      <div class="busy" id="busy" hidden></div>
+      <div class="welcome" id="welcome">
+        <div class="welcome-in">
+          <div class="logo" id="welcome-logo"></div>
+          <h1>ImageCraft</h1>
+          <p>Convert pictures between formats old and new, change their colour depth, clean up and modernise classic pictures, take backgrounds away, make them bigger, and turn them into SVG outlines or ASCII and ANSI art.</p>
+          <div class="drop" id="drop">
+            <b>Drop pictures here</b>
+            <button class="btn primary" id="welcome-open">Open pictures…</button>
+            <span class="hint">or paste one (Ctrl+V)</span>
+          </div>
+          <div class="samples" id="samples"></div>
+          <div class="formats"><b>Opens:</b> PNG, JPEG, GIF, WebP, AVIF, BMP, ICO, SVG, TIFF, TGA, PCX, IFF/ILBM (Amiga), Degas and NEOchrome (Atari ST), Koala (C64), ZX Spectrum screens, MacPaint, PBM/PGM/PPM.<br><b>Saves:</b> all of those (but AVIF), plus PDF, SVG outlines, and text art as TXT, ANSI and HTML.</div>
+        </div>
+      </div>
+    </section>
+
+    <aside class="side right" id="props" aria-label="Tool settings"></aside>
+  </main>
+  <footer class="statusbar" id="status"></footer>
+</div>
+
+<!-- Save as -->
+<div class="backdrop" id="savedlg" hidden>
+  <div class="dialog wide" role="dialog" aria-modal="true" aria-labelledby="save-title">
+    <h2 id="save-title">Save as</h2>
+    <div class="save-grid">
+      <div><div class="save-prev" id="save-prev"></div><p class="hint" id="save-facts" style="margin-top:6px"></p></div>
+      <div class="save-opts" id="save-opts"></div>
+    </div>
+    <div class="dialog-actions"><span class="hint grow" id="save-size"></span><button class="btn" id="save-cancel">Cancel</button><button class="btn primary" id="save-go">Save</button></div>
+  </div>
+</div>
+
+<!-- Messages and help -->
+<div class="backdrop" id="info" hidden>
+  <div class="dialog wide" role="dialog" aria-modal="true" aria-labelledby="info-title">
+    <h2 id="info-title"></h2>
+    <div class="help" id="info-body"></div>
+    <div class="dialog-actions"><button class="btn primary" id="info-close">Close</button></div>
+  </div>
+</div>
+<div class="backdrop" id="ask" hidden>
+  <div class="dialog" role="alertdialog" aria-modal="true" aria-labelledby="ask-title">
+    <h2 id="ask-title"></h2><p id="ask-body"></p>
+    <div class="dialog-actions"><button class="btn" id="ask-no">Cancel</button><button class="btn primary" id="ask-yes">OK</button></div>
+  </div>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+<input type="file" id="open-input" multiple hidden>
+
+<script src="js/craft-titlebar.js"></script>
+<script src="js/range-type.js"></script>
+<script src="lib/imagetracer.js"></script>
+<script src="js/tracer.js"></script>
+<script src="js/craft-ai.js"></script>
+<script src="js/bgremove.js"></script>
+<script src="js/formats.js"></script>
+<script src="js/colour.js"></script>
+<script src="js/filters.js"></script>
+<script src="js/ascii.js"></script>
+<script src="js/ui.js"></script>
+</body>
+</html>
