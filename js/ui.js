@@ -290,12 +290,12 @@
   const measureNote = (n) => `<p class="hint">Measured noise: grain <b>${n.luma.toFixed(1)}</b>, colour <b>${n.chroma.toFixed(1)}</b> grey levels${n.luma < 1.5 && n.chroma < 1.5 ? ' (very clean already)' : ''}.</p>`;
   const bgEdge = (img) => { const d = img.data; return [d[0], d[1], d[2]]; };
   const TOOLS = {
-    resize: { title: 'Resize', icon: IK.resize, s: (img) => ({ w: img.width, h: img.height, keep: true, method: img.width * img.height < 90000 ? 'nearest' : 'smooth', linear: true }),
+    resize: { title: 'Resize', icon: IK.resize, s: (img) => ({ w: img.width, h: img.height, keep: true, method: img.width * img.height < 90000 ? 'nearest' : 'smooth', linear: true, aa: 0 }),
       fields: [{ t: 'row', items: [{ t: 'num', k: 'w', label: 'Width (pixels)', min: 1, max: 20000 }, { t: 'num', k: 'h', label: 'Height (pixels)', min: 1, max: 20000 }] }, chk('keep', 'Keep its shape'),
         { t: 'btns', buttons: [['½', 0.5], ['¼', 0.25], ['2×', 2], ['3×', 3], ['4×', 4]].map(([l, k]) => ({ label: l, run: (s, b) => { s.w = Math.max(1, Math.round(b.width * k)); s.h = Math.max(1, Math.round(b.height * k)); } })) },
-        sel('method', 'How', UPS.filter(([k]) => !ai(k))), chk('linear', 'Average in linear light (truer colours and edges)', (s) => s.method !== 'nearest'), note('Square pixels keeps pixel art exactly as it is; the pixel-art ways round off the steps on diagonals. For AI upscaling use Clean up › Make bigger.')],
+        sel('method', 'How', UPS.filter(([k]) => !ai(k))), range('aa', 'Smooth jagged edges (%)', 0, 100), chk('linear', 'Average in linear light (truer colours and edges)', (s) => s.method !== 'nearest'), note('Square pixels keeps pixel art exactly as it is; the pixel-art ways round off the steps on diagonals. For AI upscaling use Clean up › Make bigger.')],
       change: (s, k, img) => { if (!s.keep) return; if (k === 'w') s.h = Math.max(1, Math.round((s.w * img.height) / img.width)); if (k === 'h') s.w = Math.max(1, Math.round((s.h * img.width) / img.height)); },
-      run: (img, s) => X.resize(img, { width: s.w, height: s.h, method: s.method, linear: s.linear !== false }) },
+      run: (img, s) => { const r = X.resize(img, { width: s.w, height: s.h, method: s.method, linear: s.linear !== false }); return +s.aa ? X.antialias(r, { amount: +s.aa }) : r; } },
     crop: { title: 'Crop', icon: IK.crop, live: false, s: (img) => ({ x: Math.round(img.width * 0.1), y: Math.round(img.height * 0.1), w: Math.round(img.width * 0.8), h: Math.round(img.height * 0.8), ratio: 'free' }),
       fields: [note('Drag the box or its handles, or drag out a new box on the picture.'), seg('ratio', 'Shape', Object.keys(RATIOS).map((k) => [k, k === 'free' ? 'Any' : k])),
         { t: 'row', items: [{ t: 'num', k: 'x', label: 'Left' }, { t: 'num', k: 'y', label: 'Top' }] }, { t: 'row', items: [{ t: 'num', k: 'w', label: 'Width' }, { t: 'num', k: 'h', label: 'Height' }] },
@@ -308,6 +308,11 @@
         seg('anchor', 'Picture sits', [['nw', '↖'], ['n', '↑'], ['ne', '↗'], ['w', '←'], ['c', '•'], ['e', '→'], ['sw', '↙'], ['s', '↓'], ['se', '↘']]),
         seg('fill', 'New space', [['clear', 'See-through'], ['colour', 'A colour']]), { t: 'colour', k: 'colour', label: 'Colour', show: (s) => s.fill === 'colour' }],
       run: (img, s) => X.canvasSize(img, { width: s.w, height: s.h, anchor: s.anchor, fill: s.fill === 'colour' ? s.colour : '' }) },
+    aa: { title: 'Smooth jagged edges', icon: IK.straighten, s: { amount: 60, threshold: 32, show: 'result' },
+      fields: [seg('show', 'Show', [['result', 'The result'], ['check', 'Edge check (map)']]), range('amount', 'Smoothing (%)', 0, 100), range('threshold', 'Only edges stronger than', 8, 120), { t: 'out' },
+        note('Edge check marks slanted edges in red where they are hard steps (a staircase) and in green where they are already smooth. Smoothing works along each edge, never across it, so edges stay sharp.')],
+      report: () => { const a = X.aliasCheck(tool.base), b = tool.after ? X.aliasCheck(tool.after) : null; return `<p class="hint">Jagged: <b>${Math.round(a.ratio * 100)}%</b> of slanted edges before${b ? `, <b>${Math.round(b.ratio * 100)}%</b> after` : ''}.</p>`; },
+      run: (img, s) => { const r = X.antialias(img, s); tool.after = r; return s.show === 'check' ? X.aliasCheck(r).map : r; }, final: (img, s) => X.antialias(img, s) },
     straighten: { title: 'Straighten', icon: IK.straighten, s: { angle: 0, crop: true }, fields: [range('angle', 'Turn (degrees)', -45, 45, 0.1), chk('crop', 'Cut off the turned corners'), note('Line up the horizon or a wall with the edge of the picture.')],
       run: (img, s) => X.rotate(img, { angle: s.angle, crop: s.crop }) },
     light: { title: 'Brightness and contrast', icon: IK.light, s: { brightness: 0, contrast: 0, gamma: 1, shadows: 0, highlights: 0 },
@@ -355,7 +360,11 @@
       fields: [chk('stretch', 'Stretch to full black and white first'), range('clip', 'Strength (contrast limit)', 1, 6, 0.1), range('tiles', 'Areas across', 2, 16), range('amount', 'Mix (%)', 0, 100), note('Adaptive histogram equalisation: each part of the picture gets its own contrast back, so faded and dark corners recover without the whole picture going harsh.')],
       // the whole range stretched first (faded photos rarely reach black or white), then each area's own contrast
       run: (img, s) => IC.restore.clahe(s.stretch ? X.autoLevels(img, { clip: 0.3, perChannel: false }) : img, s) },
-    despeckle: { title: 'Dust and scratches', icon: IK.dust, s: { radius: 1, threshold: 40 }, fields: [range('radius', 'Size of the specks', 1, 3), range('threshold', 'Only bigger differences', 5, 150), note('Takes out small specks, dust and fine scratches from scans, leaving the rest alone.')], run: (img, s) => X.despeckle(img, s) },
+    despeckle: { title: 'Dust and scratches', icon: IK.dust, s: { how: 'smart', threshold: 20, radius: 1 },
+      fields: [seg('how', 'Way', [['smart', 'Smart (only the specks)'], ['simple', 'Simple']]), range('threshold', 'How much a speck stands out', 5, 120, 1), range('radius', 'Size of the specks', 1, 3, 1, (s) => s.how === 'simple'), { t: 'out' },
+        note('Smart finds the specks first (dust, dropouts, salt-and-pepper dots), then repairs only those, each from the clean pixels around it; everything else stays exactly as it was.', (s) => s.how === 'smart')],
+      report: (img) => (img.specks != null ? `<p class="hint"><b>${fmtN(img.specks)}</b> specks repaired.</p>` : ''),
+      run: (img, s) => (s.how === 'smart' ? IC.restore.impulse(img, { threshold: s.threshold }) : X.despeckle(img, { radius: s.radius, threshold: s.threshold * 2 })) },
     deblock: { title: 'Remove JPEG blocks', icon: IK.jpeg, s: { strength: 50 }, fields: [range('strength', 'Strength', 0, 100), note('Smooths the 8 × 8 squares and smudges of a picture saved too small as JPEG. For bigger and cleaner, try Make bigger › AI 4× (JPEG clean-up).')], run: (img, s) => X.deblock(img, s) },
     undither: { title: 'Undither', icon: IK.undither, s: { strength: 60 }, fields: [range('strength', 'Strength', 0, 100), note('Blends the dots of a dithered picture (old GIFs, 16-colour screens) back into smooth colour.')], run: (img, s) => X.undither(img, s) },
     cutout: { title: 'Remove background', icon: IK.cutout, s: { mode: 'edges', tolerance: 40, points: [] },
@@ -368,15 +377,15 @@
       fields: [{ t: 'swatch', k: 'rgb', label: 'Colour (click the picture to pick it)' }, range('tolerance', 'Close colours too', 0, 100), range('soft', 'Soft edge', 0, 60)],
       pick: (s, rgb) => { s.rgb = rgb; }, run: (img, s) => X.makeClear(img, s) },
     flatten: { title: 'Fill see-through parts', icon: IK.canvas, s: { colour: '#ffffff' }, fields: [{ t: 'colour', k: 'colour', label: 'Fill with' }], run: (img, s) => X.flatten(img, { fill: s.colour }) },
-    upscale: { title: 'Make bigger', icon: IK.upscale, s: (img) => ({ method: img.width * img.height < 90000 ? 'scale2x' : 'smooth', factor: 2, linear: true, mix: 100 }),
+    upscale: { title: 'Make bigger', icon: IK.upscale, s: (img) => ({ method: img.width * img.height < 90000 ? 'scale2x' : 'smooth', factor: 2, linear: true, mix: 100, aa: 0 }),
       fields: [sel('method', 'How', UPS), seg('factor', 'Times', [[2, '2×'], [3, '3×'], [4, '4×']], (s) => !ai(s.method)),
         chk('linear', 'Average in linear light (truer colours and edges)', (s) => !ai(s.method) && s.method !== 'nearest'),
-        range('mix', 'AI strength (%): less mixes in the classic enlargement', 0, 100, 5, (s) => !!ai(s.method)), { t: 'out' },
+        range('mix', 'AI strength (%): less mixes in the classic enlargement', 0, 100, 5, (s) => !!ai(s.method)), range('aa', 'Smooth jagged edges (%)', 0, 100, 1, (s) => !ai(s.method)), { t: 'out' },
         note('<b>Best</b> sharpens edges without the light and dark halos sharp filters leave, and averages light the way the eye sees it. <b>Pixel averaging</b> counts every pixel by how much it covers: crisp, honest, no invented detail.', (s) => !ai(s.method)),
         note('The AI ways download a model once (10–50 MB) and work offline after that. They take a few seconds for each 128 × 128 square.', (s) => !!ai(s.method))],
       live: (s) => !ai(s.method) || !!(tool && tool.aiCache && tool.aiCache.k === s.method), report: (img) => `<p class="hint">Becomes <b>${img.width} × ${img.height}</b> pixels.</p>`,
       run: async (img, s, say) => {
-        if (!ai(s.method)) return upscaleWith(img, s.method, +s.factor, say, s.linear);
+        if (!ai(s.method)) { const u = await upscaleWith(img, s.method, +s.factor, say, s.linear); return +s.aa ? X.antialias(u, { amount: +s.aa }) : u; }
         // the AI result is kept, so moving the strength slider does not run the model again
         const t = tool; if (!t.aiCache || t.aiCache.k !== s.method) t.aiCache = { k: s.method, img: await upscaleWith(img, s.method, CRAFTAI.MODELS[ai(s.method)].scale, say) };
         const a = t.aiCache.img; if (+s.mix >= 100) return a;
@@ -390,11 +399,39 @@
         if (s.kind === 'pixel') { if (k > 1) o = X.resize(img, { width: img.width * k, height: img.height * k, method: 'smoothpixel' }); return X.sharpen(o, { amount: 30, radius: 1 }); }
         if (s.kind === 'screen') { say && say('Blending the dots…'); o = X.undither(o, { strength: 65 }); }
         // old photo, in the usual restoration order: dust, noise (grain and colour separately), a little deblur, then tone
-        if (s.kind === 'photo') { say && say('Dust and noise…'); o = X.despeckle(o, { radius: 1, threshold: 45 }); const n = IC.restore.noiseLevel(o); if (n.luma > 1 || n.chroma > 1) o = IC.restore.nlm(o, nlmFor(n)); say && say('Sharpness and tone…'); const m = IC.restore.measure(o); if (m && m.radius > 0.8) o = IC.restore.deblur(o, { kind: 'gauss', radius: Math.min(3, m.radius * 0.7), noise: kFor(IC.restore.noiseLevel(o).luma) + 20, strength: 60 }); o = IC.restore.clahe(X.autoLevels(X.whiteBalance(o, { method: 'auto', strength: 70 }), { clip: 0.2 }), { clip: 1.5, amount: 30 }); }
+        if (s.kind === 'photo') { say && say('Dust and noise…'); o = IC.restore.impulse(o, { threshold: 30 }); const n = IC.restore.noiseLevel(o); if (n.luma > 1 || n.chroma > 1) o = IC.restore.nlm(o, nlmFor(n)); say && say('Sharpness and tone…'); const m = IC.restore.measure(o); if (m && m.radius > 0.8) o = IC.restore.deblur(o, { kind: 'gauss', radius: Math.min(3, m.radius * 0.7), noise: kFor(IC.restore.noiseLevel(o).luma) + 20, strength: 60 }); o = IC.restore.clahe(X.autoLevels(X.whiteBalance(o, { method: 'auto', strength: 70 }), { clip: 0.2 }), { clip: 1.5, amount: 30 }); }
         if (s.kind === 'jpeg') { say && say('Smoothing the blocks…'); o = X.deblock(o, { strength: 60 }); }
         if (k > 1) o = s.useAi ? await upscaleWith(o, s.kind === 'jpeg' ? 'ai-jpeg' : s.kind === 'photo' ? 'ai-photo' : 'ai-sharp', k, say) : X.resize(o, { width: o.width * k, height: o.height * k });
         // a light finish (an old photo was sharpened by the deblur already)
         return s.kind === 'photo' ? X.colour(o, { vibrance: 6 }) : X.colour(X.sharpen(o, { amount: 50, radius: 1, threshold: 3 }), { vibrance: 12 });
+      } },
+    // Remaster shapes: the picture's shapes recognised as clean outlines (traced), drawn again crisply at the new size,
+    // then blended with the (enlarged) original: everywhere, or only at the edges so the original's texture stays inside
+    remaster: { title: 'Remaster shapes', icon: IK.svg, live: false, s: (img) => ({ scale: img.width * img.height < 200000 ? 4 : 2, colours: 'auto', detail: 9, smooth: 1, blend: 100, where: 'edges', perfect: true }),
+      fields: [seg('scale', 'New size', [[1, 'Same'], [2, '2×'], [3, '3×'], [4, '4×']]), sel('colours', 'Colours', [['auto', 'Best match'], ...[2, 3, 4, 6, 8, 12, 16, 24, 32].map((n) => [String(n), `${n} colours`])]),
+        range('detail', 'Detail', 1, 10), range('smooth', 'Smoothing of the outlines', 0, 5), chk('perfect', 'Make near-circles and ellipses perfect'), seg('where', 'Blend', [['edges', 'At the edges (keeps texture)'], ['all', 'Everywhere']]), range('blend', 'Remastered (%)', 0, 100), { t: 'out' },
+        note('For logos, clip art, icons, pixel art and drawings with clear shapes: each shape is found and drawn again smoothly at the new size. Press Preview. Use Compare to see the difference.')],
+      report: () => (tool && tool.shapes ? `<p class="hint"><b>${fmtN(tool.shapes.paths)}</b> shapes in <b>${tool.shapes.colors}</b> colours recognised${tool.shapes.snapped ? `; <b>${tool.shapes.snapped}</b> made into perfect circles or ellipses` : ''}.</p>` : ''),
+      run: async (img, s, say) => {
+        const k = +s.scale, W = img.width * k, H = img.height * k;
+        say && say('Recognising the shapes…'); await wait(20);
+        // the tracer looks at a smoothly enlarged copy (about 900 pixels across), so small pictures give true curves and keep their small parts
+        const m = Math.max(1, Math.min(8, Math.floor(900 / Math.max(img.width, img.height)))), src = m > 1 ? X.resize(img, { width: img.width * m, height: img.height * m, method: img.width * img.height < 90000 ? 'smoothpixel' : 'auto' }) : img;
+        const few = F.countColours(img, 17), tr = await CraftTracer.trace(X.canvasOf(src).toDataURL('image/png'), { colors: s.colours === 'auto' ? (few <= 16 ? few : 'auto') : +s.colours, detail: s.detail, smooth: s.smooth, max: Math.max(src.width, src.height) });
+        if (s.perfect) { const sn = snapShapes(tr.svg); tr.svg = sn.svg; tr.snapped = sn.snapped; }
+        tool.shapes = tr;
+        say && say('Drawing them again…');
+        const vec = await svgToImg(tr.svg, W, H), base = X.resize(img, { width: W, height: H, method: k > 1 && img.width * img.height < 90000 ? 'smoothpixel' : 'auto' }), b = +s.blend / 100;
+        // where to use the redrawn shapes: their edges (a band), or everywhere; then the two pictures are joined band by
+        // band (multi-band pyramid blending) so the change never shows a seam
+        const v = vec.data, mk = new Float32Array(W * H);
+        if (s.where === 'edges') {
+          const at = (x, y) => { const j = (Math.min(H - 1, Math.max(0, y)) * W + Math.min(W - 1, Math.max(0, x))) * 4; return v[j] * 0.3 + v[j + 1] * 0.59 + v[j + 2] * 0.11 + (255 - v[j + 3]); };
+          const e = new ImageData(W, H); for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { const g = Math.min(255, (Math.abs(at(x + 1, y) - at(x - 1, y)) + Math.abs(at(x, y + 1) - at(x, y - 1))) * 3), i = (y * W + x) * 4; e.data[i] = e.data[i + 1] = e.data[i + 2] = g; e.data[i + 3] = 255; }
+          const eb = X.blur(e, { radius: Math.max(1, Math.round(k * 1.5)) }).data; for (let p = 0; p < W * H; p++) mk[p] = Math.min(1, eb[p * 4] / 50) * b;
+        } else mk.fill(b);
+        const o = X.pyramidBlend(base, vec, mk, 5);
+        return o;
       } },
     trace: { title: 'To SVG outlines', icon: IK.svg, s: { how: 'outlines', colours: 'auto', detail: 6, smooth: 1, removeBg: false },
       fields: [seg('how', 'Kind', [['outlines', 'Smooth outlines'], ['pixels', 'Exact pixels (pixel art)']]), sel('colours', 'Colours', [['auto', 'Best match'], ...[2, 3, 4, 6, 8, 12, 16, 24, 32].map((n) => [String(n), `${n} colours`])], (s) => s.how === 'outlines'),
@@ -420,6 +457,42 @@
     for (let y = 0; y < H; y++) { let x = 0; while (x < W) { const i = (y * W + x) * 4; if (d[i + 3] < 128) { x++; continue; } const k = hexOf([d[i], d[i + 1], d[i + 2]]), a = d[i + 3]; let e = x + 1; while (e < W) { const j = (y * W + e) * 4; if (d[j + 3] !== a || hexOf([d[j], d[j + 1], d[j + 2]]) !== k) break; e++; } const key = a < 255 ? k + '/' + a : k; (byCol.get(key) || byCol.set(key, []).get(key)).push(`M${x} ${y}h${e - x}v1h${x - e}z`); x = e; } }
     const paths = [...byCol.entries()].map(([k, p]) => { const [c, a] = k.split('/'); return `<path fill="${c}"${a ? ` fill-opacity="${(a / 255).toFixed(3)}"` : ''} d="${p.join('')}"/>`; });
     return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" shape-rendering="crispEdges">${paths.join('')}</svg>`;
+  }
+  // Shape recognition on traced outlines: a path whose points all lie close to one ellipse (fitted from their spread)
+  // is replaced by that exact ellipse or circle. Paths with holes are left alone.
+  function snapShapes(svg) {
+    let snapped = 0;
+    const out = svg.replace(/<path([^>]*?) d="([^"]+)"([^>]*)\/>/g, (whole, a1, d, a2) => {
+      if ((d.match(/M/g) || []).length !== 1) return whole;
+      const nums = d.replace(/[A-Za-z]/g, ' ').trim().split(/[\s,]+/).map(Number); if (nums.length < 16 || nums.some(isNaN)) return whole;
+      const pts = []; for (let i = 0; i + 1 < nums.length; i += 2) pts.push([nums[i], nums[i + 1]]);
+      // points evenly along the outline (by length), so long straight runs do not outweigh curves
+      const even = []; let len = 0; const segs = pts.map((p, i) => { const q = pts[(i + 1) % pts.length], l = Math.hypot(q[0] - p[0], q[1] - p[1]); len += l; return l; });
+      const step = len / 64; let acc = 0; pts.forEach((p, i) => { const q = pts[(i + 1) % pts.length]; for (let t = (step - acc) % step; t < segs[i]; t += step) even.push([p[0] + ((q[0] - p[0]) * t) / segs[i], p[1] + ((q[1] - p[1]) * t) / segs[i]]); acc = (acc + segs[i]) % step; });
+      if (even.length < 12) return whole;
+      const cx = even.reduce((t, p) => t + p[0], 0) / even.length, cy = even.reduce((t, p) => t + p[1], 0) / even.length;
+      let sxx = 0, sxy = 0, syy = 0; even.forEach(([x, y]) => { sxx += (x - cx) ** 2; sxy += (x - cx) * (y - cy); syy += (y - cy) ** 2; }); sxx /= even.length; sxy /= even.length; syy /= even.length;
+      const tr = sxx + syy, det = sxx * syy - sxy * sxy, l1 = tr / 2 + Math.sqrt(Math.max(0, (tr * tr) / 4 - det)), l2 = tr / 2 - Math.sqrt(Math.max(0, (tr * tr) / 4 - det));
+      const ang = 0.5 * Math.atan2(2 * sxy, sxx - syy), ra = Math.sqrt(2 * l1), rb = Math.sqrt(2 * Math.max(1e-9, l2)); if (rb < 2) return whole;
+      const ca = Math.cos(ang), sa = Math.sin(ang); let err = 0;
+      even.forEach(([x, y]) => { const u = (x - cx) * ca + (y - cy) * sa, v = -(x - cx) * sa + (y - cy) * ca; err += Math.abs(Math.hypot(u / ra, v / rb) - 1); });
+      if (err / even.length > 0.045) {
+        // not an ellipse: maybe a polygon (few corners, straight sides): simplified (Douglas–Peucker) to its corners
+        const tol = Math.max(1, Math.sqrt(l1) * 0.12), dp = (a, z) => { let mi = -1, md = 0; const [x1, y1] = even[a], [x2, y2] = even[z], L = Math.hypot(x2 - x1, y2 - y1) || 1; for (let i = a + 1; i < z; i++) { const dd = Math.abs((x2 - x1) * (y1 - even[i][1]) - (x1 - even[i][0]) * (y2 - y1)) / L; if (dd > md) { md = dd; mi = i; } } return md > tol ? [...dp(a, mi), ...dp(mi, z).slice(1)] : [a, z]; };
+        // start from the point farthest from the middle (a corner), so the first side is not split
+        let f0 = 0, fd = 0; even.forEach(([x, y], i) => { const dd = (x - cx) ** 2 + (y - cy) ** 2; if (dd > fd) { fd = dd; f0 = i; } });
+        const rot = [...even.slice(f0), ...even.slice(0, f0), even[f0]]; even.length = 0; even.push(...rot);
+        // a closed outline: split it at the point farthest from the start, then simplify each half
+        let far = 0, fdd = 0; even.forEach(([x, y], i) => { const dd = (x - even[0][0]) ** 2 + (y - even[0][1]) ** 2; if (dd > fdd) { fdd = dd; far = i; } });
+        const idx = [...dp(0, far), ...dp(far, even.length - 1).slice(1)].slice(0, -1);
+        if (idx.length < 3 || idx.length > 8) return whole;
+        snapped++; return `<polygon${(a1 + a2).replace(/\s+$/, '')} points="${idx.map((i) => even[i].map((v) => v.toFixed(2)).join(',')).join(' ')}"/>`;
+      }
+      snapped++;
+      const round = Math.abs(ra - rb) / ra < 0.04, attrs = (a1 + a2).replace(/\s+$/, '');
+      return round ? `<circle${attrs} cx="${cx.toFixed(2)}" cy="${cy.toFixed(2)}" r="${((ra + rb) / 2).toFixed(2)}"/>` : `<ellipse${attrs} cx="${cx.toFixed(2)}" cy="${cy.toFixed(2)}" rx="${ra.toFixed(2)}" ry="${rb.toFixed(2)}" transform="rotate(${((ang * 180) / Math.PI).toFixed(2)} ${cx.toFixed(2)} ${cy.toFixed(2)})"/>`;
+    });
+    return { svg: out, snapped };
   }
   const svgToImg = (svg, w, h) => new Promise((res, rej) => { const i = new Image(); i.onload = () => { const c = document.createElement('canvas'); c.width = w; c.height = h; const x = c.getContext('2d'); x.drawImage(i, 0, 0, w, h); res(x.getImageData(0, 0, w, h)); }; i.onerror = () => rej(new Error('The SVG could not be shown.')); i.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg); });
   function saveTrace() { if (!tool || !tool.svg) return toast('Wait for the preview first.'); download(new Blob([tool.svg], { type: 'image/svg+xml' }), baseName(pic().name) + '.svg'); }
@@ -463,6 +536,7 @@
   async function applyTool() {
     const t = tool; if (!t) return;
     if (t.def.viewOnly) { closeTool(); return; }
+    if (t.def.final) { const r = await t.def.final(t.base, t.s); closeTool(true); push(t.def.title, r); return; }
     if (t.def.id === 'crop' || !t.preview || t.stale) { await runPreview(); if (tool !== t || !t.preview) return; }
     const r = t.preview; closeTool(true); push(t.def.title, r);
   }
@@ -586,7 +660,7 @@
   const NO_CLEAR = new Set(['jpg', 'pdf', 'pcx', 'bmp', 'ppm', 'pi1', 'pi2', 'pi3', 'neo', 'koa', 'scr', 'mac']);
   // formats (and depths) that cannot hold see-through: those parts are filled with a colour first
   const noClear = (fmt, bits) => (NO_CLEAR.has(fmt) && !(fmt === 'bmp' && bits === 32)) || (fmt === 'tga' && bits !== 32) || ((fmt === 'png' || fmt === 'tif') && bits === 24);
-  const sv = { fmt: 'png', bits: 0, palette: 'adaptive', dither: 'fs', quality: 90, fit: 'cover', back: '#ffffff', name: '' };
+  const sv = { fmt: 'png', bits: 0, palette: 'adaptive', dither: 'fs', quality: 90, fit: 'cover', back: '#ffffff', name: '', aa: 0 };
   let saveTok = 0, saveBlob = null, savePrep = null;
   function openSave() {
     if (!now()) { toast('Open a picture first.'); return; }
@@ -612,6 +686,7 @@
       ${reducing ? `<label class="field"><span>Dithering</span><select class="input" id="sv-dither">${C.DITHERS.map(([k, l]) => `<option value="${k}" ${k === sv.dither ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select></label>` : ''}
       ${f.fit ? `<label class="field"><span>Fit to the ${f.fit[0]} × ${f.fit[1]} screen</span><select class="input" id="sv-fit"><option value="cover" ${sv.fit === 'cover' ? 'selected' : ''}>Fill the screen (edges cut off)</option><option value="contain" ${sv.fit === 'contain' ? 'selected' : ''}>Whole picture (black bars)</option><option value="stretch" ${sv.fit === 'stretch' ? 'selected' : ''}>Stretch</option></select></label>` : ''}
       ${f.quality ? `<label class="field"><span>Quality: <b id="sv-qv">${sv.quality}</b></span><input type="range" id="sv-q" min="10" max="100" value="${sv.quality}" data-rt-skip></label>` : ''}
+      <label class="field"><span>Smooth jagged edges before saving</span><select class="input" id="sv-aa">${[[0, 'Off'], [35, 'Light'], [65, 'Medium'], [95, 'Strong']].map(([v, l]) => `<option value="${v}" ${+sv.aa === v ? 'selected' : ''}>${l}</option>`).join('')}</select><span class="hint" id="sv-edges"></span></label>
       ${noClear(sv.fmt, bits) && F.hasClear(now()) ? `<label class="field"><span>Behind see-through parts</span><input type="color" class="input" id="sv-back" value="${sv.back}"></label>` : ''}`;
     const on0 = o.querySelector(`[data-f="${sv.fmt}"]`); if (on0) on0.scrollIntoView({ block: 'nearest' });
     o.querySelector('#sv-fmts').onclick = (e) => { const b = e.target.closest('[data-f]'); if (!b) return; sv.fmt = b.dataset.f; sv.bits = 0; drawSaveOpts(); prepareSave(); };
@@ -623,10 +698,12 @@
     on('#sv-fit', 'change', (e) => { sv.fit = e.target.value; prepareSave(); });
     on('#sv-q', 'input', (e) => { sv.quality = +e.target.value; o.querySelector('#sv-qv').textContent = sv.quality; prepareSave(); });
     on('#sv-back', 'input', (e) => { sv.back = e.target.value; prepareSave(); });
+    on('#sv-aa', 'change', (e) => { sv.aa = +e.target.value; prepareSave(); });
   }
   // the picture as it will be in the file: fitted to an old screen, colours reduced, see-through filled
   function prepared(img, fmt, o) {
     const f = F.FORMATS[fmt], bits = o.bits;
+    if (o.aa) img = X.antialias(img, { amount: o.aa });
     if (noClear(fmt, bits) && F.hasClear(img)) img = X.flatten(img, { fill: o.back || '#ffffff' });
     if (f.fit) {
       const [SW, SH] = f.fit, a = f.aspect || 1, c = document.createElement('canvas'); c.width = SW; c.height = SH; const x = c.getContext('2d'); x.imageSmoothingQuality = 'high'; x.fillStyle = '#000'; x.fillRect(0, 0, SW, SH);
@@ -657,6 +734,8 @@
         const c = X.canvasOf(img); if (img.width < 400) { c.style.width = img.width * Math.min(3, Math.floor(600 / img.width)) + 'px'; } pv.append(c);
         $('save-facts').textContent = `${img.width} × ${img.height} pixels · ${F.countColours(img, 65536) > 65536 ? 'more than 65,536' : fmtN(F.countColours(img, 65536))} colours`;
         $('save-size').textContent = `About ${kb(blob.size)}`; $('save-go').disabled = false;
+        // the edge check of what will be saved (small pixel art is meant to be stepped: no advice there)
+        const ed = $('sv-edges'); if (ed) { if (img.width * img.height > 4e6) ed.textContent = ''; else { const a = X.aliasCheck(img); ed.textContent = a.slanted < 50 ? 'Edge check: few slanted edges.' : `Edge check: ${Math.round(a.ratio * 100)}% of slanted edges are jagged steps${a.ratio > 0.15 && sv.aa === 0 && img.width * img.height > 90000 ? ' — try Light or Medium.' : '.'}`; } }
       } catch (e) { if (my === saveTok) { $('save-size').textContent = e.message; } }
     }, 60);
   }
@@ -769,7 +848,7 @@
         ['Help', [B('How to use', I.help, help, { big: true, always: true })]],
       ] },
       { id: 'image', label: 'Image', hue: '#2f7fdd', groups: [
-        ['Size', [B('Resize', IK.resize, T('resize'), { big: true }), B('Crop', IK.crop, T('crop'), { big: true }), { col: [B('Canvas size', IK.canvas, T('canvas')), B('Trim borders', IK.crop, () => quick('Trim borders', (i) => { const t = X.trimBox(i); if (!t) throw new Error('No plain border to trim.'); return X.crop(i, t); }))] }]],
+        ['Size', [B('Resize', IK.resize, T('resize'), { big: true }), B('Crop', IK.crop, T('crop'), { big: true }), { col: [B('Smooth jagged edges', IK.straighten, T('aa')), B('Canvas size', IK.canvas, T('canvas')), B('Trim borders', IK.crop, () => quick('Trim borders', (i) => { const t = X.trimBox(i); if (!t) throw new Error('No plain border to trim.'); return X.crop(i, t); }))] }]],
         ['Turn', [{ col: [B('Turn left', I.rotL, () => quick('Turn left', (i) => X.rotate90(i, 270))), B('Turn right', I.rotR, () => quick('Turn right', (i) => X.rotate90(i, 90))), B('Turn upside down', I.rot180, () => quick('Turn upside down', (i) => X.rotate90(i, 180)))] },
           { col: [B('Flip across', IK.flipH, () => quick('Flip across', (i) => X.flip(i, true))), B('Flip up and down', IK.flipV, () => quick('Flip up and down', (i) => X.flip(i, false))), B('Straighten', IK.straighten, T('straighten'))] }]],
       ] },
@@ -787,7 +866,7 @@
         ['Restore', [B('Remove noise', IK.denoise, T('nlm'), { big: true, title: 'Smart noise removal (non-local means): grain and colour blotches' }), B('Deblur', IK.sharpen, T('deblur'), { big: true, title: 'Undo soft focus, out of focus or camera shake (Wiener deconvolution)' }), B('Faded detail', IK.light, T('clahe'), { big: true, title: 'Adaptive contrast for faded photos (CLAHE)' }), { col: [B('Where the noise is', IK.grid, T('noisemap'))] }]],
         ['Clean', [B('Smooth out noise', IK.denoise, T('denoise'), { big: true }), B('Dust and scratches', IK.dust, T('despeckle'), { big: true }), B('JPEG blocks', IK.jpeg, T('deblock'), { big: true, title: 'Remove JPEG blocks and smudges' }), B('Undither', IK.undither, T('undither'), { big: true, title: 'Blend dithering dots back into smooth colour' })]],
         ['Background', [B('Remove background', IK.cutout, T('cutout'), { big: true })]],
-        ['Bigger', [B('Make bigger', IK.upscale, T('upscale'), { big: true, title: 'Smooth, pixel-art or AI upscaling' }), B('Modernise', IK.modern, T('modern'), { big: true })]],
+        ['Bigger', [B('Make bigger', IK.upscale, T('upscale'), { big: true, title: 'Smooth, pixel-art or AI upscaling' }), B('Modernise', IK.modern, T('modern'), { big: true }), B('Remaster shapes', IK.svg, T('remaster'), { big: true, title: 'Recognise the shapes, draw them again crisply at the new size, and blend with the original' })]],
       ] },
       { id: 'convert', label: 'Convert', hue: '#138a9e', groups: [
         ['Save', [B('Save as', I.save, openSave, { big: true, key: 'Ctrl+S' }), B('Batch convert', IK.batch, openBatch, { big: true, title: 'Convert every open picture at once, into a ZIP' })]],
@@ -851,5 +930,5 @@
 
   renderProps(); status();
   // for testing and the command layer: the same things the buttons do
-  window.ImageCraft = { openFiles, addPic, openTool, applyTool, closeTool, quick, openSave, openBatch, undo, redo, sample, pics: () => pics, current: () => pic(), tool: () => tool, view, prepared, TOOLS };
+  window.ImageCraft = { snapShapes, openFiles, addPic, openTool, applyTool, closeTool, quick, openSave, openBatch, undo, redo, sample, pics: () => pics, current: () => pic(), tool: () => tool, view, prepared, TOOLS };
 })();

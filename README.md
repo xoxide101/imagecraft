@@ -42,6 +42,12 @@ Classic formats fit the picture to that machine's screen and colours for you (th
 - **Faded detail**: adaptive histogram equalisation (CLAHE), each area of the picture getting its own contrast back.
 - **Fix a colour cast**: greys to grey, average to grey (grey world), brightest to white (white patch), or click something white.
 - **Where the noise is**: a noise map, which also shows whether a picture was already smoothed and sharpened.
+- **Dust and scratches** (Smart): finds the specks first (dust, dropouts, salt-and-pepper dots), then repairs only those, each from the clean pixels around it in a window that grows until there are enough; everything else is left exactly as it was.
+
+### Edges and shapes
+
+- **Smooth jagged edges**: an edge check marks staircase edges in red and smooth ones in green; smoothing works along each edge, never across it. Also in Resize, Make bigger, and in **Save as**, which checks the edges of what is about to be saved and suggests smoothing when they are jagged.
+- **Remaster shapes**: the picture's shapes are recognised as clean outlines (near-circles and ellipses become perfect ones, near-polygons get straight sides), drawn again crisply at the new size, then blended with the enlarged original band by band (multi-band pyramid blending), at the edges only (keeping the original's texture) or everywhere. For logos, clip art, icons, pixel art and drawings.
 
 ### Clean up and modernise
 

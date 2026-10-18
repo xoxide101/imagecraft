@@ -221,6 +221,54 @@
     const out = new ImageData(W, H); for (let i = 0; i < out.data.length; i++) out.data[i] = s[i] + (z.data[i] - s[i]) * k; return out;
   }
 
+
+  // ------------------------------------------------------------------ specks: impulse noise (salt and pepper, dust)
+  // After the hybrid adaptive / decision-based median filters (AMF + MDBMF): first decide which pixels are specks, then
+  // repair only those, each from the median of its *clean* neighbours, in a window that grows (3 × 3 up to 11 × 11)
+  // until there are enough of them. Clean pixels are never touched, so edges and detail stay exactly as they were.
+  //   A speck: a pure black or white pixel (salt and pepper, as in damaged files), or a pixel that is the brightest or
+  //   darkest of its 3 × 3 square by more than `threshold` against their middle value (dust and dropouts on scans).
+  function impulse(img, { threshold = 20, extremes = true, maxWindow = 11 } = {}) {
+    const W = img.width, H = img.height, s = img.data, N = W * H, L = new Float32Array(N), bad = new Uint8Array(N), v = new Float32Array(9);
+    for (let p = 0; p < N; p++) L[p] = 0.299 * s[p * 4] + 0.587 * s[p * 4 + 1] + 0.114 * s[p * 4 + 2];
+    // a picture full of pure black and white pixels (over 4%, beyond its real blacks and whites) is salt and pepper:
+    // then every one of them is a speck, however many sit together
+    const isExt = (i) => (s[i] <= 2 && s[i + 1] <= 2 && s[i + 2] <= 2) || (s[i] >= 253 && s[i + 1] >= 253 && s[i + 2] >= 253);
+    let ext = 0; for (let p = 0; p < N; p++) if (isExt(p * 4)) ext++;
+    const saltPepper = extremes && ext > N * 0.04;
+    let count = 0;
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const p = y * W + x, i = p * 4;
+      if (extremes && isExt(i)) {
+        // a black or white pixel counts only if most of its neighbours are not the same (a real black area is not noise)
+        let same = 0; const dark = s[i] <= 2; for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) { if (!dx && !dy) continue; const q = (Math.min(H - 1, Math.max(0, y + dy)) * W + Math.min(W - 1, Math.max(0, x + dx))) * 4; if (dark ? s[q] <= 2 && s[q + 1] <= 2 && s[q + 2] <= 2 : s[q] >= 253 && s[q + 1] >= 253 && s[q + 2] >= 253) same++; }
+        // (in a salt-and-pepper picture specks crowd together, so only a mostly-same neighbourhood means a real area)
+        if (same <= (saltPepper ? 4 : 3)) { bad[p] = 1; count++; continue; }
+      }
+      let k = 0; for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) v[k++] = L[Math.min(H - 1, Math.max(0, y + dy)) * W + Math.min(W - 1, Math.max(0, x + dx))];
+      // brighter than all but one neighbour (or darker): two specks side by side still count
+      const c = L[p], nb = [v[0], v[1], v[2], v[3], v[5], v[6], v[7], v[8]].sort((a, b) => a - b);
+      if ((c > nb[6] || c < nb[1]) && Math.abs(c - (nb[3] + nb[4]) / 2) > threshold) { bad[p] = 1; count++; }
+    }
+    const out = new ImageData(new Uint8ClampedArray(s), W, H), d = out.data, ch = [[], [], []];
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const p = y * W + x; if (!bad[p]) continue;
+      let r = 1;
+      for (; r <= (maxWindow >> 1); r++) {
+        ch[0].length = ch[1].length = ch[2].length = 0;
+        for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) { const yy = y + dy, xx = x + dx; if (yy < 0 || xx < 0 || yy >= H || xx >= W) continue; const q = yy * W + xx; if (bad[q]) continue; const j = q * 4; ch[0].push(s[j]); ch[1].push(s[j + 1]); ch[2].push(s[j + 2]); }
+        if (ch[0].length >= Math.min(3, r * 2)) break;
+      }
+      const i = p * 4;
+      if (ch[0].length) for (let c = 0; c < 3; c++) { const a = ch[c].sort((m, n) => m - n), m = a.length >> 1; d[i + c] = a.length & 1 ? a[m] : (a[m - 1] + a[m]) / 2; }
+      else { // nothing clean in reach: the average of the repaired pixels already done above and to the left
+        let t = [0, 0, 0], n = 0; for (const [dx, dy] of [[-1, 0], [0, -1], [-1, -1], [1, -1]]) { const xx = x + dx, yy = y + dy; if (xx < 0 || yy < 0 || xx >= W) continue; const j = (yy * W + xx) * 4; t[0] += d[j]; t[1] += d[j + 1]; t[2] += d[j + 2]; n++; }
+        if (n) for (let c = 0; c < 3; c++) d[i + c] = t[c] / n;
+      }
+    }
+    out.specks = count; return out;
+  }
+
   // ------------------------------------------------------------------ Non-local means denoising
   // Each pixel is averaged with pixels anywhere nearby (a search square) whose surrounding patch looks alike, weighted by
   // how alike: textures and edges are averaged only with their own kind, so they stay while the grain goes. Brightness
@@ -288,5 +336,5 @@
     return out;
   }
 
-  IC.restore = { deblurCareful, deblur, psf, psfTaps, blurWith, nlm, clahe, measure, noiseLevel, noiseMap, fft2, pow2 };
+  IC.restore = { impulse, deblurCareful, deblur, psf, psfTaps, blurWith, nlm, clahe, measure, noiseLevel, noiseMap, fft2, pow2 };
 })();

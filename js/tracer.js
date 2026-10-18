@@ -36,7 +36,7 @@
   async function trace(src, o = {}) {
     if (!window.ImageTracer) throw new Error('The tracer library is missing.');
     const img = await loadImg(src);
-    const detail = Math.max(1, Math.min(10, o.detail || 6)), max = 160 + detail * 70;
+    const detail = Math.max(1, Math.min(10, o.detail || 6)), max = o.max || 160 + detail * 70;
     const k = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
     const w = Math.max(8, Math.round(img.naturalWidth * k)), h = Math.max(8, Math.round(img.naturalHeight * k));
     const c = document.createElement('canvas'); c.width = w; c.height = h;

@@ -254,5 +254,89 @@
   // see-through parts filled with a colour (or a checker) so formats without see-through look right
   const flatten = (img, { fill = '#ffffff' } = {}) => draw(img.width, img.height, (x) => { x.fillStyle = fill; x.fillRect(0, 0, img.width, img.height); x.drawImage(canvasOf(img), 0, 0); });
 
-  IC.filters = { light, colour, autoLevels, autoFix, whiteBalance, greyscale, sepia, invert, threshold, posterize, blur, sharpen, denoise, median, despeckle, deblock, undither, pixelate, resize, scale2x, scale3x, rotate: rotateAny, rotate90: rotate, flip, crop, trimBox, canvasSize, makeClear, flatten, copy, canvasOf };
+
+  // ------------------------------------------------------------------ edges: checking and smoothing jagged steps
+  // An edge pixel: a big brightness difference across its 3 × 3 square. Its direction comes from the gradient (Sobel).
+  // A slanted edge (not level or upright) drawn with no in-between shades is a staircase: "jagged" (aliased).
+  function edgeInfo(img, threshold, reach = 3) {
+    const W = img.width, H = img.height, s = img.data, N = W * H, L = new Float32Array(N);
+    for (let p = 0; p < N; p++) L[p] = 0.299 * s[p * 4] + 0.587 * s[p * 4 + 1] + 0.114 * s[p * 4 + 2];
+    const at = (x, y) => L[Math.min(H - 1, Math.max(0, y)) * W + Math.min(W - 1, Math.max(0, x))];
+    // the edge's direction over an area (a structure tensor): up close a staircase is only level and upright bits,
+    // but over a few pixels its true slope shows
+    const Jxx = new Float32Array(N), Jxy = new Float32Array(N), Jyy = new Float32Array(N);
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { const gx = at(x + 1, y) - at(x - 1, y), gy = at(x, y + 1) - at(x, y - 1), p = y * W + x; Jxx[p] = gx * gx; Jxy[p] = gx * gy; Jyy[p] = gy * gy; }
+    const box = (A) => { const t = new Float32Array(N), o = new Float32Array(N), R = reach; for (let y = 0; y < H; y++) { let acc = 0; for (let x = -R; x <= R; x++) acc += A[y * W + Math.min(W - 1, Math.max(0, x))]; for (let x = 0; x < W; x++) { t[y * W + x] = acc; acc += A[y * W + Math.min(W - 1, x + R + 1)] - A[y * W + Math.max(0, x - R)]; } } for (let x = 0; x < W; x++) { let acc = 0; for (let y = -R; y <= R; y++) acc += t[Math.min(H - 1, Math.max(0, y)) * W + x]; for (let y = 0; y < H; y++) { o[y * W + x] = acc; acc += t[Math.min(H - 1, y + R + 1) * W + x] - t[Math.max(0, y - R) * W + x]; } } return o; };
+    const Sxx = box(Jxx), Sxy = box(Jxy), Syy = box(Jyy);
+    return { W, H, L, at, edge: (x, y) => {
+      let mn = 255, mx = 0; for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) { const v = at(x + dx, y + dy); if (v < mn) mn = v; if (v > mx) mx = v; }
+      if (mx - mn < threshold) return null;
+      const p = y * W + x, th = 0.5 * Math.atan2(2 * Sxy[p], Sxx[p] - Syy[p]), gx = Math.cos(th), gy = Math.sin(th);
+      const ang = (Math.atan2(Math.abs(gy), Math.abs(gx)) * 180) / Math.PI, c = at(x, y);
+      return { mn, mx, gx, gy, slant: ang > 12 && ang < 78, hard: Math.min(c - mn, mx - c) < (mx - mn) * 0.12 };
+    } };
+  }
+  // the check: how many slanted edge pixels are hard steps, and a map (red: jagged, green: smooth edge)
+  function aliasCheck(img, { threshold = 48 } = {}) {
+    const E = edgeInfo(img, threshold), { W, H, L } = E, map = new ImageData(W, H), d = map.data; let slanted = 0, jagged = 0;
+    const lin = (x, y) => { const x0 = Math.floor(x), y0 = Math.floor(y), fx = x - x0, fy = y - y0; return (E.at(x0, y0) * (1 - fx) + E.at(x0 + 1, y0) * fx) * (1 - fy) + (E.at(x0, y0 + 1) * (1 - fx) + E.at(x0 + 1, y0 + 1) * fx) * fy; };
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const i = (y * W + x) * 4, g = L[y * W + x] * 0.3; d[i] = d[i + 1] = d[i + 2] = g; d[i + 3] = 255;
+      const e = E.edge(x, y); if (!e || !e.slant) continue; slanted++;
+      // along the edge, a smooth (anti-aliased) edge changes gently; a staircase jumps from one side to the other
+      const tx = -e.gy, ty = e.gx, c = L[y * W + x], mid = (lin(x + tx, y + ty) + lin(x - tx, y - ty)) / 2;
+      if (Math.abs(c - mid) > (e.mx - e.mn) * 0.22) { jagged++; d[i] = 240; d[i + 1] = 60; d[i + 2] = 60; } else { d[i] = 60; d[i + 1] = 200; d[i + 2] = 90; }
+    }
+    return { ratio: slanted ? jagged / slanted : 0, slanted, jagged, map };
+  }
+  // smoothing: on edge pixels only, a blend with points along the edge (never across it), so steps become a smooth
+  // slope while the edge stays sharp. amount 0–100; level and upright edges are left as they are.
+  function antialias(img, { amount = 60, threshold = 32, reach = 0 } = {}) {
+    // how far to reach along an edge: about the length of a step (pictures grown with square pixels have long steps)
+    let R = reach; if (!R) { const a = aliasCheck(img, { threshold }); R = a.ratio > 0.25 ? 4 : a.ratio > 0.12 ? 3 : 2; }
+    const E = edgeInfo(img, threshold, Math.max(2, R)), { W, H } = E, s = img.data, o = copy(img), d = o.data, k = amount / 100;
+    const sample = (x, y, c) => { const x0 = Math.floor(x), y0 = Math.floor(y), fx = x - x0, fy = y - y0, px = (xx, yy) => s[(Math.min(H - 1, Math.max(0, yy)) * W + Math.min(W - 1, Math.max(0, xx))) * 4 + c]; return (px(x0, y0) * (1 - fx) + px(x0 + 1, y0) * fx) * (1 - fy) + (px(x0, y0 + 1) * (1 - fx) + px(x0 + 1, y0 + 1) * fx) * fy; };
+    const taps = []; let tw = 0; for (let t = 1; t <= R * 1.5; t += 0.5) { const wt = R * 1.5 + 0.5 - t; taps.push([t, wt]); tw += 2 * wt; }
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const e = E.edge(x, y); if (!e || !e.slant) continue;
+      const tx = -e.gy, ty = e.gx, i = (y * W + x) * 4, w = k * (e.hard ? 1 : 0.5);
+      for (let c = 0; c < 4; c++) { let along = 0; for (const [t, wt] of taps) along += (sample(x + tx * t, y + ty * t, c) + sample(x - tx * t, y - ty * t, c)) * wt; d[i + c] = s[i + c] * (1 - w) + (along / tw) * w; }
+    }
+    return o;
+  }
+
+  // ------------------------------------------------------------------ multi-band blending (Laplacian pyramids)
+  // As in Burt and Adelson's pyramid blending: both pictures are split into bands from fine detail to broad colour;
+  // each band is blended through the mask blurred to that band's scale, then the bands are added back up. Fine edges
+  // switch over sharply and broad colour gently, so no seam shows. mask: Float32Array (0 = a, 1 = b), one per pixel.
+  function pyramidBlend(a, b, mask, levels = 5) {
+    const W = a.width, H = a.height;
+    const toF = (img) => Float32Array.from(img.data);
+    const down = (f, w, h) => { // binomial blur, then every other pixel
+      const w2 = Math.max(1, (w + 1) >> 1), h2 = Math.max(1, (h + 1) >> 1), ch = f.length / (w * h), o = new Float32Array(w2 * h2 * ch), K = [1, 4, 6, 4, 1];
+      for (let y = 0; y < h2; y++) for (let x = 0; x < w2; x++) for (let c = 0; c < ch; c++) { let t = 0, n = 0; for (let j = -2; j <= 2; j++) for (let i = -2; i <= 2; i++) { const xx = Math.min(w - 1, Math.max(0, x * 2 + i)), yy = Math.min(h - 1, Math.max(0, y * 2 + j)), k = K[i + 2] * K[j + 2]; t += f[(yy * w + xx) * ch + c] * k; n += k; } o[(y * w2 + x) * ch + c] = t / n; }
+      return [o, w2, h2];
+    };
+    const up = (f, w, h, W2, H2) => { // back to W2 × H2, bilinear
+      const ch = f.length / (w * h), o = new Float32Array(W2 * H2 * ch);
+      for (let y = 0; y < H2; y++) { const fy = Math.min(h - 1, Math.max(0, (y + 0.5) / 2 - 0.5)), y0 = Math.floor(fy), y1 = Math.min(h - 1, y0 + 1), ty = fy - y0;
+        for (let x = 0; x < W2; x++) { const fx = Math.min(w - 1, Math.max(0, (x + 0.5) / 2 - 0.5)), x0 = Math.floor(fx), x1 = Math.min(w - 1, x0 + 1), tx = fx - x0;
+          for (let c = 0; c < ch; c++) o[(y * W2 + x) * ch + c] = (f[(y0 * w + x0) * ch + c] * (1 - tx) + f[(y0 * w + x1) * ch + c] * tx) * (1 - ty) + (f[(y1 * w + x0) * ch + c] * (1 - tx) + f[(y1 * w + x1) * ch + c] * tx) * ty; } }
+      return o;
+    };
+    // Gaussian pyramids of both pictures and the mask
+    let ga = [[toF(a), W, H]], gb = [[toF(b), W, H]], gm = [[Float32Array.from(mask), W, H]];
+    for (let l = 1; l < levels && ga[l - 1][1] > 8 && ga[l - 1][2] > 8; l++) { ga.push(down(...ga[l - 1])); gb.push(down(...gb[l - 1])); gm.push(down(...gm[l - 1])); }
+    const n = ga.length;
+    // start from the smallest level, blended; then add each finer band (the picture minus its blurred self), blended
+    let [cur] = ga[n - 1]; const top = gb[n - 1][0], mt = gm[n - 1][0]; cur = cur.map((v, i) => v * (1 - mt[i >> 2]) + top[i] * mt[i >> 2]);
+    for (let l = n - 2; l >= 0; l--) {
+      const [fa, w, h] = ga[l], fb = gb[l][0], m = gm[l][0], ua = up(ga[l + 1][0], ga[l + 1][1], ga[l + 1][2], w, h), ub = up(gb[l + 1][0], gb[l + 1][1], gb[l + 1][2], w, h), uc = up(cur, ga[l + 1][1], ga[l + 1][2], w, h);
+      cur = new Float32Array(fa.length);
+      for (let i = 0; i < fa.length; i++) { const t = m[i >> 2]; cur[i] = uc[i] + (fa[i] - ua[i]) * (1 - t) + (fb[i] - ub[i]) * t; }
+    }
+    return new ImageData(Uint8ClampedArray.from(cur), W, H);
+  }
+
+  IC.filters = { pyramidBlend, aliasCheck, antialias, light, colour, autoLevels, autoFix, whiteBalance, greyscale, sepia, invert, threshold, posterize, blur, sharpen, denoise, median, despeckle, deblock, undither, pixelate, resize, scale2x, scale3x, rotate: rotateAny, rotate90: rotate, flip, crop, trimBox, canvasSize, makeClear, flatten, copy, canvasOf };
 })();
