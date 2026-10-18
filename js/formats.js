@@ -670,7 +670,8 @@
   const READERS = [readIFF, readPCX, readDegas, readNEO, readKoala, readZX, readMacPaint, readPNM];
   const BROWSER = { png: 'PNG', jpg: 'JPEG', jpeg: 'JPEG', jfif: 'JPEG', gif: 'GIF', webp: 'WebP', avif: 'AVIF', ico: 'ICO (icon)', cur: 'CUR (cursor)', svg: 'SVG', bmp: 'BMP', apng: 'PNG' };
   async function read(file) {
-    const name = file.name || 'picture', bytes = file.bytes || new Uint8Array(await file.arrayBuffer()), e = ext(name);
+    // a File or Blob (whose new .bytes() is a function, not the bytes), or { name, bytes } from a test or a ZIP
+    const name = file.name || 'picture', bytes = file instanceof Blob ? new Uint8Array(await file.arrayBuffer()) : file.bytes, e = ext(name);
     // by content first, where the file says what it is
     if (str(bytes, 0, 4) === 'FORM') { const r = readIFF(bytes); if (r) return r; }
     if ((bytes[0] === 73 && bytes[1] === 73 && bytes[2] === 42) || (bytes[0] === 77 && bytes[1] === 77 && bytes[3] === 42)) { const r = await readTIFF(bytes); if (r) return r; }

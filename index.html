@@ -14,8 +14,10 @@
       <div class="tabs" role="tablist" aria-label="Side panel">
         <button class="tab" data-tab="pics" role="tab" aria-selected="true">Pictures</button>
         <button class="tab" data-tab="hist" role="tab">History</button>
+        <button class="tab" data-tab="debug" role="tab" title="Errors and what happened, for finding problems">Debug</button>
       </div>
       <div class="tabbody" id="tab-pics"><div class="pics" id="pics"></div><div class="pad"><button class="btn outline wide" id="pics-open">Open pictures…</button><p class="hint" style="margin-top:8px">Open several at once (or drop them in) to convert them together with Batch convert.</p></div></div>
+      <div class="tabbody" id="tab-debug" hidden><div class="dbg-tools"><button class="btn outline" id="dbg-copy">Copy</button><button class="btn outline" id="dbg-save">Save…</button><button class="btn outline" id="dbg-clear">Clear</button></div><label class="check pad" style="padding-top:0"><input type="checkbox" id="dbg-errors"> Errors and warnings only</label><ol class="dbg" id="dbg-list"></ol></div>
       <div class="tabbody" id="tab-hist" hidden><ol class="hist" id="hist"></ol><p class="hint pad">Click a step to go back to it. Every step can be undone; nothing changes your file until you save.</p></div>
     </aside>
 
@@ -80,6 +82,7 @@
 <div class="toast" id="toast" hidden></div>
 <input type="file" id="open-input" multiple hidden>
 
+<script src="js/debug.js"></script>
 <script src="js/craft-titlebar.js"></script>
 <script src="js/range-type.js"></script>
 <script src="lib/imagetracer.js"></script>

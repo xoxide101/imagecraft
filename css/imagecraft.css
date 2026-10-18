@@ -163,3 +163,14 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
   .side.left { left: 0; } .side.right { right: 0; }
   .work.show-left .side.left, .work.show-right .side.right { display: flex; }
 }
+
+/* debug log */
+.dbg-tools { display: flex; gap: 6px; padding: 10px 10px 6px; }
+.dbg-tools .btn { flex: 1; height: 28px; padding: 0 6px; }
+.dbg { list-style: none; margin: 0; padding: 0 8px 10px; display: grid; gap: 4px; font: 11px/1.4 var(--font-mono); }
+.dbg li { border-left: 3px solid var(--line); padding: 3px 6px; background: var(--panel-2); border-radius: 0 4px 4px 0; overflow-wrap: anywhere; }
+.dbg li.error { border-left-color: #e5484d; } .dbg li.warn { border-left-color: #f5a524; } .dbg li.info { border-left-color: var(--accent); }
+.dbg time { color: var(--muted); margin-right: 4px; }
+.dbg details summary { cursor: pointer; color: var(--muted); }
+.dbg pre { margin: 4px 0 0; white-space: pre-wrap; font: inherit; color: var(--muted); }
+.st-err { color: #e5484d; font-weight: 700; cursor: pointer; border: 0; background: transparent; padding: 0; }

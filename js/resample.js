@@ -6,7 +6,7 @@
    - enlarging with a sharp filter rings (light and dark halos beside edges), so the result is held between the
      lightest and darkest of the nearby source pixels ("no halo"), keeping the sharpness without the halos.
      resize(img, W, H, { method, linear = true }) → ImageData
-   methods: 'auto' (no-halo Lanczos to enlarge, averaging Mitchell to shrink), 'area' (exact pixel averaging), 'nohalo',
+   methods: 'auto' (no-halo Lanczos both ways, a little wider when shrinking), 'area' (exact pixel averaging), 'nohalo',
             'lanczos', 'cubic' (Catmull-Rom), 'mitchell' (soft, no ringing), 'linear', 'nearest' */
 (function () {
   'use strict';
@@ -17,6 +17,7 @@
 
   const sinc = (x) => { if (x === 0) return 1; const p = Math.PI * x; return Math.sin(p) / p; };
   const cubicBC = (B, C) => (x) => { x = Math.abs(x); if (x < 1) return ((12 - 9 * B - 6 * C) * x ** 3 + (-18 + 12 * B + 6 * C) * x * x + (6 - 2 * B)) / 6; if (x < 2) return ((-B - 6 * C) * x ** 3 + (6 * B + 30 * C) * x * x + (-12 * B - 48 * C) * x + (8 * B + 24 * C)) / 6; return 0; };
+  let AUTO_WIDEN = 1.25;
   const KERNELS = {
     linear: { r: 1, f: (x) => Math.max(0, 1 - Math.abs(x)) },
     cubic: { r: 2, f: cubicBC(0, 0.5) },
@@ -25,7 +26,7 @@
   };
 
   // for each output position along one axis: which source pixels count, and how much
-  function weights(src, dst, kind) {
+  function weights(src, dst, kind, widen = 1) {
     const scale = src / dst, out = [];
     if (kind === 'area' || kind === 'nearest') {
       for (let o = 0; o < dst; o++) {
@@ -38,7 +39,7 @@
       }
       return out;
     }
-    const K = KERNELS[kind], wide = Math.max(1, scale), sup = K.r * wide; // shrinking widens the filter: it averages
+    const K = KERNELS[kind], wide = scale > 1 ? scale * widen : 1, sup = K.r * wide; // shrinking widens the filter: it averages
     for (let o = 0; o < dst; o++) {
       const c = (o + 0.5) * scale - 0.5, i0 = Math.floor(c - sup) + 1, i1 = Math.floor(c + sup), idx = [], w = []; let t = 0;
       for (let i = i0; i <= i1; i++) { const v = K.f((i - c) / wide); if (!v) continue; idx.push(Math.min(src - 1, Math.max(0, i))); w.push(v); t += v; }
@@ -47,17 +48,18 @@
     return out;
   }
 
-  function resize(img, W, H, { method = 'auto', linear = true } = {}) {
+  function resize(img, W, H, { method = 'auto', linear = true, widen } = {}) {
     W = Math.max(1, Math.round(W)); H = Math.max(1, Math.round(H));
     const sw = img.width, sh = img.height, up = W >= sw && H >= sh;
     let kind = method, halo = false;
-    if (method === 'auto') { kind = up ? 'lanczos' : 'mitchell'; halo = up; }
-    if (method === 'nohalo') { kind = 'lanczos'; halo = true; }
+    // auto: Lanczos both ways, held inside the source's own range (no halos); shrinking with the filter widened a
+    // little (1.25×), which on a zone-plate test removed moiré as well as a binomial filter while keeping the detail
+    if (method === 'auto' || method === 'nohalo') { kind = 'lanczos'; halo = true; }
     // the source as light (or plain numbers), premultiplied by how solid each pixel is
     const s = img.data, n = sw * sh, src = new Float32Array(n * 4), lin = linear && kind !== 'nearest';
     for (let p = 0, i = 0; p < n; p++, i += 4) { const a = s[i + 3] / 255; src[i] = (lin ? TO_LIN[s[i]] : s[i] / 255) * a; src[i + 1] = (lin ? TO_LIN[s[i + 1]] : s[i + 1] / 255) * a; src[i + 2] = (lin ? TO_LIN[s[i + 2]] : s[i + 2] / 255) * a; src[i + 3] = a; }
     // across, then down
-    const wx = weights(sw, W, kind), wy = weights(sh, H, kind), mid = new Float32Array(W * sh * 4), out = new Float32Array(W * H * 4);
+    const wd = widen ?? (method === 'auto' && !up ? AUTO_WIDEN : 1), wx = weights(sw, W, kind, wd), wy = weights(sh, H, kind, wd), mid = new Float32Array(W * sh * 4), out = new Float32Array(W * H * 4);
     for (let y = 0; y < sh; y++) {
       const row = y * sw * 4, orow = y * W * 4;
       for (let x = 0; x < W; x++) { const [idx, w] = wx[x]; let r = 0, g = 0, b = 0, a = 0; for (let k = 0; k < idx.length; k++) { const j = row + idx[k] * 4, v = w[k]; r += src[j] * v; g += src[j + 1] * v; b += src[j + 2] * v; a += src[j + 3] * v; } const o = orow + x * 4; mid[o] = r; mid[o + 1] = g; mid[o + 2] = b; mid[o + 3] = a; }
@@ -67,7 +69,17 @@
       for (let x = 0; x < W; x++) { let r = 0, g = 0, b = 0, a = 0; for (let k = 0; k < idx.length; k++) { const j = (idx[k] * W + x) * 4, v = w[k]; r += mid[j] * v; g += mid[j + 1] * v; b += mid[j + 2] * v; a += mid[j + 3] * v; } const o = orow + x * 4; out[o] = r; out[o + 1] = g; out[o + 2] = b; out[o + 3] = a; }
     }
     // no halo: each output held between the darkest and lightest of the 2 × 2 source pixels it sits among
-    if (halo) {
+    if (halo && !up) {
+      // shrinking: each output held between the darkest and lightest source pixels under it (its footprint), found
+      // across then down
+      const fx = sw / W, fy = sh / H, rx = [], ry = [];
+      for (let x = 0; x < W; x++) rx.push([Math.floor(x * fx), Math.min(sw, Math.max(Math.floor(x * fx) + 1, Math.ceil((x + 1) * fx)))]);
+      for (let y = 0; y < H; y++) ry.push([Math.floor(y * fy), Math.min(sh, Math.max(Math.floor(y * fy) + 1, Math.ceil((y + 1) * fy)))]);
+      const lo = new Float32Array(W * sh * 4), hi = new Float32Array(W * sh * 4);
+      for (let y = 0; y < sh; y++) for (let x = 0; x < W; x++) for (let c = 0; c < 4; c++) { let a = Infinity, b = -Infinity; for (let i = rx[x][0]; i < rx[x][1]; i++) { const v = src[(y * sw + i) * 4 + c]; if (v < a) a = v; if (v > b) b = v; } lo[(y * W + x) * 4 + c] = a; hi[(y * W + x) * 4 + c] = b; }
+      for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) for (let c = 0; c < 4; c++) { let a = Infinity, b = -Infinity; for (let j = ry[y][0]; j < ry[y][1]; j++) { const q = (j * W + x) * 4 + c; if (lo[q] < a) a = lo[q]; if (hi[q] > b) b = hi[q]; } const o = (y * W + x) * 4 + c, v = out[o]; out[o] = v < a ? a : v > b ? b : v; }
+    }
+    if (halo && up) {
       const fx = sw / W, fy = sh / H;
       for (let y = 0; y < H; y++) {
         const cy = (y + 0.5) * fy - 0.5, y0 = Math.max(0, Math.min(sh - 1, Math.floor(cy))), y1 = Math.min(sh - 1, y0 + 1);
@@ -88,5 +100,5 @@
   }
 
   const METHODS = [['auto', 'Best (automatic)'], ['area', 'Pixel averaging (area)'], ['nohalo', 'Sharp, no halos (for enlarging)'], ['lanczos', 'Lanczos (sharpest)'], ['cubic', 'Cubic'], ['mitchell', 'Soft (Mitchell)'], ['linear', 'Linear']];
-  IC.resample = { resize, METHODS, toLinear: TO_LIN };
+  IC.resample = { setAutoWiden: (v) => { AUTO_WIDEN = v; }, resize, METHODS, toLinear: TO_LIN };
 })();

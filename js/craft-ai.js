@@ -97,6 +97,7 @@
     try { return await fn(await ready(k)); }
     catch (e) {
       if (deviceFor(k) !== 'webgpu' || !/OrtRun|webgpu|shader|GPU/i.test(e.message)) throw e;
+      if (window.ICLOG) ICLOG.warn(`AI model “${MODELS[k].name}” failed on the graphics card; using the processor`, e);
       cpuOnly.add(k); progress(k, { status: 'cpu' });
       return fn(await ready(k));
     }
@@ -127,8 +128,9 @@
       } catch (e) {
         delete loaded[key];
         // a model the graphics card cannot run: the processor runs it instead (slower, but it works)
+        if (window.ICLOG) ICLOG.warn(`AI model “${m.name}” did not load on ${dv === 'webgpu' ? 'the graphics card' : 'the processor'} (${opts.dtype})`, e);
         if (dv === 'webgpu' && !m.gpuOnly) { cpuOnly.add(k); progress(k, { status: 'cpu' }); return ready(k); }
-        const msg = (e && (e.message || String(e))) || 'unknown error'; progress(k, { status: 'error', message: msg }); throw new Error(`${m.name} could not be loaded: ${msg}`);
+        const msg = (e && (e.message || String(e))) || 'unknown error'; if (window.ICLOG) ICLOG.error(`AI model “${m.name}” could not be loaded`, e); progress(k, { status: 'error', message: msg }); throw new Error(`${m.name} could not be loaded: ${msg}`);
       }
     })();
     return loaded[key];
@@ -267,6 +269,7 @@
     };
     const off = onProgress((k, p) => {
       const el = back.querySelector(`[data-state="${k}"]`); if (!el) return;
+      el.title = p.status === 'error' ? p.message || '' : ''; // the reason, on hover (and in the Debug tab)
       el.textContent = p.status === 'ready' ? '✓ Ready' : p.status === 'error' ? 'Could not load' : p.total ? `Downloading ${Math.round((p.loaded / p.total) * 100)}%` : 'Starting…';
     });
     back.onclick = async (e) => {

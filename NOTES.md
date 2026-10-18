@@ -4,6 +4,8 @@ How ImageCraft is built and what to keep in mind when changing it. For what it d
 
 ## How it is built
 
+- **Debug log:** `js/debug.js` loads first (`window.ICLOG`): page errors, failed promises, console errors and warnings, messages shown to the user, tools run (with timings and settings), files opened and saved, AI model load failures. Last 300 kept in localStorage; the Debug tab (left panel) shows, copies and saves it with the browser and computer at the top; a red error count in the status bar opens it.
+- **Gotcha:** current Chrome gives every `File`/`Blob` a `.bytes()` method, so never test `file.bytes` to tell a File from a `{ name, bytes }` object (`formats.read` checks `instanceof Blob`).
 - **No build step.** `index.html` loads `fonts/fonts.css`, `css/imagecraft.css` and the scripts in order: `js/craft-titlebar.js`, `js/range-type.js`, `lib/imagetracer.js`, `js/tracer.js`, `js/craft-ai.js`, `js/bgremove.js`, `js/formats.js`, `js/resample.js`, `js/restore.js`, `js/colour.js`, `js/filters.js`, `js/ascii.js`, `js/ui.js`.
 - Works from `file://`: nothing is fetched from the app's own folder (the AI library is a classic script loaded with a `<script>` tag when first needed).
 - **Shared parts are copies:** the title bar and ribbon (`craft-titlebar.js`), the slider number boxes (`range-type.js`), the tracer, the background remover and the AI helpers started from the other Craft apps' copies and are changed here on their own; changes are not copied between apps.
@@ -48,7 +50,9 @@ On a test picture (sunset, pixel sprite, text and thin lines) blurred with a Gau
 
 Sources read for ideas (no code taken): GIMP's documentation on its interpolation methods (linear light, LoHalo/NoHalo); Zisserman's Oxford lecture on image restoration (inverse and Wiener filters, MAP with a gradient prior, super-resolution, blind deblurring); Imatest on noise images (averaging frames, noise maps); Zhang and Timofte on plug-and-play restoration; Berisha and Nagy on iterative methods (boundary conditions, non-negativity); a survey of restoration techniques (Maru and Parikh, 2017); an article on white balancing (white patch, grey world, ground truth).
 
-More measured: salt and pepper 10% / 30% / 60%: plain median 32.3 / 22.6 / 11.7 dB, Smart specks 34.3 / 29.4 / 17.1; grey dust 3%: 34.7 → 35.6; a clean picture is left at 40.6 dB (almost untouched). Jagged edges: a hard-edged drawing 30% jagged, the same drawn with 16× supersampling 6%, after smoothing 0%, and 1.8 dB closer to the supersampled drawing.
+More measured: salt and pepper 10% / 30% / 60%: plain median 32.3 / 22.6 / 11.7 dB, Smart specks 34.3 / 29.4 / 17.1; grey dust 3%: 34.7 → 35.6; a clean picture is left at 40.6 dB (almost untouched). Shrinking (zone plate 1024 → 256, against the ideal): browser 24.1 dB (moiré 15.7), area 24.1, Mitchell 31.1, binomial 26.7 (moiré 2.4, but soft), Lanczos widened 1.25× and clamped to each footprint's min/max (now 'auto') 34.8 (moiré 2.9) with no halo at hard edges (plain Lanczos rang 40 levels into black in linear light). Overscale-then-shrink (the user's trick): no change for linear methods; for pixel art Scale2x overscaled 31.1 dB against Scale3x 30.3.
+
+Jagged edges: a hard-edged drawing 30% jagged, the same drawn with 16× supersampling 6%, after smoothing 0%, and 1.8 dB closer to the supersampled drawing.
 
 More sources: a hybrid adaptive / decision-based median filter paper (Scientific Reports); Torralba, Isola and Freeman, *Foundations of Computer Vision* (sampling and aliasing, image pyramids). The user's idea: recognise shapes, remaster them as an overlay, blend the two (Remaster shapes).
 

@@ -69,6 +69,10 @@ Auto fix, auto levels, brightness, contrast, midtones, shadows and highlights; s
 
 Small AI models that run inside the browser, on the graphics card if there is one: the background cut-out (U²-Net, or BEN2 for finer edges), object picking (SlimSAM) and upscaling (Swin2SR). Each downloads once from Hugging Face when first used (or with Download now in Convert › AI helpers) and is kept by the browser for offline use. The computer is checked automatically.
 
+## When something goes wrong
+
+The **Debug** tab (left panel, or View › Debug log) lists errors and what happened: files opened and saved, tools run and how long they took, AI models that would not load. A red error count appears in the status bar when there is one. **Copy** or **Save** the log to send it along with a question.
+
 ## Keyboard shortcuts
 
 | Keys | Does |

@@ -58,7 +58,7 @@
 
   // ------------------------------------------------------------------ messages
   const toastEl = $('toast'); let toastT;
-  function toast(m) { toastEl.textContent = m; toastEl.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => { toastEl.hidden = true; }, 3600); }
+  function toast(m) { if (window.ICLOG) ICLOG.add(/error|not |cannot|could not|failed|missing/i.test(m) ? 'warn' : 'info', 'Message shown: ' + m); toastEl.textContent = m; toastEl.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => { toastEl.hidden = true; }, 3600); }
   function info(title, html) { $('info-title').textContent = title; $('info-body').innerHTML = html; $('info').hidden = false; $('info-close').focus(); }
   $('info-close').onclick = () => { $('info').hidden = true; };
   function ask(title, body, yes = 'OK') {
@@ -132,8 +132,9 @@
     const list = [...files].filter(Boolean); let n = 0;
     for (const f of list) {
       busyNow(`Opening ${f.name}…`);
-      try { const r = await F.read(f); addPic(f.name, r.img, r.info, f.size); n++; }
-      catch (e) { toast(`${f.name}: ${e.message || 'could not be read'}`); }
+      const t0 = performance.now();
+      try { const r = await F.read(f); addPic(f.name, r.img, r.info, f.size); n++; ICLOG.info(`Opened ${f.name}: ${r.info.format}, ${r.img.width} × ${r.img.height}, ${kb(f.size || 0)} (${Math.round(performance.now() - t0)} ms)`); }
+      catch (e) { ICLOG.error(`Could not open ${f.name}`, e); toast(`${f.name}: ${e.message || 'could not be read'}`); }
     }
     busy(null);
     if (n > 1) toast(`${n} pictures opened. Batch convert (Convert tab) saves them all at once.`);
@@ -418,10 +419,16 @@
         // the tracer looks at a smoothly enlarged copy (about 900 pixels across), so small pictures give true curves and keep their small parts
         const m = Math.max(1, Math.min(8, Math.floor(900 / Math.max(img.width, img.height)))), src = m > 1 ? X.resize(img, { width: img.width * m, height: img.height * m, method: img.width * img.height < 90000 ? 'smoothpixel' : 'auto' }) : img;
         const few = F.countColours(img, 17), tr = await CraftTracer.trace(X.canvasOf(src).toDataURL('image/png'), { colors: s.colours === 'auto' ? (few <= 16 ? few : 'auto') : +s.colours, detail: s.detail, smooth: s.smooth, max: Math.max(src.width, src.height) });
+        // each traced colour set to the picture's own most common colour near it (the tracer's averages take in the soft
+        // edge pixels and come out a shade off)
+        { const hist = new Map(), d0 = img.data; for (let i = 0; i < d0.length; i += 4) { if (d0[i + 3] < 128) continue; const key = (d0[i] << 16) | (d0[i + 1] << 8) | d0[i + 2]; hist.set(key, (hist.get(key) || 0) + 1); }
+          const top = [...hist.entries()].sort((a, b) => b[1] - a[1]).slice(0, 4000);
+          tr.svg = tr.svg.replace(/fill="rgb\((\d+),(\d+),(\d+)\)"/g, (m0, r0, g0, b0) => { let best = null, bs = -1; for (const [key, n] of top) { const dd = Math.hypot((key >> 16) - r0, ((key >> 8) & 255) - g0, (key & 255) - b0); if (dd < 40) { const sc = n / (1 + dd * dd * 0.05); if (sc > bs) { bs = sc; best = key; } } } return best == null ? m0 : `fill="rgb(${best >> 16},${(best >> 8) & 255},${best & 255})"`; }); }
         if (s.perfect) { const sn = snapShapes(tr.svg); tr.svg = sn.svg; tr.snapped = sn.snapped; }
         tool.shapes = tr;
         say && say('Drawing them again…');
-        const vec = await svgToImg(tr.svg, W, H), base = X.resize(img, { width: W, height: H, method: k > 1 && img.width * img.height < 90000 ? 'smoothpixel' : 'auto' }), b = +s.blend / 100;
+        // drawn over the enlarged original: where a perfected shape is smaller than the hole left for it, the picture shows, not a gap
+        const base = X.resize(img, { width: W, height: H, method: k > 1 && img.width * img.height < 90000 ? 'smoothpixel' : 'auto' }), vec = await svgToImg(tr.svg, W, H, base), b = +s.blend / 100;
         // where to use the redrawn shapes: their edges (a band), or everywhere; then the two pictures are joined band by
         // band (multi-band pyramid blending) so the change never shows a seam
         const v = vec.data, mk = new Float32Array(W * H);
@@ -486,7 +493,13 @@
         let far = 0, fdd = 0; even.forEach(([x, y], i) => { const dd = (x - even[0][0]) ** 2 + (y - even[0][1]) ** 2; if (dd > fdd) { fdd = dd; far = i; } });
         const idx = [...dp(0, far), ...dp(far, even.length - 1).slice(1)].slice(0, -1);
         if (idx.length < 3 || idx.length > 8) return whole;
-        snapped++; return `<polygon${(a1 + a2).replace(/\s+$/, '')} points="${idx.map((i) => even[i].map((v) => v.toFixed(2)).join(',')).join(' ')}"/>`;
+        // each side: the best straight line through all its points (not just its ends, which sit on the staircase's outer
+        // corners); the corners are where neighbouring sides cross
+        const lines = idx.map((st, j) => { const en = j + 1 < idx.length ? idx[j + 1] : even.length - 1, ps = even.slice(st, en + 1), mx = ps.reduce((t, q) => t + q[0], 0) / ps.length, my = ps.reduce((t, q) => t + q[1], 0) / ps.length; let a = 0, b = 0, c = 0; ps.forEach(([x, y]) => { a += (x - mx) ** 2; b += (x - mx) * (y - my); c += (y - my) ** 2; }); const th = 0.5 * Math.atan2(2 * b, a - c); return [mx, my, Math.cos(th), Math.sin(th)]; });
+        const cross = (L1, L2) => { const d = L1[2] * L2[3] - L1[3] * L2[2]; if (Math.abs(d) < 1e-6) return null; const t = ((L2[0] - L1[0]) * L2[3] - (L2[1] - L1[1]) * L2[2]) / d; return [L1[0] + L1[2] * t, L1[1] + L1[3] * t]; };
+        const corners = lines.map((L, j) => cross(lines[(j - 1 + lines.length) % lines.length], L) || even[idx[j]]);
+        if (corners.some(([x, y]) => Math.hypot(x - cx, y - cy) > Math.sqrt(l1) * 4)) return whole; // a bad fit: keep the traced outline
+        snapped++; return `<polygon${(a1 + a2).replace(/\s+$/, '')} points="${corners.map((q) => q.map((v) => v.toFixed(2)).join(',')).join(' ')}"/>`;
       }
       snapped++;
       const round = Math.abs(ra - rb) / ra < 0.04, attrs = (a1 + a2).replace(/\s+$/, '');
@@ -494,7 +507,7 @@
     });
     return { svg: out, snapped };
   }
-  const svgToImg = (svg, w, h) => new Promise((res, rej) => { const i = new Image(); i.onload = () => { const c = document.createElement('canvas'); c.width = w; c.height = h; const x = c.getContext('2d'); x.drawImage(i, 0, 0, w, h); res(x.getImageData(0, 0, w, h)); }; i.onerror = () => rej(new Error('The SVG could not be shown.')); i.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg); });
+  const svgToImg = (svg, w, h, under) => new Promise((res, rej) => { const i = new Image(); i.onload = () => { const c = document.createElement('canvas'); c.width = w; c.height = h; const x = c.getContext('2d'); if (under) x.drawImage(X.canvasOf(under), 0, 0); x.drawImage(i, 0, 0, w, h); res(x.getImageData(0, 0, w, h)); }; i.onerror = () => rej(new Error('The SVG could not be shown.')); i.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg); });
   function saveTrace() { if (!tool || !tool.svg) return toast('Wait for the preview first.'); download(new Blob([tool.svg], { type: 'image/svg+xml' }), baseName(pic().name) + '.svg'); }
   async function copyTrace() { if (!tool || !tool.svg) return; try { await navigator.clipboard.writeText(tool.svg); toast('SVG copied as text.'); } catch (e) { toast('The browser would not copy.'); } }
   async function saveText(kind) {
@@ -527,11 +540,12 @@
     const t = tool; if (!t) return; const my = ++token;
     busy(`${t.def.title}…`);
     try {
-      await wait(0); const r = await t.def.run(t.base, t.s, (m) => { if (my === token) busyNow(m); });
+      await wait(0); const t0 = performance.now(); const r = await t.def.run(t.base, t.s, (m) => { if (my === token) busyNow(m); });
       if (my !== token || tool !== t) return;
+      ICLOG.info(`${t.def.title}: ${t.base.width} × ${t.base.height} → ${r.width} × ${r.height} in ${Math.round(performance.now() - t0)} ms`, JSON.stringify(t.s).slice(0, 400));
       const sizeChanged = !t.preview ? r.width !== t.base.width || r.height !== t.base.height : r.width !== t.preview.width || r.height !== t.preview.height;
       t.preview = r; busy(null); show(); if (sizeChanged && view.fit) fitView(); renderOut();
-    } catch (e) { if (my === token) { busy(null); toast(e.message || String(e)); } }
+    } catch (e) { ICLOG.error(`${t.def.title} failed`, e); if (my === token) { busy(null); toast(e.message || String(e)); } }
   }
   async function applyTool() {
     const t = tool; if (!t) return;
@@ -545,7 +559,7 @@
     if (!pic()) { toast('Open a picture first.'); return; }
     if (tool) closeTool(true);
     busyNow(`${label}…`);
-    setTimeout(async () => { try { push(label, await fn(now())); } catch (e) { toast(e.message); } busy(null); }, 20);
+    setTimeout(async () => { const t0 = performance.now(); try { push(label, await fn(now())); ICLOG.info(`${label} in ${Math.round(performance.now() - t0)} ms`); } catch (e) { ICLOG.error(`${label} failed`, e); toast(e.message); } busy(null); }, 20);
   }
 
   // ------------------------------------------------------------------ the right-hand panel
@@ -631,20 +645,37 @@
     const L = $('hist'); L.innerHTML = ''; const p = pic(); if (!p) return;
     p.steps.forEach((s, i) => { const li = document.createElement('li'), b = document.createElement('button'); b.innerHTML = `<span class="n">${i}</span>${esc(s.label)}`; b.setAttribute('aria-current', String(i === p.at)); if (i > p.at) b.className = 'undone'; b.onclick = () => goStep(i); li.append(b); L.append(li); });
   }
-  document.querySelectorAll('.tab').forEach((t) => t.addEventListener('click', () => { document.querySelectorAll('.tab').forEach((x) => x.setAttribute('aria-selected', String(x === t))); $('tab-pics').hidden = t.dataset.tab !== 'pics'; $('tab-hist').hidden = t.dataset.tab !== 'hist'; }));
+  const showTab = (name) => { document.querySelectorAll('.tab').forEach((x) => x.setAttribute('aria-selected', String(x.dataset.tab === name))); ['pics', 'hist', 'debug'].forEach((k) => { $('tab-' + k).hidden = k !== name; }); if (name === 'debug') renderLog(); };
+  document.querySelectorAll('.tab').forEach((t) => t.addEventListener('click', () => showTab(t.dataset.tab)));
   const showSide = (side) => { if (matchMedia('(max-width: 980px)').matches) document.querySelector('.work').classList.add(side === 'right' ? 'show-right' : 'show-left'); };
+
+  // ------------------------------------------------------------------ debug log (left panel, Debug tab)
+  function renderLog() {
+    const L = $('dbg-list'); if (!L || $('tab-debug').hidden) return;
+    const only = $('dbg-errors').checked, items = ICLOG.entries().filter((e) => !only || e.level !== 'info').slice(-200).reverse();
+    L.innerHTML = items.length ? items.map((e) => `<li class="${e.level}"><time>${ICLOG.time(e.t)}</time>${esc(e.msg)}${e.detail ? `<details><summary>details</summary><pre>${esc(e.detail)}</pre></details>` : ''}</li>`).join('') : '<li class="info">Nothing logged yet.</li>';
+  }
+  let logT = null;
+  ICLOG.onChange(() => { clearTimeout(logT); logT = setTimeout(() => { renderLog(); status(); }, 150); });
+  $('dbg-errors').onchange = renderLog;
+  $('dbg-clear').onclick = () => { ICLOG.clear(); renderLog(); status(); };
+  $('dbg-copy').onclick = async () => { try { await navigator.clipboard.writeText(ICLOG.text()); toast('Debug log copied. Paste it into a message.'); } catch (e) { toast('The browser would not copy; use Save instead.'); } };
+  $('dbg-save').onclick = () => { const d = new Date(), p2 = (n) => String(n).padStart(2, '0'); download(new Blob([ICLOG.text()], { type: 'text/plain;charset=utf-8' }), `ImageCraft debug ${d.getFullYear()}.${p2(d.getMonth() + 1)}.${p2(d.getDate())}.${p2(d.getHours())}.${p2(d.getMinutes())}.txt`); };
+  const openDebug = () => { showSide('left'); showTab('debug'); };
 
   // ------------------------------------------------------------------ status bar
   let hover = null;
   const statusEl = $('status');
-  statusEl.innerHTML = `<span id="st-size"></span><span id="st-cols"></span><span id="st-at"></span><span class="grow"></span><span class="zoombox"><button class="btn" id="st-out" title="Zoom out" aria-label="Zoom out">−</button><input type="range" id="st-zoom" min="-100" max="100" value="0" aria-label="Zoom" data-rt-skip><button class="btn" id="st-in" title="Zoom in" aria-label="Zoom in">+</button><button class="btn" id="st-pct" title="Fit the picture (click) or 100% (double-click)">100%</button></span>`;
+  statusEl.innerHTML = `<button class="st-err" id="st-err" hidden title="Errors were logged: open the Debug tab"></button><span id="st-size"></span><span id="st-cols"></span><span id="st-at"></span><span class="grow"></span><span class="zoombox"><button class="btn" id="st-out" title="Zoom out" aria-label="Zoom out">−</button><input type="range" id="st-zoom" min="-100" max="100" value="0" aria-label="Zoom" data-rt-skip><button class="btn" id="st-in" title="Zoom in" aria-label="Zoom in">+</button><button class="btn" id="st-pct" title="Fit the picture (click) or 100% (double-click)">100%</button></span>`;
   // the zoom slider: 100% in the middle, 2% at the left, 6400% at the right
   const zToS = (z) => Math.round(z >= 1 ? (Math.log(z) / Math.log(64)) * 100 : (Math.log(z) / Math.log(50)) * 100), sToZ = (s) => (s >= 0 ? Math.pow(64, s / 100) : Math.pow(50, s / 100));
   $('st-zoom').oninput = (e) => setZoom(sToZ(+e.target.value));
+  $('st-err').onclick = openDebug;
   $('st-in').onclick = () => zoomBy(1.25); $('st-out').onclick = () => zoomBy(0.8); $('st-pct').onclick = () => fitView(); $('st-pct').ondblclick = () => actual();
   function zoomUI() { $('st-pct').textContent = Math.round(view.zoom * 100) + '%'; if (document.activeElement !== $('st-zoom')) $('st-zoom').value = zToS(view.zoom); }
   function status() {
     const img = now(), st = pic() && pic().steps[pic().at];
+    const ne = ICLOG.errors(); $('st-err').hidden = !ne; $('st-err').textContent = `⚠ ${ne} error${ne === 1 ? '' : 's'}`;
     $('st-size').innerHTML = img ? `<b>${fmtN(img.width)} × ${fmtN(img.height)}</b> pixels` : 'No picture open';
     $('st-cols').innerHTML = st && st.colours != null ? (st.colours < 0 ? 'Many colours' : `<b>${fmtN(st.colours)}</b> colour${st.colours === 1 ? '' : 's'}`) : '';
     statusHover();
@@ -736,13 +767,14 @@
         $('save-size').textContent = `About ${kb(blob.size)}`; $('save-go').disabled = false;
         // the edge check of what will be saved (small pixel art is meant to be stepped: no advice there)
         const ed = $('sv-edges'); if (ed) { if (img.width * img.height > 4e6) ed.textContent = ''; else { const a = X.aliasCheck(img); ed.textContent = a.slanted < 50 ? 'Edge check: few slanted edges.' : `Edge check: ${Math.round(a.ratio * 100)}% of slanted edges are jagged steps${a.ratio > 0.15 && sv.aa === 0 && img.width * img.height > 90000 ? ' — try Light or Medium.' : '.'}`; } }
-      } catch (e) { if (my === saveTok) { $('save-size').textContent = e.message; } }
+      } catch (e) { ICLOG.warn(`Save as ${sv.fmt} could not be prepared`, e); if (my === saveTok) { $('save-size').textContent = e.message; } }
     }, 60);
   }
   $('save-cancel').onclick = () => { $('savedlg').hidden = true; };
   $('savedlg').addEventListener('keydown', (e) => { if (e.key === 'Escape') $('savedlg').hidden = true; });
   $('save-go').onclick = () => {
     if (!saveBlob) return; const f = F.FORMATS[sv.fmt], e = f.extFor ? f.extFor({ bits: bitsFor(sv.fmt) }) : f.ext;
+    ICLOG.info(`Saved ${sv.name}.${e} (${F.FORMATS[sv.fmt].name}, ${kb(saveBlob.size)}${savePrep ? ', ' + savePrep.width + ' × ' + savePrep.height : ''})`);
     download(saveBlob, `${(sv.name || 'picture').replace(/[\\/:*?"<>|]+/g, '-')}.${e}`); pic().dirty = false; renderPics(); renderProps(); $('savedlg').hidden = true;
     toast(`Saved as ${f.name}.`);
   };
@@ -876,6 +908,7 @@
       { id: 'view', label: 'View', hue: '#566078', groups: [
         ['Zoom', [B('Fit', I.fit, fitView, { big: true, key: '0' }), B('100%', I.actual, actual, { big: true, key: '1' }), { col: [B('Zoom in', I.zoomIn, () => zoomBy(1.25), { key: '+' }), B('Zoom out', I.zoomOut, () => zoomBy(0.8), { key: '−' })] }]],
         ['Show', [B('Compare', IK.compare, toggleCompare, { big: true, pressed: () => view.compare }), B('Pixel grid', IK.grid, () => { view.grid = !view.grid; layout(); if (view.grid && view.zoom < 6) toast('The grid shows from 600% zoom.'); }, { big: true, pressed: () => view.grid })]],
+        ['Debug', [B('Debug log', I.console, () => openDebug(), { big: true, always: true, title: 'Errors and what happened (also the Debug tab on the left)' })]],
         ['Behind see-through', [{ col: [B('Checks', IK.grid, () => setBg('check'), { pressed: () => view.bg === 'check' }), B('White', I.sun, () => setBg('white'), { pressed: () => view.bg === 'white' }), B('Black', I.moon, () => setBg('black'), { pressed: () => view.bg === 'black' })] }]],
       ] },
     ],
@@ -888,7 +921,7 @@
     ['Colours', [['Colour depth…', 'depth'], ['Old computer looks…', 'looks'], ['Make a colour see-through…', 'clear'], ['Remove background…', 'cutout']].map(([l, k]) => ({ label: l, run: T(k), disabled: has }))],
     ['Clean up', [['Remove noise (smart)…', 'nlm'], ['Restore sharpness (deblur)…', 'deblur'], ['Bring back faded detail…', 'clahe'], ['Smooth out noise…', 'denoise'], ['Dust and scratches…', 'despeckle'], ['Remove JPEG blocks…', 'deblock'], ['Undither…', 'undither'], ['Make bigger…', 'upscale'], ['Modernise…', 'modern']].map(([l, k]) => ({ label: l, run: T(k), disabled: has }))],
     ['Convert', [{ label: 'SVG outlines…', run: T('trace'), disabled: has }, { label: 'Text art (ASCII / ANSI)…', run: T('text'), disabled: has }, { label: 'AI helpers…', run: () => CRAFTAI.openSettings() }]],
-    ['Help', [{ label: 'How to use ImageCraft', run: help }]],
+    ['Help', [{ label: 'How to use ImageCraft', run: help }, { label: 'Debug log', run: () => openDebug() }]],
   ];
   const tb = window.CraftTitlebar({
     appName: 'ImageCraft', storageKey: 'imagecraft', colors: ['#6a5cff', '#4a3cc8'], mount: $('app'), toast, logo: LOGO, menus: () => MENUS, ribbon,
