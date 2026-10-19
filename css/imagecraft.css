@@ -185,3 +185,7 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 .maplist b { font-size: 12px; } .maplist small { display: block; color: var(--muted); font-size: 10.5px; line-height: 1.3; }
 .mapbar { position: absolute; left: 50%; top: 12px; transform: translateX(-50%); z-index: 6; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; justify-content: center; max-width: calc(100% - 24px); background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 6px 10px; box-shadow: 0 4px 14px rgba(0,0,0,.2); }
 .mapbar b { margin-right: 4px; }
+
+/* curves editor */
+.curvebox { position: relative; width: 100%; aspect-ratio: 1; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); touch-action: none; cursor: crosshair; }
+.curvebox canvas { width: 100%; height: 100%; display: block; }

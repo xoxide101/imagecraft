@@ -40,6 +40,15 @@ Classic formats fit the picture to that machine's screen and colours for you (th
 - **Channels**: red, green, blue; cyan, magenta, yellow and black (CMYK separations); Lab lightness and its two colour axes; **extreme greyscale** (contrast pushed to the limit area by area, so scratches, creases and faint detail show) and **black and white** (split automatically, Otsu's method). Damage and detail often live in different channels. Any map can be **opened as a picture** of its own, or used to **make the picture see-through**.
 - **Where** (in every tool that keeps the picture's size): apply the tool only where a map says, with a level, softness and feather (like Levels on a mask), inverted, or **combined with a second map** (Calculations: multiply, add, subtract, difference, lighter, darker). For example: sharpen only the texture but not the skin; take noise out of the smooth areas only; deepen the colour of the sky alone. Press Show the mask to see it.
 
+### Detail tab: curves, layers of detail, light
+
+- **Curves**: a curve you shape by dragging points, for brightness (colours keep their hue), RGB, or red, green or blue alone, with presets (S-curve, lift shadows, soft highlights, faded film). With **Where**, a curve works like a curves layer with a mask.
+- **Detail equaliser**: the picture split into bands by the size of its detail (finest, small, medium, large, broad light), each with its own amount, and put back together. Small changes are lifted more than strong edges, so no halos. Presets: bring out texture, local contrast, soften texture, flatten the lighting.
+- **Even the light** (gradient domain): every change in brightness measured; big jumps made smaller and faint ones bigger; the picture rebuilt from them by solving the Poisson equation.
+- **Crisp edges**: a shock filter that pulls soft edges into clean steps with nothing overshooting; best after enlarging, kept to the edges by default.
+- **Edge-keeping smooth**: Perona–Malik diffusion, which smooths grain but never across an edge.
+- **Blend a version**: mix an earlier step, or **another open picture**, back in (normal, multiply, screen, overlay, soft light, lighten, darken, difference, brightness only, colour only), anywhere or through a map. With **Remove background › Cut out to a new picture**, a subject becomes a picture of its own: repair it, then blend it back; its see-through parts leave the rest untouched.
+
 ### Restore old photos
 
 - **Auto colour** (Adjust tab): corrects a faded print the way a photo lab would: each colour's own black and white points, the midtones made neutral with a curve, and faded colour brought back by how much is missing. Skin tones and greenery are protected (the correction eases off rather than turning faces grey or grass brown), and a sepia or toned picture keeps its tone: a picture with almost no colour other than its main hue is treated as toned, a very faded colour print gets part of the correction, and Make neutral forces a full one.

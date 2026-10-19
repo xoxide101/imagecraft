@@ -333,6 +333,30 @@
         note('For a picture that looks seen through fog, or a print faded to a grey-white veil: how thick the veil is gets measured at every place (a clear photo always has something dark in each small area), and it is taken away.')],
       report: (img) => (img.haze ? `<p class="hint">Veil measured at ${Math.round(img.haze.level * 100)}% (a clear photo is under about 10%).</p>` : ''),
       run: (img, s) => X.dehaze(img, s) },
+    curves: { title: 'Curves', icon: IK.light, s: { channel: 'lum', pts: { lum: [[0, 0], [255, 255]], rgb: [[0, 0], [255, 255]], r: [[0, 0], [255, 255]], g: [[0, 0], [255, 255]], b: [[0, 0], [255, 255]] } },
+      fields: [seg('channel', 'Curve for', [['lum', 'Brightness'], ['rgb', 'RGB'], ['r', 'Red'], ['g', 'Green'], ['b', 'Blue']]), { t: 'curve' },
+        { t: 'btns', buttons: [['S-curve', [[0, 0], [64, 52], [192, 204], [255, 255]]], ['Lift shadows', [[0, 0], [64, 92], [255, 255]]], ['Soft highlights', [[0, 0], [192, 176], [255, 245]]], ['Faded film', [[0, 28], [128, 132], [255, 235]]], ['Straight', [[0, 0], [255, 255]]]].map(([l, pts]) => ({ label: l, run: (s) => { s.pts[s.channel] = pts.map((p) => p.slice()); } })) },
+        note('Click to add a point, drag to move it, double-click to take it away. Brightness changes light only (colours keep their hue); RGB changes all three; Red, Green and Blue each colour alone. With Where below, a curve works like a curves layer with a mask.')],
+      run: (img, s) => { const T = {}; for (const k of ['lum', 'rgb', 'r', 'g', 'b']) { const p = s.pts[k]; if (p.length !== 2 || p[0][0] !== 0 || p[0][1] !== 0 || p[1][0] !== 255 || p[1][1] !== 255) T[k] = IC.detail.curve(p); } return IC.detail.applyCurves(img, T); } },
+    equalizer: { title: 'Detail equaliser', icon: IK.sharpen, s: { g0: 120, g1: 130, g2: 120, g3: 100, g4: 100, protect: 0.12 },
+      fields: [range('g0', 'Finest detail (1–2 px) %', 0, 300), range('g1', 'Small detail (2–4 px) %', 0, 300), range('g2', 'Medium detail (4–8 px) %', 0, 300), range('g3', 'Large detail (8–16 px) %', 0, 300), range('g4', 'Broad light and shade %', 0, 200), range('protect', 'Protect strong edges (smaller = more)', 0.03, 0.4, 0.01),
+        { t: 'btns', buttons: [['Bring out texture', [130, 150, 130, 105, 100]], ['Local contrast', [100, 110, 130, 140, 100]], ['Soften texture', [70, 80, 90, 100, 100]], ['Flatten the lighting', [100, 100, 105, 110, 60]], ['Reset', [100, 100, 100, 100, 100]]].map(([l, g]) => ({ label: l, run: (s) => { g.forEach((v, i) => { s['g' + i] = v; }); } })) },
+        note('The picture split into bands by the size of its detail, a curve on each, put back together: like separate curves layers for fine, small and large detail. Small changes are lifted more than strong edges, so no halos.')],
+      run: (img, s) => IC.detail.equaliser(img, { gains: [s.g0, s.g1, s.g2, s.g3, s.g4], protect: s.protect }) },
+    gradient: { title: 'Even the light, lift detail', icon: IK.light, live: (s) => !!tool && tool.base.width * tool.base.height <= 1500000, s: { strength: 50, detail: 50 },
+      fields: [range('strength', 'Even out the light', 0, 100), range('detail', 'Lift faint detail', 0, 100), note('Gradient-domain: every change in brightness is measured; big jumps (bright window, deep shadow) are made smaller and faint ones bigger, then the picture is rebuilt from them by solving the Poisson equation. Detail comes up evenly everywhere and the light stays natural.')],
+      run: (img, s, say) => { say && say('Solving for the new picture…'); return IC.detail.gradientLift(img, s); } },
+    crisp: { title: 'Crisp edges', icon: IK.sharpen, s: { strength: 25, size: 1.2, wMap: 'edges', wLevel: 0.25, wSoft: 0.3, wFeather: 1 },
+      fields: [range('strength', 'Strength', 0, 100), range('size', 'Edge softness to undo (pixels)', 0.6, 4, 0.1), note('A shock filter: a soft edge is pulled into a clean step, with nothing overshooting (no halos) and flat areas untouched. Best after enlarging; use Where › Edges to keep it to the outlines.')],
+      run: (img, s) => IC.detail.crispEdges(img, s) },
+    diffuse: { title: 'Edge-keeping smooth', icon: IK.denoise, s: { strength: 20, keepEdges: 70 },
+      fields: [range('strength', 'Strength', 0, 100), range('keepEdges', 'Keep edges', 0, 100), note('Perona–Malik diffusion: grain and blotches flow together and even out, but the flow stops at edges, so outlines stay sharp. Smoother than Remove noise on skin and sky; use Where › Smooth areas for those alone.')],
+      run: (img, s) => IC.detail.diffuse(img, s) },
+    blendstep: { title: 'Blend a version', icon: IK.compare, s: () => ({ from: 'step', step: Math.max(0, pic().at - 1), other: pics.findIndex((p, i) => i !== cur), mode: 'normal', amount: 50 }),
+      fields: [{ t: 'html', html: () => '<p class="hint">Mix an earlier version (a step in History) back into the picture, like stacking layers before committing.</p>' },
+        seg('from', 'From', [['step', 'A step in History'], ['pic', 'Another open picture']]), { t: 'stepsel', k: 'step', label: 'Version', show: (s) => s.from === 'step' }, { t: 'picsel', k: 'other', label: 'Picture (a cut-out is placed by its solid parts)', show: (s) => s.from === 'pic' }, sel('mode', 'How', IC.detail.MODES.map((m) => [m, { normal: 'Normal (mix)', multiply: 'Multiply (darker)', screen: 'Screen (lighter)', overlay: 'Overlay (contrast)', softlight: 'Soft light', lighten: 'Lighten only', darken: 'Darken only', difference: 'Difference (shows changes)', luminosity: 'Its brightness, my colours', colour: 'Its colours, my brightness' }[m]])),
+        range('amount', 'Amount %', 0, 100), note('Use Where to bring the version back only in some places: the sharper version on the texture, the smoother one on the sky.')],
+      run: (img, s) => { const src = s.from === 'pic' ? pics[s.other] && pics[s.other].steps[pics[s.other].at].img : pic().steps[s.step] && pic().steps[s.step].img; if (!src) throw new Error(s.from === 'pic' ? 'Open another picture first (for example a cut-out you repaired).' : 'Choose a version.'); return IC.detail.blend(img, src, { mode: s.mode, amount: s.amount }); } },
     shadows: { title: 'Recover shadows', icon: IK.light, s: { shadows: 50, highlights: 20, detail: 10, maxGain: 3 },
       fields: [range('shadows', 'Lift the shadows', 0, 100), range('highlights', 'Hold back bright areas', 0, 100), range('detail', 'Detail', 0, 60), range('maxGain', 'Most a dark area may brighten (×)', 1.5, 6, 0.1),
         note('Brightens dark areas (an underexposed subject, deep shade) while keeping their texture and leaving the sky alone: the picture’s broad lighting is evened out, its detail kept. The limit stops noise in the shadows being blown up.')],
@@ -389,7 +413,7 @@
     cutout: { title: 'Remove background', icon: IK.cutout, s: { mode: 'edges', tolerance: 40, points: [] },
       fields: [seg('mode', 'How', [['edges', 'By colour, from the edges'], ['ai', 'AI cut-out (photos)']]), range('tolerance', 'How different the background may be', 5, 160, 1, (s) => s.mode === 'edges'),
         note('Click any background left over to take that away too.', (s) => s.mode === 'edges'), note('Finds the main subject of a photo. The model downloads once (about 176 MB) and then works offline.', (s) => s.mode === 'ai'),
-        { t: 'btns', buttons: [{ label: 'Start again', run: (s) => { s.points = []; } }] }],
+        { t: 'btns', buttons: [{ label: 'Start again', run: (s) => { s.points = []; } }, { label: 'Cut out to a new picture', run: () => { if (!tool.preview) return toast('Wait for the preview first.'); const o = tool.preview, nm = `${baseName(pic().name)} – cut-out.png`; setTimeout(() => { closeTool(true); addPic(nm, o, { format: 'Cut-out', bits: 32 }); toast('The cut-out is a picture of its own: repair it, then use Detail › Blend a version › Another open picture to put it back.'); }, 0); } }] }],
       live: (s) => s.mode === 'edges', pick: (s, rgb, u, v) => { s.points.push({ t: 'wand', u, v }); },
       run: async (img, s, say) => { say && say(s.mode === 'ai' ? 'Finding the subject…' : 'Taking the background away…'); const r = await BGREMOVE.remove(X.canvasOf(img), { mode: s.mode === 'ai' ? 'ai' : 'auto', tolerance: s.tolerance, actions: s.points, max: 1e5 }); return r.canvas.getContext('2d').getImageData(0, 0, r.canvas.width, r.canvas.height); } },
     clear: { title: 'Make a colour see-through', icon: IK.clearC, s: (img) => ({ rgb: bgEdge(img), tolerance: 10, soft: 0 }),
@@ -558,7 +582,8 @@
     if (!pic()) { toast('Open a picture first.'); return; }
     if (tool) closeTool(true);
     const def = TOOLS[id], base = now();
-    tool = { def, base, s: { ...JSON.parse(JSON.stringify(typeof def.s === 'function' ? def.s(base) : def.s)), ...(maskable(def) ? { wMap: '', wOp: '', wMap2: 'skin', wInvert: false, wLevel: 0.35, wSoft: 0.3, wFeather: 2 } : {}), ...(preset || {}) }, preview: null };
+    tool = { def, base, s: { ...JSON.parse(JSON.stringify(typeof def.s === 'function' ? def.s(base) : def.s)), ...(preset || {}) }, preview: null };
+    if (maskable(def)) tool.s = { wMap: '', wOp: '', wMap2: 'skin', wInvert: false, wLevel: 0.35, wSoft: 0.3, wFeather: 2, ...tool.s };
     if (mapView) closeMap();
     showSide('right'); renderProps(); if (def.enter) def.enter();
     if (isLive(tool)) schedule(0); else show();
@@ -612,6 +637,9 @@
       if (f.t === 'btns' && f.show && !f.show(t.s)) return;
       if (f.t === 'btns') { const r = document.createElement('div'); r.className = 'btns'; f.buttons.forEach((b) => { const e = document.createElement('button'); e.className = 'btn ' + (b.primary ? 'primary' : 'outline'); e.type = 'button'; e.textContent = b.label; e.onclick = () => { b.run(t.s, t.base); t.stale = true; renderProps(); if (d.id === 'crop') placeCrop(); else if (isLive(t)) schedule(0); }; r.append(e); }); into.append(r); return; }
       if (f.t === 'looks') { into.append(looksTiles()); return; }
+      if (f.t === 'picsel') { if (f.show && !f.show(t.s)) return; const lab = document.createElement('label'); lab.className = 'field'; lab.innerHTML = `<span>${esc(f.label)}</span>`; const i = document.createElement('select'); i.className = 'input'; pics.forEach((p, k) => { if (k !== cur) i.add(new Option(p.name, k)); }); if (!i.options.length) i.add(new Option('(open or make another picture first)', -1)); i.value = String(t.s[f.k]); i.onchange = () => set(f.k, +i.value, true); lab.append(i); into.append(lab); return; }
+      if (f.t === 'stepsel') { if (f.show && !f.show(t.s)) return; const lab = document.createElement('label'); lab.className = 'field'; lab.innerHTML = `<span>${esc(f.label)}</span>`; const i = document.createElement('select'); i.className = 'input'; pic().steps.forEach((st, k) => { if (k !== pic().at) i.add(new Option(`${k}. ${st.label}`, k)); }); i.value = String(t.s[f.k]); i.onchange = () => set(f.k, +i.value, true); lab.append(i); into.append(lab); return; }
+      if (f.t === 'curve') { into.append(curveEditor(t, set)); return; }
       const lab = document.createElement('label'); lab.className = f.t === 'check' ? 'check' : 'field';
       const v = t.s[f.k];
       if (f.t === 'check') { const i = document.createElement('input'); i.type = 'checkbox'; i.checked = !!v; i.onchange = () => set(f.k, i.checked, true); lab.append(i, document.createTextNode(' ' + f.label)); into.append(lab); return; }
@@ -635,6 +663,28 @@
     renderOut();
   }
   function renderOut() { const o = document.getElementById('tool-out'); if (o && tool && tool.def.report) o.innerHTML = tool.preview ? tool.def.report(tool.preview) : '<p class="hint">Working it out…</p>'; }
+  // the Curves editor: the channel's histogram, the curve, its points (click adds, drag moves, double-click removes)
+  function curveEditor(t, set) {
+    const box = document.createElement('div'); box.className = 'curvebox'; const c = document.createElement('canvas'); c.width = c.height = 256 * 2; box.append(c);
+    const ch = () => t.s.channel, pts = () => t.s.pts[ch()];
+    const hist = (() => { const h = new Float32Array(256), d = t.base.data, k = ch(); for (let i = 0; i < d.length; i += 4) { const v = k === 'r' ? d[i] : k === 'g' ? d[i + 1] : k === 'b' ? d[i + 2] : Math.round(0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]); h[v]++; } const m = Math.max(...h.slice(2, 254)) || 1; return h.map((v) => Math.min(1, v / m)); })();
+    const col = { lum: '#888', rgb: '#888', r: '#e5484d', g: '#30a46c', b: '#3e63dd' }[ch()];
+    const draw = () => {
+      const x = c.getContext('2d'), S = 2; x.clearRect(0, 0, c.width, c.height);
+      x.fillStyle = col + '33'; for (let i = 0; i < 256; i++) x.fillRect(i * S, c.height - hist[i] * c.height * 0.9, S, hist[i] * c.height * 0.9);
+      x.strokeStyle = 'rgba(128,128,128,.35)'; x.lineWidth = 1; for (let i = 1; i < 4; i++) { x.beginPath(); x.moveTo(i * 128, 0); x.lineTo(i * 128, c.height); x.moveTo(0, i * 128); x.lineTo(c.width, i * 128); x.stroke(); }
+      x.beginPath(); x.moveTo(0, c.height); x.lineTo(c.width, 0); x.stroke();
+      const T = IC.detail.curve(pts()); x.strokeStyle = ch() === 'lum' || ch() === 'rgb' ? getComputedStyle(document.body).color : col; x.lineWidth = 3; x.beginPath(); for (let i = 0; i < 256; i++) { const yy = c.height - T[i] * S; if (i) x.lineTo(i * S, yy); else x.moveTo(0, yy); } x.stroke();
+      pts().forEach(([px, py]) => { x.fillStyle = '#fff'; x.strokeStyle = '#222'; x.lineWidth = 2; x.beginPath(); x.arc(px * S, c.height - py * S, 8, 0, Math.PI * 2); x.fill(); x.stroke(); });
+    };
+    const at = (e) => { const r = c.getBoundingClientRect(); return [Math.max(0, Math.min(255, ((e.clientX - r.left) / r.width) * 255)), Math.max(0, Math.min(255, (1 - (e.clientY - r.top) / r.height) * 255))]; };
+    let drag = -1;
+    c.onpointerdown = (e) => { const [x, y] = at(e), P = pts(); let k = P.findIndex(([px, py]) => Math.hypot(px - x, py - y) < 10); if (k < 0) { P.push([Math.round(x), Math.round(y)]); P.sort((a, b) => a[0] - b[0]); k = P.findIndex(([px, py]) => px === Math.round(x) && py === Math.round(y)); } drag = k; c.setPointerCapture(e.pointerId); draw(); set('pts', t.s.pts); };
+    c.onpointermove = (e) => { if (drag < 0) return; const [x, y] = at(e), P = pts(), lo = drag > 0 ? P[drag - 1][0] + 1 : 0, hi = drag < P.length - 1 ? P[drag + 1][0] - 1 : 255; P[drag] = [Math.round(Math.max(lo, Math.min(hi, x))), Math.round(y)]; draw(); set('pts', t.s.pts); };
+    c.onpointerup = () => { drag = -1; };
+    c.ondblclick = (e) => { const [x, y] = at(e), P = pts(), k = P.findIndex(([px, py]) => Math.hypot(px - x, py - y) < 10); if (k > 0 && k < P.length - 1) { P.splice(k, 1); draw(); set('pts', t.s.pts); } };
+    draw(); return box;
+  }
   // the old computers, each as a little picture of how this picture would look
   function looksTiles() {
     const wrap = document.createElement('div'); wrap.className = 'tiles';
@@ -964,6 +1014,11 @@
         ['Light', [B('Brightness', IK.light, T('light'), { big: true, title: 'Brightness, contrast, midtones, shadows and highlights' }), B('Recover shadows', IK.light, T('shadows'), { big: true, title: 'Lift dark areas with their detail, sky untouched' }), B('Dehaze', IK.light, T('dehaze'), { big: true, title: 'Take away a foggy or faded grey veil' }), { col: [B('Auto levels', IK.auto, () => quick('Auto levels', (i) => X.autoLevels(i))), B('Auto fix', IK.auto, () => quick('Auto fix', (i) => X.autoFix(i)))] }]],
         ['Colour', [B('Auto colour', IK.auto, T('autocolour'), { big: true, title: 'Correct a faded print: levels, neutral midtones and faded colour' }), B('Colour', IK.colour, T('colour'), { big: true, title: 'Saturation, vibrance, hue, warmth and tint' }), { col: [B('Fix a colour cast', IK.balance, T('balance')), B('Greyscale', IK.grey, () => quick('Greyscale', (i) => X.greyscale(i))), B('Sepia', IK.sepia, T('sepia'))] }, { col: [B('Invert', IK.invert, () => quick('Invert', (i) => X.invert(i))), B('Threshold', IK.threshold, T('threshold')), B('Posterize', IK.posterize, T('posterize'))] }]],
         ['Detail', [B('Clarity', IK.sharpen, T('clarity'), { big: true, title: 'Local contrast: texture and detail' }), { col: [B('Sharpen', IK.sharpen, T('sharpen')), B('Blur', IK.blur, T('blur')), B('Pixelate', IK.pixelate, T('pixelate'))] }]],
+      ] },
+      { id: 'detail', label: 'Detail', hue: '#c2410c', groups: [
+        ['Curves', [B('Curves', IK.light, T('curves'), { big: true, title: 'Curves for brightness or each colour, with Where for curves layers' }), B('Blend a version', IK.compare, T('blendstep'), { big: true, title: 'Mix an earlier step back in (like layers), anywhere or through a map' })]],
+        ['Detail', [B('Detail equaliser', IK.sharpen, T('equalizer'), { big: true, title: 'Fine, small, medium and large detail, each with its own amount' }), B('Even the light', IK.light, T('gradient'), { big: true, title: 'Gradient domain: big brightness jumps smaller, faint detail bigger' }), B('Crisp edges', IK.sharpen, T('crisp'), { big: true, title: 'Shock filter: soft edges made crisp without halos' }), B('Edge-keeping smooth', IK.denoise, T('diffuse'), { big: true, title: 'Perona–Malik diffusion: smooth, but never across an edge' })]],
+        ['Maps', [B('Maps and channels', IK.grid, () => { showSide('left'); showTab('maps'); }, { big: true, title: 'See the picture measured into maps and channels' })]],
       ] },
       { id: 'colours', label: 'Colours', hue: '#b44be1', groups: [
         ['Depth', [B('Colour depth', IK.depth, T('depth'), { big: true, title: '1, 2, 4 or 8-bit colour, high colour, palettes and dithering' }), B('Computer looks', IK.retro, T('looks'), { big: true, title: 'Atari ST, Amiga, C64, ZX Spectrum, CGA, EGA, VGA, Macintosh, Game Boy…' })]],
