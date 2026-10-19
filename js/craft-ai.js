@@ -17,9 +17,11 @@
     sharp: { gpuDtype: 'fp32', id: 'Xenova/swin2SR-classical-sr-x2-64', name: 'Upscale 2× (clean pictures)', what: 'Doubles the size of a clean picture and keeps edges sharp instead of blurring them.', mb: { gpu: 48, cpu: 15 }, licence: 'Apache-2.0', scale: 2 },
     photo: { gpuDtype: 'fp32', id: 'Xenova/swin2SR-realworld-sr-x4-64-bsrgan-psnr', name: 'Upscale 4× (old photos)', what: 'Makes an old, small or noisy photo four times bigger and cleans the noise and blur as it goes.', mb: { gpu: 50, cpu: 15 }, licence: 'Apache-2.0', scale: 4 },
     jpeg: { gpuDtype: 'fp32', id: 'Xenova/swin2SR-compressed-sr-x4-48', name: 'Upscale 4× (JPEG clean-up)', what: 'For pictures spoilt by JPEG blocks and smudges: four times bigger with the blocks taken out.', mb: { gpu: 30, cpu: 10 }, licence: 'Apache-2.0', scale: 4 },
+    esrgan: { raw: 'https://huggingface.co/SceneWorks/real-esrgan-onnx/resolve/main/real_esrgan_x4.onnx', name: 'Upscale 4× (Real-ESRGAN, real photos)', what: 'The standard for real-world photos: four times bigger, with crisp edges and natural texture in grass, gravel, fabric and leaves; also cleans JPEG blocks and noise.', mb: { gpu: 67, cpu: 67 }, licence: 'BSD-3-Clause', scale: 4 },
+    esrgan2: { raw: 'https://huggingface.co/SceneWorks/real-esrgan-onnx/resolve/main/real_esrgan_x2.onnx', name: 'Upscale 2× (Real-ESRGAN)', what: 'Real-ESRGAN at twice the size, for photos that only need a little more.', mb: { gpu: 67, cpu: 67 }, licence: 'BSD-3-Clause', scale: 2 },
     pick: { id: 'Xenova/slimsam-77-uniform', name: 'Pick an object', what: 'Click an object in a picture and it is outlined for you, to keep or take out.', mb: { gpu: 21, cpu: 14 }, licence: 'Apache-2.0' },
   };
-  const DEFAULTS = { on: true, gpu: null, use: { cutout: true, best: false, sharp: true, photo: true, jpeg: true, pick: true } };
+  const DEFAULTS = { on: true, gpu: null, use: { cutout: true, best: false, sharp: true, photo: true, jpeg: true, esrgan: true, esrgan2: true, pick: true } };
   let settings = DEFAULTS;
   try { settings = { ...DEFAULTS, ...JSON.parse(localStorage.getItem(KEY) || '{}') }; settings.use = { ...DEFAULTS.use, ...(settings.use || {}) }; } catch (e) { /* ignore */ }
   const save = () => { try { localStorage.setItem(KEY, JSON.stringify(settings)); } catch (e) { /* ignore */ } };
@@ -115,7 +117,12 @@
       progress(k, { status: 'starting' });
       try {
         let r;
-        if (m.scale) r = await T.pipeline('image-to-image', m.id, opts);
+        if (m.raw) { // a plain ONNX file (Real-ESRGAN): ONNX Runtime directly, graphics card first
+          const buf = await fetchCached(m.raw, (l, t) => progress(k, { loaded: l, total: t }));
+          r = await T.ort.InferenceSession.create(new Uint8Array(buf), { executionProviders: dv === 'webgpu' ? ['webgpu'] : ['wasm'], graphOptimizationLevel: 'all' });
+          r.isRaw = true;
+        }
+        else if (m.scale) r = await T.pipeline('image-to-image', m.id, opts);
         else if (k === 'best') r = await T.pipeline('background-removal', m.id, { ...opts, dtype: 'fp16' });
         else if (k === 'cutout') {
           // U²-Net runs on the processor (the graphics-card runtime cannot run one of its steps yet): the full model on a
@@ -198,7 +205,17 @@
       const x0 = Math.max(0, x - OV), y0 = Math.max(0, y - OV), x1 = Math.min(W, x + TILE + OV), y1 = Math.min(H, y + TILE + OV);
       const c = document.createElement('canvas'); c.width = x1 - x0; c.height = y1 - y0; const cx = c.getContext('2d');
       cx.fillStyle = '#fff'; cx.fillRect(0, 0, c.width, c.height); cx.drawImage(im, -x0, -y0);
-      const raw = await rawOf(T, c), r = await run(kind, (pipe) => pipe(raw)), res = Array.isArray(r) ? r[0] : r, ch = res.channels, rw = res.width;
+      let res;
+      if (m.raw) {
+        // Real-ESRGAN: [1, 3, h, w] RGB 0–1 in, [1, 3, S·h, S·w] out
+        const cw = c.width, chh = c.height, px = cx.getImageData(0, 0, cw, chh).data, inp = new Float32Array(3 * cw * chh);
+        for (let i = 0; i < cw * chh; i++) { inp[i] = px[i * 4] / 255; inp[cw * chh + i] = px[i * 4 + 1] / 255; inp[2 * cw * chh + i] = px[i * 4 + 2] / 255; }
+        const o = await run(kind, (ses) => ses.run({ [ses.inputNames[0]]: new T.ort.Tensor('float32', inp, [1, 3, chh, cw]) }).then((x) => x[ses.outputNames[0]]));
+        const ow = o.dims[3], oh = o.dims[2], od = o.data, hwc = new Uint8ClampedArray(ow * oh * 3), plane = ow * oh;
+        for (let i = 0; i < plane; i++) { hwc[i * 3] = od[i] * 255; hwc[i * 3 + 1] = od[plane + i] * 255; hwc[i * 3 + 2] = od[2 * plane + i] * 255; }
+        res = { data: hwc, width: ow, height: oh, channels: 3 };
+      } else { const raw = await rawOf(T, c), r = await run(kind, (pipe) => pipe(raw)); res = Array.isArray(r) ? r[0] : r; }
+      const ch = res.channels, rw = res.width;
       const tw = Math.min((x1 - x0) * S, res.width), th = Math.min((y1 - y0) * S, res.height);
       // how much each output pixel of this tile counts: full in the middle, fading to the tile's edges inside the
       // picture (not at the picture's own edges)

@@ -262,7 +262,7 @@
   const DEPTHS = [['1', '1-bit · 2 colours'], ['2', '2-bit · 4 colours'], ['3', '3-bit · 8 colours'], ['4', '4-bit · 16 colours'], ['5', '5-bit · 32 colours'], ['6', '6-bit · 64 colours'], ['7', '7-bit · 128 colours'], ['8', '8-bit · 256 colours'], ['high15', '15-bit · 32,768 colours (high colour)'], ['high16', '16-bit · 65,536 colours (high colour)']];
   const LEVELS = [['0', 'Any colour (24-bit)'], ['8', 'Atari ST: from 512 colours'], ['16', 'Amiga / Atari STE: from 4,096'], ['4', 'EGA: from 64 colours'], ['64', 'VGA: from 262,144']];
   const PALS = [['adaptive', 'Best for this picture'], ...Object.entries(C.PALETTES).map(([k, p]) => [k, p.name])];
-  const UPS = [['smooth', 'Best (automatic)'], ['area', 'Pixel averaging (area)'], ['nohalo', 'Sharp, no halos'], ['lanczos', 'Lanczos (sharpest)'], ['cubic', 'Cubic'], ['mitchell', 'Soft (Mitchell)'], ['linear', 'Linear'], ['nearest', 'Square pixels (pixel art, exact)'], ['scale2x', 'Pixel art, rounded corners (Scale2x)'], ['scale3x', 'Pixel art ×3 (Scale3x)'], ['smoothpixel', 'Pixel art made smooth'], ['ai-sharp', 'AI 2× (clean pictures)'], ['ai-photo', 'AI 4× (old photos)'], ['ai-jpeg', 'AI 4× (JPEG clean-up)']];
+  const UPS = [['smooth', 'Best (automatic)'], ['area', 'Pixel averaging (area)'], ['nohalo', 'Sharp, no halos'], ['lanczos', 'Lanczos (sharpest)'], ['cubic', 'Cubic'], ['mitchell', 'Soft (Mitchell)'], ['linear', 'Linear'], ['nearest', 'Square pixels (pixel art, exact)'], ['scale2x', 'Pixel art, rounded corners (Scale2x)'], ['scale3x', 'Pixel art ×3 (Scale3x)'], ['smoothpixel', 'Pixel art made smooth'], ['ai-esrgan', 'AI 4× Real-ESRGAN (real photos)'], ['ai-esrgan2', 'AI 2× Real-ESRGAN'], ['ai-sharp', 'AI 2× (clean pictures)'], ['ai-photo', 'AI 4× (old photos)'], ['ai-jpeg', 'AI 4× (JPEG clean-up)']];
   const ai = (k) => /^ai-/.test(k) ? k.slice(3) : null;
   async function upscaleWith(img, method, factor, say, linear = true) {
     const k = ai(method);
@@ -400,7 +400,7 @@
         chk('linear', 'Average in linear light (truer colours and edges)', (s) => !ai(s.method) && s.method !== 'nearest'),
         range('mix', 'AI strength (%): less mixes in the classic enlargement', 0, 100, 5, (s) => !!ai(s.method)), range('aa', 'Smooth jagged edges (%)', 0, 100, 1, (s) => !ai(s.method)), { t: 'out' },
         note('<b>Best</b> sharpens edges without the light and dark halos sharp filters leave, and averages light the way the eye sees it. <b>Pixel averaging</b> counts every pixel by how much it covers: crisp, honest, no invented detail.', (s) => !ai(s.method)),
-        note('The AI ways download a model once (10–50 MB) and work offline after that. They take a few seconds for each 128 × 128 square.', (s) => !!ai(s.method))],
+        note('The AI ways download a model once (10–70 MB) and work offline after that. On a graphics card they take about a second for each 160 × 160 square; on the processor much longer.', (s) => !!ai(s.method))],
       live: (s) => !ai(s.method) || !!(tool && tool.aiCache && tool.aiCache.k === s.method), report: (img) => `<p class="hint">Becomes <b>${img.width} × ${img.height}</b> pixels.</p>`,
       run: async (img, s, say) => {
         if (!ai(s.method)) { const u = await upscaleWith(img, s.method, +s.factor, say, s.linear); return +s.aa ? X.antialias(u, { amount: +s.aa }) : u; }
@@ -419,7 +419,7 @@
         // old photo, in the usual restoration order: dust, noise (grain and colour separately), a little deblur, then tone
         if (s.kind === 'photo') { say && say('Dust and noise…'); o = IC.restore.impulse(o, { threshold: 30 }); const n = IC.restore.noiseLevel(o); if (n.luma > 1 || n.chroma > 1) o = IC.restore.nlm(o, nlmFor(n)); say && say('Sharpness and tone…'); const m = IC.restore.measure(o); if (m && m.radius > 0.8) o = IC.restore.deblur(o, { kind: 'gauss', radius: Math.min(3, m.radius * 0.7), noise: kFor(IC.restore.noiseLevel(o).luma) + 20, strength: 60 }); const toned = X.isToned(o) || undefined, hz = X.hazeLevel(o); if (hz > 0.22) o = X.dehaze(o, { strength: Math.min(80, (hz - 0.15) * 300), keepSome: 0.15 }); o = X.clarity(X.autoColour(X.shadowRecover(o, { shadows: 40, highlights: 15, detail: 5, maxGain: 2.5 }), { strength: 100, keepTone: toned ? true : 'auto' }), { amount: 30 }); }
         if (s.kind === 'jpeg') { say && say('Smoothing the blocks…'); o = X.deblock(o, { strength: 60 }); }
-        if (k > 1) o = s.useAi ? await upscaleWith(o, s.kind === 'jpeg' ? 'ai-jpeg' : s.kind === 'photo' ? 'ai-photo' : 'ai-sharp', k, say) : X.resize(o, { width: o.width * k, height: o.height * k });
+        if (k > 1) o = s.useAi ? await upscaleWith(o, s.kind === 'jpeg' || s.kind === 'photo' ? (k === 2 ? 'ai-esrgan2' : 'ai-esrgan') : 'ai-sharp', k, say) : X.resize(o, { width: o.width * k, height: o.height * k });
         // a light finish (an old photo was sharpened by the deblur already)
         return s.kind === 'photo' ? X.colour(o, { vibrance: 6 }) : X.colour(X.sharpen(o, { amount: 50, radius: 1, threshold: 3 }), { vibrance: 12 });
       } },
