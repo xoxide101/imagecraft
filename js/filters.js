@@ -355,11 +355,14 @@
     let sv = 0, sm = [0, 0, 0], n0 = 0;
     for (let i = 0; i < d.length; i += 16) { const r = d[i], g = d[i + 1], b = d[i + 2], l = (r + g + b) / 3; if (l < 20 || l > 235) continue; sm[0] += r - l; sm[1] += g - l; sm[2] += b - l; n0++; }
     if (n0) { sm = sm.map((v) => v / n0); for (let i = 0; i < d.length; i += 16) { const r = d[i], g = d[i + 1], b = d[i + 2], l = (r + g + b) / 3; if (l < 20 || l > 235) continue; sv += (r - l - sm[0]) ** 2 + (g - l - sm[1]) ** 2 + (b - l - sm[2]) ** 2; } sv = Math.sqrt(sv / n0 / 3); }
-    const toned = keepTone === true || (keepTone === 'auto' && sv < 5.5); let skinEase = 1;
+    const toned = keepTone === true || (keepTone === 'auto' && sv < 5.5); let skinEase = 1, leafEase = 1;
     // levels: per colour, or (toned) the same for all three so the tone stays
     let L = E;
     if (toned) { const lo = Math.min(...E.map((e) => e[0])), hi = Math.max(...E.map((e) => e[1])); L = [[lo, hi], [lo, hi], [lo, hi]]; }
     const stretch = (v, c) => Math.max(0, Math.min(1, (v - L[c][0]) / Math.max(1, L[c][1] - L[c][0])));
+    // the neutral version: one stretch for all three colours (what easing falls back toward)
+    const sLo = Math.min(...E.map((e) => e[0])), sHi = Math.max(...E.map((e) => e[1])), shared = (v) => Math.max(0, Math.min(1, (v - sLo) / Math.max(1, sHi - sLo)));
+    let ease = 1; const corr = (v, c, gg, t) => (1 - t) * shared(v) + t * Math.pow(stretch(v, c), gg[c]);
     // midtone gammas from nearly-grey midtones (after the stretch)
     let gam = [1, 1, 1];
     if (!toned) {
@@ -370,25 +373,38 @@
     // skin protection: the warm, skin-like pixels of the picture (red over green over blue) must stay warm after the
     // correction (pinkish, peach or tan, never grey-lilac); if they would not, the midtone curves are eased back
     if (!toned) {
-      const skin = []; for (let i = 0; i < d.length; i += 12) { const r = d[i], g = d[i + 1], b = d[i + 2]; if (r > 60 && r > g && g > b && r - b > 25 && r - b < 140 && (r + g + b) / 3 > 50) skin.push(i); }
+      // skin by a common RGB rule (bright, red over green over blue, enough difference): brown stains and dark wood mostly fail it
+      const skin = []; for (let i = 0; i < d.length; i += 12) { const r = d[i], g = d[i + 1], b = d[i + 2]; if (r > 95 && g > 40 && b > 20 && r > g && g > b && r - g > 12 && r - b > 30 && Math.max(r, g, b) - Math.min(r, g, b) > 15 && r < 250) skin.push(i); }
       if (skin.length > N * 0.004) {
-        const warm = (gg) => { let rb = 0, rg = 0; for (const i of skin) { const r = Math.pow(stretch(d[i], 0), gg[0]), g = Math.pow(stretch(d[i + 1], 1), gg[1]), b = Math.pow(stretch(d[i + 2], 2), gg[2]); rb += r - b; rg += r - g; } return [rb / skin.length, rg / skin.length]; };
+        // the share of those pixels still clearly warm after the curves (red above blue by 8%, above green by 3%)
+        const warm = (gg) => { let ok = 0; for (const i of skin) { const r = corr(d[i], 0, gg, et), g = corr(d[i + 1], 1, gg, et), b = corr(d[i + 2], 2, gg, et); if (r - b > 0.08 && r - g > 0.03) ok++; } return ok / skin.length; };
+        let et = 1;
         const full = gam.slice(); let used = 1;
-        for (const t of [1, 0.75, 0.5, 0.25, 0]) { const gg = full.map((v) => Math.pow(v, t)), [rb, rg] = warm(gg); used = t; gam = gg; if (rb > 0.09 && rg > 0.03) break; }
+        // ease the whole correction (levels and curves together) toward the neutral one until skin is warm again
+        for (const t of [1, 0.8, 0.6, 0.4, 0.2, 0]) { et = t; used = t; if (warm(full) > 0.85) break; }
+        ease = used;
         skinEase = used;
+      }
+    }
+    // foliage protection: plainly green pixels (grass, leaves) must stay green after the correction
+    if (!toned) {
+      const leaf = []; for (let i = 0; i < d.length; i += 12) { const r = d[i], g = d[i + 1], b = d[i + 2]; if (g > r + 8 && g > b + 8 && g > 40) leaf.push(i); }
+      if (leaf.length > N * 0.01) {
+        const greenOK = (gg) => { let t = 0; for (const i of leaf) { const r = Math.pow(stretch(d[i], 0), gg[0]), g = Math.pow(stretch(d[i + 1], 1), gg[1]), b = Math.pow(stretch(d[i + 2], 2), gg[2]); t += g - Math.max(r, b); } return t / leaf.length; };
+        const full = gam.slice(); for (const t of [1, 0.75, 0.5, 0.25, 0]) { const gg = full.map((v) => Math.pow(v, t)); gam = gg; if (greenOK(gg) > 0.02) { leafEase = t; break; } leafEase = t; }
       }
     }
     // how much colour faded: the picture's average saturation against a natural photo's (about 0.22 in HSV terms)
     let boost = 0;
     if (saturation && !toned) { let ss = 0, ns = 0; for (let i = 0; i < d.length; i += 16) { const v = [stretch(d[i], 0) ** gam[0], stretch(d[i + 1], 1) ** gam[1], stretch(d[i + 2], 2) ** gam[2]], mx = Math.max(...v); if (mx > 0.1) { ss += (mx - Math.min(...v)) / mx; ns++; } } const avg = ns ? ss / ns : 0.22; boost = Math.max(0, Math.min(0.6, (0.22 - avg) * 2.2)); }
-    const T = [0, 1, 2].map((c) => { const t = new Float32Array(256); for (let v = 0; v < 256; v++) t[v] = Math.pow(stretch(v, c), gam[c]) * 255; return t; });
+    const T = [0, 1, 2].map((c) => { const t = new Float32Array(256); for (let v = 0; v < 256; v++) t[v] = (toned ? Math.pow(stretch(v, c), gam[c]) : corr(v, c, gam, ease)) * 255; return t; });
     const o = copy(img), od = o.data, k = strength / 100;
     for (let i = 0; i < od.length; i += 4) {
       let r = T[0][d[i]], g = T[1][d[i + 1]], b = T[2][d[i + 2]];
       if (boost) { const l = 0.299 * r + 0.587 * g + 0.114 * b, s0 = (Math.max(r, g, b) - Math.min(r, g, b)) / 255, f = 1 + boost * (1 - s0); r = l + (r - l) * f; g = l + (g - l) * f; b = l + (b - l) * f; }
       od[i] = clamp(d[i] + (r - d[i]) * k); od[i + 1] = clamp(d[i + 1] + (g - d[i + 1]) * k); od[i + 2] = clamp(d[i + 2] + (b - d[i + 2]) * k);
     }
-    o.colourInfo = { toned, gamma: gam.map((v) => +v.toFixed(2)), levels: L, boost: +boost.toFixed(2), skinEase };
+    o.colourInfo = { toned, gamma: gam.map((v) => +v.toFixed(2)), levels: L, boost: +boost.toFixed(2), skinEase, leafEase };
     return o;
   }
   // Clarity: local contrast. The picture's large-scale brightness (a wide blur) is taken away and the rest made
@@ -406,5 +422,41 @@
     return o;
   }
 
-  IC.filters = { autoColour, clarity, pyramidBlend, aliasCheck, antialias, light, colour, autoLevels, autoFix, whiteBalance, greyscale, sepia, invert, threshold, posterize, blur, sharpen, denoise, median, despeckle, deblock, undither, pixelate, resize, scale2x, scale3x, rotate: rotateAny, rotate90: rotate, flip, crop, trimBox, canvasSize, makeClear, flatten, copy, canvasOf };
+
+  // ------------------------------------------------------------------ shadow recovery (local tone mapping)
+  // The picture's brightness is split (in log terms) into its broad lighting and its detail with an edge-keeping
+  // guided filter; the lighting is lifted where it is dark (and gently held down where it is very bright), then the
+  // detail is put back. Dark areas come up with their texture and without halos at their edges, the sky stays as it was.
+  // Gain is limited (maxGain) so noise in the shadows is not blown up. shadows / highlights 0–100.
+  function boxMean(A, W, H, r) {
+    const S = new Float64Array((W + 1) * (H + 1)), o = new Float32Array(W * H);
+    for (let y = 0; y < H; y++) { let run = 0; for (let x = 0; x < W; x++) { run += A[y * W + x]; S[(y + 1) * (W + 1) + x + 1] = S[y * (W + 1) + x + 1] + run; } }
+    for (let y = 0; y < H; y++) { const y0 = Math.max(0, y - r), y1 = Math.min(H, y + r + 1); for (let x = 0; x < W; x++) { const x0 = Math.max(0, x - r), x1 = Math.min(W, x + r + 1); o[y * W + x] = (S[y1 * (W + 1) + x1] - S[y0 * (W + 1) + x1] - S[y1 * (W + 1) + x0] + S[y0 * (W + 1) + x0]) / ((y1 - y0) * (x1 - x0)); } }
+    return o;
+  }
+  function guided(I, W, H, r, eps) { // self-guided filter (He, Sun and Tang): smooths while keeping strong edges
+    const N = W * H, II = new Float32Array(N); for (let i = 0; i < N; i++) II[i] = I[i] * I[i];
+    const mI = boxMean(I, W, H, r), mII = boxMean(II, W, H, r), a = new Float32Array(N), b = new Float32Array(N);
+    for (let i = 0; i < N; i++) { const v = mII[i] - mI[i] * mI[i]; a[i] = v / (v + eps); b[i] = mI[i] - a[i] * mI[i]; }
+    const ma = boxMean(a, W, H, r), mb = boxMean(b, W, H, r), q = new Float32Array(N); for (let i = 0; i < N; i++) q[i] = ma[i] * I[i] + mb[i];
+    return q;
+  }
+  function shadowRecover(img, { shadows = 50, highlights = 20, detail = 10, maxGain = 3 } = {}) {
+    const W = img.width, H = img.height, s = img.data, N = W * H, Lg = new Float32Array(N);
+    for (let p = 0; p < N; p++) Lg[p] = Math.log(1 + 0.2126 * TO_LIN8[s[p * 4]] * 255 + 0.7152 * TO_LIN8[s[p * 4 + 1]] * 255 + 0.0722 * TO_LIN8[s[p * 4 + 2]] * 255);
+    const base = guided(Lg, W, H, Math.max(4, Math.round(Math.max(W, H) * 0.02)), 0.08);
+    // the middle of the picture's lighting (median of the base), the level shadows are pulled toward
+    const sorted = Float32Array.from(base).sort(), mid = sorted[N >> 1], hiRef = sorted[Math.floor(N * 0.98)];
+    const ks = shadows / 100 * 0.75, kh = highlights / 100 * 0.35, kd = 1 + detail / 100, o = copy(img), d = o.data;
+    for (let p = 0; p < N; p++) {
+      const bse = base[p], nb = bse < mid ? bse + (mid - bse) * ks : bse > mid ? bse - (bse - mid) * kh * Math.max(0, (bse - mid) / Math.max(1e-3, hiRef - mid)) : bse;
+      const nl = nb + (Lg[p] - bse) * kd, gain = Math.min(maxGain, Math.max(0.5, (Math.exp(nl) - 1) / Math.max(1e-3, Math.exp(Lg[p]) - 1)));
+      // the gain applies to light (linear), then back to sRGB numbers: colours keep their hue
+      for (let c = 0; c < 3; c++) { const lin = TO_LIN8[s[p * 4 + c]] * gain; d[p * 4 + c] = 255 * (lin <= 0.0031308 ? lin * 12.92 : 1.055 * Math.pow(Math.min(1, lin), 1 / 2.4) - 0.055); }
+    }
+    return o;
+  }
+  const TO_LIN8 = (() => { const t = new Float32Array(256); for (let i = 0; i < 256; i++) { const c = i / 255; t[i] = c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); } return t; })();
+
+  IC.filters = { shadowRecover, guided, autoColour, clarity, pyramidBlend, aliasCheck, antialias, light, colour, autoLevels, autoFix, whiteBalance, greyscale, sepia, invert, threshold, posterize, blur, sharpen, denoise, median, despeckle, deblock, undither, pixelate, resize, scale2x, scale3x, rotate: rotateAny, rotate90: rotate, flip, crop, trimBox, canvasSize, makeClear, flatten, copy, canvasOf };
 })();
