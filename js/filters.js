@@ -355,14 +355,16 @@
     let sv = 0, sm = [0, 0, 0], n0 = 0;
     for (let i = 0; i < d.length; i += 16) { const r = d[i], g = d[i + 1], b = d[i + 2], l = (r + g + b) / 3; if (l < 20 || l > 235) continue; sm[0] += r - l; sm[1] += g - l; sm[2] += b - l; n0++; }
     if (n0) { sm = sm.map((v) => v / n0); for (let i = 0; i < d.length; i += 16) { const r = d[i], g = d[i + 1], b = d[i + 2], l = (r + g + b) / 3; if (l < 20 || l > 235) continue; sv += (r - l - sm[0]) ** 2 + (g - l - sm[1]) ** 2 + (b - l - sm[2]) ** 2; } sv = Math.sqrt(sv / n0 / 3); }
-    const toned = keepTone === true || (keepTone === 'auto' && sv < 5.5); let skinEase = 1, leafEase = 1;
+    const spread = hueSpread(d), toned = keepTone === true || (keepTone === 'auto' && spread < 0.01); let skinEase = 1, leafEase = 1; void sv;
+    // between toned and plainly colour: only part of the colour correction (the rest stays as the picture's own tone)
+    const graded = keepTone === 'auto' && !toned ? Math.min(1, (spread - 0.01) / 0.09) : 1;
     // levels: per colour, or (toned) the same for all three so the tone stays
     let L = E;
     if (toned) { const lo = Math.min(...E.map((e) => e[0])), hi = Math.max(...E.map((e) => e[1])); L = [[lo, hi], [lo, hi], [lo, hi]]; }
     const stretch = (v, c) => Math.max(0, Math.min(1, (v - L[c][0]) / Math.max(1, L[c][1] - L[c][0])));
     // the neutral version: one stretch for all three colours (what easing falls back toward)
     const sLo = Math.min(...E.map((e) => e[0])), sHi = Math.max(...E.map((e) => e[1])), shared = (v) => Math.max(0, Math.min(1, (v - sLo) / Math.max(1, sHi - sLo)));
-    let ease = 1; const corr = (v, c, gg, t) => (1 - t) * shared(v) + t * Math.pow(stretch(v, c), gg[c]);
+    let ease = graded; const corr = (v, c, gg, t) => (1 - t) * shared(v) + t * Math.pow(stretch(v, c), gg[c]);
     // midtone gammas from nearly-grey midtones (after the stretch)
     let gam = [1, 1, 1];
     if (!toned) {
@@ -381,7 +383,7 @@
         let et = 1;
         const full = gam.slice(); let used = 1;
         // ease the whole correction (levels and curves together) toward the neutral one until skin is warm again
-        for (const t of [1, 0.8, 0.6, 0.4, 0.2, 0]) { et = t; used = t; if (warm(full) > 0.85) break; }
+        for (const t of [1, 0.8, 0.6, 0.4, 0.2, 0].map((v) => v * graded)) { et = t; used = t; if (warm(full) > 0.85) break; }
         ease = used;
         skinEase = used;
       }
@@ -404,7 +406,7 @@
       if (boost) { const l = 0.299 * r + 0.587 * g + 0.114 * b, s0 = (Math.max(r, g, b) - Math.min(r, g, b)) / 255, f = 1 + boost * (1 - s0); r = l + (r - l) * f; g = l + (g - l) * f; b = l + (b - l) * f; }
       od[i] = clamp(d[i] + (r - d[i]) * k); od[i + 1] = clamp(d[i + 1] + (g - d[i + 1]) * k); od[i + 2] = clamp(d[i + 2] + (b - d[i + 2]) * k);
     }
-    o.colourInfo = { toned, gamma: gam.map((v) => +v.toFixed(2)), levels: L, boost: +boost.toFixed(2), skinEase, leafEase };
+    o.colourInfo = { toned, gamma: gam.map((v) => +v.toFixed(2)), levels: L, boost: +boost.toFixed(2), skinEase, leafEase, spread: +spread.toFixed(3), graded: +graded.toFixed(2) };
     return o;
   }
   // Clarity: local contrast. The picture's large-scale brightness (a wide blur) is taken away and the rest made
@@ -458,5 +460,66 @@
   }
   const TO_LIN8 = (() => { const t = new Float32Array(256); for (let i = 0; i < 256; i++) { const c = i / 255; t[i] = c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); } return t; })();
 
-  IC.filters = { shadowRecover, guided, autoColour, clarity, pyramidBlend, aliasCheck, antialias, light, colour, autoLevels, autoFix, whiteBalance, greyscale, sepia, invert, threshold, posterize, blur, sharpen, denoise, median, despeckle, deblock, undither, pixelate, resize, scale2x, scale3x, rotate: rotateAny, rotate90: rotate, flip, crop, trimBox, canvasSize, makeClear, flatten, copy, canvasOf };
+
+  // ------------------------------------------------------------------ dehaze (dark channel prior, He, Sun and Tang)
+  // In a clear photo almost every small area has something dark in it (a shadow, a dark colour); a veil of haze or
+  // fading lifts those darks everywhere. The "dark channel" (the darkest value in each small square) measures how thick
+  // the veil is at each place; the veil's own colour is taken from where it is thickest. Then each pixel is
+  //   J = (I − A) / t + A,  with t = 1 − ω · dark(I / A)
+  // (t: how much of the real scene shows through), the map t smoothed with a guided filter so edges stay clean.
+  //   strength 0–100 (ω up to 0.95), keepSome: a little veil is kept so distance still looks like distance.
+  function guidedBy(G, P, W, H, r, eps) { // guided filter: P smoothed, following the edges of the guide G
+    const N = W * H, GP = new Float32Array(N), GG = new Float32Array(N); for (let i = 0; i < N; i++) { GP[i] = G[i] * P[i]; GG[i] = G[i] * G[i]; }
+    const mG = boxMean(G, W, H, r), mP = boxMean(P, W, H, r), mGP = boxMean(GP, W, H, r), mGG = boxMean(GG, W, H, r), a = new Float32Array(N), b = new Float32Array(N);
+    for (let i = 0; i < N; i++) { const v = mGG[i] - mG[i] * mG[i], cov = mGP[i] - mG[i] * mP[i]; a[i] = cov / (v + eps); b[i] = mP[i] - a[i] * mG[i]; }
+    const ma = boxMean(a, W, H, r), mb = boxMean(b, W, H, r), q = new Float32Array(N); for (let i = 0; i < N; i++) q[i] = ma[i] * G[i] + mb[i];
+    return q;
+  }
+  function darkChannel(img, R) {
+    const W = img.width, H = img.height, s = img.data, N = W * H, m = new Float32Array(N), t = new Float32Array(N), o = new Float32Array(N);
+    for (let p = 0; p < N; p++) m[p] = Math.min(s[p * 4], s[p * 4 + 1], s[p * 4 + 2]) / 255;
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { let v = 1; for (let k = Math.max(0, x - R); k <= Math.min(W - 1, x + R); k++) v = Math.min(v, m[y * W + k]); t[y * W + x] = v; }
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { let v = 1; for (let k = Math.max(0, y - R); k <= Math.min(H - 1, y + R); k++) v = Math.min(v, t[k * W + x]); o[y * W + x] = v; }
+    return o;
+  }
+  // how hazy a picture is: the average of its dark channel (clear photos: under about 0.1; a heavy veil: 0.3 and up)
+  // a picture that is one colour throughout (sepia, cyanotype, black and white): its colour hardly varies pixel to pixel
+  // one hue throughout: nearly every coloured pixel within 25° of the picture's average hue (sepia stays sepia however
+  // strong); saturation kept modest (a real colour photo of, say, autumn leaves can be mostly one hue but is saturated)
+  // How much clearly different colour a picture has: the share of coloured midtone pixels whose hue is more than 60°
+  // from the main hue (very bright and very dark pixels, where flakes and glare live, are left out). A toned print
+  // (sepia, cyanotype, black and white) has almost none; a colour photo, even badly faded, has some (a blue shirt,
+  // grass). Under 1%: toned; 10% and more: colour; between, a faded colour print or a toned one with stains.
+  function hueSpread(d) {
+    let sx = 0, sy = 0, n = 0; const hs = [], cs = [];
+    for (let i = 0; i < d.length; i += 16) { const r = d[i], g = d[i + 1], b = d[i + 2], mx = Math.max(r, g, b), mn = Math.min(r, g, b); if (mx < 40 || mx > 205 || mx - mn < 8) continue; const c = mx - mn; let h = mx === r ? ((g - b) / c) % 6 : mx === g ? (b - r) / c + 2 : (r - g) / c + 4; h *= Math.PI / 3; hs.push(h); cs.push(c); sx += Math.cos(h); sy += Math.sin(h); n++; }
+    if (n < 50) return 0;
+    const mean = Math.atan2(sy, sx); let far = 0, strong = 0;
+    for (let k = 0; k < hs.length; k++) { if (cs[k] <= 10) continue; strong++; let dd = Math.abs(hs[k] - mean) % (2 * Math.PI); if (dd > Math.PI) dd = 2 * Math.PI - dd; if (dd > Math.PI / 3) far++; }
+    return strong ? far / strong : 0;
+  }
+  const oneHue = (d) => hueSpread(d) < 0.01;
+  function isToned(img) { return oneHue(img.data); }
+  function hazeLevel(img) { const D = darkChannel(img, Math.max(3, Math.round(Math.max(img.width, img.height) * 0.01))); let t = 0; for (let i = 0; i < D.length; i++) t += D[i]; return t / D.length; }
+  function dehaze(img, { strength = 70, keepSome = 0.1 } = {}) {
+    const W = img.width, H = img.height, s = img.data, N = W * H, R = Math.max(3, Math.round(Math.max(W, H) * 0.01));
+    const D = darkChannel(img, R);
+    // the veil's colour: the brightest original pixels among the 0.1% thickest-veil places
+    const idx = Array.from({ length: N }, (_, i) => i).sort((a, b) => D[b] - D[a]).slice(0, Math.max(1, Math.floor(N * 0.001)));
+    const A = [0, 0, 0]; let bestL = -1; const top = idx.map((i) => [i, s[i * 4] + s[i * 4 + 1] + s[i * 4 + 2]]).sort((a, b) => b[1] - a[1]).slice(0, Math.max(1, Math.floor(idx.length * 0.2)));
+    top.forEach(([i]) => { A[0] += s[i * 4]; A[1] += s[i * 4 + 1]; A[2] += s[i * 4 + 2]; }); for (let c = 0; c < 3; c++) A[c] = Math.max(1, A[c] / top.length); void bestL;
+    // a toned picture (sepia…): its colour is the tone, not the veil, so the veil is taken as colourless and the tone stays
+    if (isToned(img)) { const m = (A[0] + A[1] + A[2]) / 3; A[0] = A[1] = A[2] = m; }
+    // transmission from the dark channel of I / A, smoothed along the picture's own edges
+    const norm = new ImageData(W, H), nd = norm.data; for (let p = 0; p < N; p++) { for (let c = 0; c < 3; c++) nd[p * 4 + c] = Math.min(255, (s[p * 4 + c] / A[c]) * 255); nd[p * 4 + 3] = 255; }
+    const Dn = darkChannel(norm, R), w = 0.95 * (strength / 100), t0 = new Float32Array(N), G = new Float32Array(N);
+    for (let p = 0; p < N; p++) { t0[p] = 1 - w * Dn[p]; G[p] = (0.299 * s[p * 4] + 0.587 * s[p * 4 + 1] + 0.114 * s[p * 4 + 2]) / 255; }
+    const t = guidedBy(G, t0, W, H, R * 3, 0.001);
+    const o = copy(img), d = o.data, tmin = 0.1 + keepSome * 0.3;
+    for (let p = 0; p < N; p++) { const tt = Math.max(tmin, Math.min(1, t[p])); for (let c = 0; c < 3; c++) d[p * 4 + c] = clamp((s[p * 4 + c] - A[c]) / tt + A[c]); }
+    o.haze = { A: A.map(Math.round), level: +(D.reduce((a, b) => a + b, 0) / N).toFixed(3) };
+    return o;
+  }
+
+  IC.filters = { dehaze, hazeLevel, isToned, shadowRecover, guided, autoColour, clarity, pyramidBlend, aliasCheck, antialias, light, colour, autoLevels, autoFix, whiteBalance, greyscale, sepia, invert, threshold, posterize, blur, sharpen, denoise, median, despeckle, deblock, undither, pixelate, resize, scale2x, scale3x, rotate: rotateAny, rotate90: rotate, flip, crop, trimBox, canvasSize, makeClear, flatten, copy, canvasOf };
 })();

@@ -36,7 +36,8 @@ Classic formats fit the picture to that machine's screen and colours for you (th
 
 ### Restore old photos
 
-- **Auto colour** (Adjust tab): corrects a faded print the way a photo lab would: each colour's own black and white points, the midtones made neutral with a curve, and faded colour brought back by how much is missing. Skin tones and greenery are protected (the correction eases off rather than turning faces grey or grass brown), and a sepia or toned picture keeps its tone.
+- **Auto colour** (Adjust tab): corrects a faded print the way a photo lab would: each colour's own black and white points, the midtones made neutral with a curve, and faded colour brought back by how much is missing. Skin tones and greenery are protected (the correction eases off rather than turning faces grey or grass brown), and a sepia or toned picture keeps its tone: a picture with almost no colour other than its main hue is treated as toned, a very faded colour print gets part of the correction, and Make neutral forces a full one.
+- **Dehaze** (Adjust tab): takes away a foggy or faded grey-white veil. How thick the veil is gets measured everywhere (a clear photo always has something dark in each small area: the dark channel prior) and removed; a toned print keeps its tone. Restore old photo dehazes when it measures a veil.
 - **Recover shadows** (Adjust tab): lifts dark areas (an underexposed subject, deep shade) with their texture, leaving the sky alone: the picture's broad lighting is evened out by an edge-keeping (guided) filter and its detail put back, with a limit so shadow noise is not blown up.
 - **Clarity** (Adjust tab): local contrast that brings out texture and detail (faces, fabric, leaves) without the hard edges of sharpening.
 
