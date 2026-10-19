@@ -14,9 +14,9 @@
   const MODELS = {
     cutout: { id: 'BritishWerewolf/U-2-Net', cpuId: 'BritishWerewolf/U-2-Netp', file: 'onnx/model.onnx', name: 'Background cut-out', what: 'Finds the main subject of a photo and takes the background away, even on busy backgrounds. (About 4 seconds a picture; on a basic computer a small, quicker version is used.)', mb: { gpu: 176, cpu: 176 }, licence: 'Apache-2.0' },
     best: { id: 'onnx-community/BEN2-ONNX', name: 'Best-quality cut-out', what: 'Finer edges (hair, fur) for the background cut-out, but slow: about 20 seconds a picture, and only with a graphics card.', mb: { gpu: 219, cpu: 219 }, licence: 'MIT', gpuOnly: true },
-    sharp: { id: 'Xenova/swin2SR-classical-sr-x2-64', name: 'Upscale 2× (clean pictures)', what: 'Doubles the size of a clean picture and keeps edges sharp instead of blurring them.', mb: { gpu: 50, cpu: 15 }, licence: 'Apache-2.0', scale: 2 },
-    photo: { id: 'Xenova/swin2SR-realworld-sr-x4-64-bsrgan-psnr', name: 'Upscale 4× (old photos)', what: 'Makes an old, small or noisy photo four times bigger and cleans the noise and blur as it goes.', mb: { gpu: 50, cpu: 15 }, licence: 'Apache-2.0', scale: 4 },
-    jpeg: { id: 'Xenova/swin2SR-compressed-sr-x4-48', name: 'Upscale 4× (JPEG clean-up)', what: 'For pictures spoilt by JPEG blocks and smudges: four times bigger with the blocks taken out.', mb: { gpu: 30, cpu: 10 }, licence: 'Apache-2.0', scale: 4 },
+    sharp: { gpuDtype: 'fp32', id: 'Xenova/swin2SR-classical-sr-x2-64', name: 'Upscale 2× (clean pictures)', what: 'Doubles the size of a clean picture and keeps edges sharp instead of blurring them.', mb: { gpu: 48, cpu: 15 }, licence: 'Apache-2.0', scale: 2 },
+    photo: { gpuDtype: 'fp32', id: 'Xenova/swin2SR-realworld-sr-x4-64-bsrgan-psnr', name: 'Upscale 4× (old photos)', what: 'Makes an old, small or noisy photo four times bigger and cleans the noise and blur as it goes.', mb: { gpu: 50, cpu: 15 }, licence: 'Apache-2.0', scale: 4 },
+    jpeg: { gpuDtype: 'fp32', id: 'Xenova/swin2SR-compressed-sr-x4-48', name: 'Upscale 4× (JPEG clean-up)', what: 'For pictures spoilt by JPEG blocks and smudges: four times bigger with the blocks taken out.', mb: { gpu: 30, cpu: 10 }, licence: 'Apache-2.0', scale: 4 },
     pick: { id: 'Xenova/slimsam-77-uniform', name: 'Pick an object', what: 'Click an object in a picture and it is outlined for you, to keep or take out.', mb: { gpu: 21, cpu: 14 }, licence: 'Apache-2.0' },
   };
   const DEFAULTS = { on: true, gpu: null, use: { cutout: true, best: false, sharp: true, photo: true, jpeg: true, pick: true } };
@@ -108,7 +108,8 @@
     const key = k + ':' + (k === 'cutout' ? cutoutId() : deviceFor(k));
     if (!loaded[key]) loaded[key] = (async () => {
       await probed; const T = await lib(), m = MODELS[k], files = {};
-      const dv = deviceFor(k), opts = { device: dv, dtype: dv === 'webgpu' ? (found.f16 || k === 'cutout' ? 'fp16' : 'fp32') : 'q8', progress_callback: (e) => {
+      // the upscalers (Swin2SR) only run on the graphics card in full precision: their half-precision files fail there
+      const dv = deviceFor(k), opts = { device: dv, dtype: dv === 'webgpu' ? (m.gpuDtype || (found.f16 || k === 'cutout' ? 'fp16' : 'fp32')) : 'q8', progress_callback: (e) => {
         if (e.status === 'progress' && e.total) { files[e.file] = [e.loaded, e.total]; const v = Object.values(files); progress(k, { loaded: v.reduce((s, x) => s + x[0], 0), total: v.reduce((s, x) => s + x[1], 0) }); }
       } };
       progress(k, { status: 'starting' });
@@ -186,22 +187,35 @@
   async function upscale(src, kind = 'sharp', onTile) {
     const T = await lib(), m = MODELS[kind], S = m.scale, im = await imgOf(src), W = im.naturalWidth || im.width, H = im.naturalHeight || im.height;
     const out = document.createElement('canvas'); out.width = W * S; out.height = H * S; const ox = out.getContext('2d');
-    const TILE = 128, PAD = 12, tiles = [];
+    // Tiles overlap by OV pixels and are faded into each other (weights ramp down over the overlap), so no seam shows.
+    // The model pads each tile to a multiple of its window, so its output can be a little bigger than the tile: only
+    // the tile's own part (exactly S times its size, from the top left) is used.
+    const TILE = 160, OV = 24, tiles = [];
     for (let y = 0; y < H; y += TILE) for (let x = 0; x < W; x += TILE) tiles.push([x, y]);
+    const OW = W * S, OH = H * S, acc = new Float32Array(OW * OH * 3), wsum = new Float32Array(OW * OH);
     let n = 0;
     for (const [x, y] of tiles) {
-      const x0 = Math.max(0, x - PAD), y0 = Math.max(0, y - PAD), x1 = Math.min(W, x + TILE + PAD), y1 = Math.min(H, y + TILE + PAD);
+      const x0 = Math.max(0, x - OV), y0 = Math.max(0, y - OV), x1 = Math.min(W, x + TILE + OV), y1 = Math.min(H, y + TILE + OV);
       const c = document.createElement('canvas'); c.width = x1 - x0; c.height = y1 - y0; const cx = c.getContext('2d');
       cx.fillStyle = '#fff'; cx.fillRect(0, 0, c.width, c.height); cx.drawImage(im, -x0, -y0);
-      const raw = await rawOf(T, c), r = await run(kind, (pipe) => pipe(raw)), res = Array.isArray(r) ? r[0] : r;
-      const tc = document.createElement('canvas'); tc.width = res.width; tc.height = res.height;
-      const id = tc.getContext('2d').createImageData(res.width, res.height), ch = res.channels;
-      for (let i = 0; i < res.width * res.height; i++) { id.data[i * 4] = res.data[i * ch]; id.data[i * 4 + 1] = res.data[i * ch + 1]; id.data[i * 4 + 2] = res.data[i * ch + 2]; id.data[i * 4 + 3] = 255; }
-      tc.getContext('2d').putImageData(id, 0, 0);
-      const k = tc.width / c.width, w = Math.min(TILE, W - x), h = Math.min(TILE, H - y);
-      ox.drawImage(tc, (x - x0) * k, (y - y0) * k, w * k, h * k, x * S, y * S, w * S, h * S);
+      const raw = await rawOf(T, c), r = await run(kind, (pipe) => pipe(raw)), res = Array.isArray(r) ? r[0] : r, ch = res.channels, rw = res.width;
+      const tw = Math.min((x1 - x0) * S, res.width), th = Math.min((y1 - y0) * S, res.height);
+      // how much each output pixel of this tile counts: full in the middle, fading to the tile's edges inside the
+      // picture (not at the picture's own edges)
+      const ramp = (pos, lo, hi, atLo, atHi) => { const a = atLo ? 1 : Math.min(1, (pos - lo + 0.5) / (OV * S)), b = atHi ? 1 : Math.min(1, (hi - pos - 0.5) / (OV * S)); return Math.max(0.001, Math.min(a, b)); };
+      for (let v = 0; v < th; v++) {
+        const Y = y0 * S + v, wy = ramp(v, 0, th, y0 === 0, y1 === H);
+        for (let u = 0; u < tw; u++) {
+          const X = x0 * S + u, w = wy * ramp(u, 0, tw, x0 === 0, x1 === W), q = Y * OW + X, i = (v * rw + u) * ch;
+          acc[q * 3] += res.data[i] * w; acc[q * 3 + 1] += res.data[i + 1] * w; acc[q * 3 + 2] += res.data[i + 2] * w; wsum[q] += w;
+        }
+      }
       n++; if (onTile) onTile(n, tiles.length);
+      await new Promise((r2) => setTimeout(r2, 0)); // let the page breathe between tiles
     }
+    const od = ox.createImageData(OW, OH);
+    for (let q = 0; q < OW * OH; q++) { const w = wsum[q] || 1; od.data[q * 4] = acc[q * 3] / w; od.data[q * 4 + 1] = acc[q * 3 + 1] / w; od.data[q * 4 + 2] = acc[q * 3 + 2] / w; od.data[q * 4 + 3] = 255; }
+    ox.putImageData(od, 0, 0);
     // see-through: the original's alpha, scaled smoothly
     const a = document.createElement('canvas'); a.width = out.width; a.height = out.height; const ax = a.getContext('2d'); ax.imageSmoothingQuality = 'high'; ax.drawImage(im, 0, 0, a.width, a.height);
     const ad = ax.getImageData(0, 0, a.width, a.height).data;

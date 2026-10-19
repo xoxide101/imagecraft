@@ -322,6 +322,14 @@
     colour: { title: 'Colour', icon: IK.colour, s: { saturation: 0, vibrance: 0, hue: 0, warmth: 0, tint: 0 },
       fields: [range('saturation', 'Saturation', -100, 100), range('vibrance', 'Vibrance (gentle)', -100, 100), range('hue', 'Hue (degrees)', -180, 180), range('warmth', 'Warmth (blue ↔ yellow)', -100, 100), range('tint', 'Tint (green ↔ magenta)', -100, 100)],
       run: (img, s) => X.colour(img, s) },
+    autocolour: { title: 'Auto colour (faded prints)', icon: IK.colour, s: { strength: 100, keepTone: 'auto', saturation: true },
+      fields: [range('strength', 'Strength', 0, 100), seg('keepTone', 'Toned pictures (sepia…)', [['auto', 'Notice them'], [true, 'Keep the tone'], [false, 'Make neutral']]), chk('saturation', 'Bring back faded colour'), { t: 'out' },
+        note('Like a photo lab: each colour’s black and white points, the midtones made neutral with a curve, and faded colour brought back by how much is missing. A sepia or toned picture keeps its tone and only gets its contrast back.')],
+      report: (img) => { const c = img.colourInfo; return c ? `<p class="hint">${c.toned ? 'A toned picture: tone kept, levels fixed.' : `Colour curves ${c.gamma.join(' / ')} (red / green / blue)${c.boost ? `, faded colour +${Math.round(c.boost * 100)}%` : ''}${c.skinEase < 1 ? `; eased to ${Math.round(c.skinEase * 100)}% to keep skin natural` : ''}.`}</p>` : ''; },
+      run: (img, s) => X.autoColour(img, { strength: s.strength, keepTone: s.keepTone, saturation: s.saturation }) },
+    clarity: { title: 'Clarity (local contrast)', icon: IK.sharpen, s: { amount: 35, radius: 0 },
+      fields: [range('amount', 'Amount', 0, 100), range('radius', 'Size (0 = automatic)', 0, 80), note('Brings out texture and detail (faces, fabric, leaves) by strengthening local contrast in the midtones, without the hard edges of sharpening.')],
+      run: (img, s) => X.clarity(img, s) },
     balance: { title: 'Fix a colour cast', icon: IK.balance, s: { method: 'auto', strength: 80, percent: 1, rgb: null },
       fields: [seg('method', 'How', [['auto', 'Greys to grey'], ['grey', 'Average to grey'], ['white', 'Brightest to white'], ['pick', 'Click something white']]),
         range('percent', 'Brightest part used (%)', 0.1, 10, 0.1, (s) => s.method === 'white'), { t: 'swatch', k: 'rgb', label: 'Picked colour (click the picture)', show: (s) => s.method === 'pick' && s.rgb }, note('Click something in the picture that should be white or grey: a shirt, paper, a wall, a cloud.', (s) => s.method === 'pick' && !s.rgb),
@@ -400,7 +408,7 @@
         if (s.kind === 'pixel') { if (k > 1) o = X.resize(img, { width: img.width * k, height: img.height * k, method: 'smoothpixel' }); return X.sharpen(o, { amount: 30, radius: 1 }); }
         if (s.kind === 'screen') { say && say('Blending the dots…'); o = X.undither(o, { strength: 65 }); }
         // old photo, in the usual restoration order: dust, noise (grain and colour separately), a little deblur, then tone
-        if (s.kind === 'photo') { say && say('Dust and noise…'); o = IC.restore.impulse(o, { threshold: 30 }); const n = IC.restore.noiseLevel(o); if (n.luma > 1 || n.chroma > 1) o = IC.restore.nlm(o, nlmFor(n)); say && say('Sharpness and tone…'); const m = IC.restore.measure(o); if (m && m.radius > 0.8) o = IC.restore.deblur(o, { kind: 'gauss', radius: Math.min(3, m.radius * 0.7), noise: kFor(IC.restore.noiseLevel(o).luma) + 20, strength: 60 }); o = IC.restore.clahe(X.autoLevels(X.whiteBalance(o, { method: 'auto', strength: 70 }), { clip: 0.2 }), { clip: 1.5, amount: 30 }); }
+        if (s.kind === 'photo') { say && say('Dust and noise…'); o = IC.restore.impulse(o, { threshold: 30 }); const n = IC.restore.noiseLevel(o); if (n.luma > 1 || n.chroma > 1) o = IC.restore.nlm(o, nlmFor(n)); say && say('Sharpness and tone…'); const m = IC.restore.measure(o); if (m && m.radius > 0.8) o = IC.restore.deblur(o, { kind: 'gauss', radius: Math.min(3, m.radius * 0.7), noise: kFor(IC.restore.noiseLevel(o).luma) + 20, strength: 60 }); o = X.clarity(X.autoColour(o, { strength: 100 }), { amount: 30 }); }
         if (s.kind === 'jpeg') { say && say('Smoothing the blocks…'); o = X.deblock(o, { strength: 60 }); }
         if (k > 1) o = s.useAi ? await upscaleWith(o, s.kind === 'jpeg' ? 'ai-jpeg' : s.kind === 'photo' ? 'ai-photo' : 'ai-sharp', k, say) : X.resize(o, { width: o.width * k, height: o.height * k });
         // a light finish (an old photo was sharpened by the deblur already)
@@ -886,8 +894,8 @@
       ] },
       { id: 'adjust', label: 'Adjust', hue: '#e07a1f', groups: [
         ['Light', [B('Brightness', IK.light, T('light'), { big: true, title: 'Brightness, contrast, midtones, shadows and highlights' }), { col: [B('Auto levels', IK.auto, () => quick('Auto levels', (i) => X.autoLevels(i))), B('Auto fix', IK.auto, () => quick('Auto fix', (i) => X.autoFix(i)))] }]],
-        ['Colour', [B('Colour', IK.colour, T('colour'), { big: true, title: 'Saturation, vibrance, hue, warmth and tint' }), { col: [B('Fix a colour cast', IK.balance, T('balance')), B('Greyscale', IK.grey, () => quick('Greyscale', (i) => X.greyscale(i))), B('Sepia', IK.sepia, T('sepia'))] }, { col: [B('Invert', IK.invert, () => quick('Invert', (i) => X.invert(i))), B('Threshold', IK.threshold, T('threshold')), B('Posterize', IK.posterize, T('posterize'))] }]],
-        ['Detail', [{ col: [B('Sharpen', IK.sharpen, T('sharpen')), B('Blur', IK.blur, T('blur')), B('Pixelate', IK.pixelate, T('pixelate'))] }]],
+        ['Colour', [B('Auto colour', IK.auto, T('autocolour'), { big: true, title: 'Correct a faded print: levels, neutral midtones and faded colour' }), B('Colour', IK.colour, T('colour'), { big: true, title: 'Saturation, vibrance, hue, warmth and tint' }), { col: [B('Fix a colour cast', IK.balance, T('balance')), B('Greyscale', IK.grey, () => quick('Greyscale', (i) => X.greyscale(i))), B('Sepia', IK.sepia, T('sepia'))] }, { col: [B('Invert', IK.invert, () => quick('Invert', (i) => X.invert(i))), B('Threshold', IK.threshold, T('threshold')), B('Posterize', IK.posterize, T('posterize'))] }]],
+        ['Detail', [B('Clarity', IK.sharpen, T('clarity'), { big: true, title: 'Local contrast: texture and detail' }), { col: [B('Sharpen', IK.sharpen, T('sharpen')), B('Blur', IK.blur, T('blur')), B('Pixelate', IK.pixelate, T('pixelate'))] }]],
       ] },
       { id: 'colours', label: 'Colours', hue: '#b44be1', groups: [
         ['Depth', [B('Colour depth', IK.depth, T('depth'), { big: true, title: '1, 2, 4 or 8-bit colour, high colour, palettes and dithering' }), B('Computer looks', IK.retro, T('looks'), { big: true, title: 'Atari ST, Amiga, C64, ZX Spectrum, CGA, EGA, VGA, Macintosh, Game Boy…' })]],

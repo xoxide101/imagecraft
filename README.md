@@ -36,6 +36,9 @@ Classic formats fit the picture to that machine's screen and colours for you (th
 
 ### Restore old photos
 
+- **Auto colour** (Adjust tab): corrects a faded print the way a photo lab would: each colour's own black and white points, the midtones made neutral with a curve, and faded colour brought back by how much is missing. Skin tones are protected (the correction eases off rather than turning faces grey), and a sepia or toned picture keeps its tone.
+- **Clarity** (Adjust tab): local contrast that brings out texture and detail (faces, fabric, leaves) without the hard edges of sharpening.
+
 - **Restore old photo** (Clean up tab): one click. It measures the picture's noise and blur, then takes out dust, removes grain and colour blotches, gently undoes blur, fixes a colour cast (only nearly-grey things are made neutral, so a sunset stays warm), levels and brings back faded detail.
 - **Remove noise**: non-local means. Each pixel is averaged with others nearby whose surroundings look alike, so texture and edges stay while grain goes; grain and colour blotches are handled separately. It opens already set to the noise measured in the picture.
 - **Deblur**: undoes soft focus, out of focus or camera shake. A degraded picture is the sharp one spread by a blur plus noise (*g = h ∗ f + n*); Deblur inverts that with a Wiener filter plus a gradient prior, with mirrored edges and no halos. **Measure the blur** reads the blur size from the picture's sharpest edges. **Careful** alternates undoing the blur with removing noise (plug-and-play restoration): slower, cleaner on grainy pictures.
@@ -67,7 +70,7 @@ Auto fix, auto levels, brightness, contrast, midtones, shadows and highlights; s
 
 ### AI helpers
 
-Small AI models that run inside the browser, on the graphics card if there is one: the background cut-out (U²-Net, or BEN2 for finer edges), object picking (SlimSAM) and upscaling (Swin2SR). Each downloads once from Hugging Face when first used (or with Download now in Convert › AI helpers) and is kept by the browser for offline use. The computer is checked automatically.
+Small AI models that run inside the browser, on the graphics card if there is one (the upscalers run there about 16 times faster than on the processor): the background cut-out (U²-Net, or BEN2 for finer edges), object picking (SlimSAM) and upscaling (Swin2SR). Each downloads once from Hugging Face when first used (or with Download now in Convert › AI helpers) and is kept by the browser for offline use. The computer is checked automatically.
 
 ## When something goes wrong
 

@@ -20,9 +20,12 @@
   window.addEventListener('error', (ev) => add('error', ev.message || 'Error', ev.error || `${ev.filename || ''}:${ev.lineno || ''}:${ev.colno || ''}`));
   window.addEventListener('unhandledrejection', (ev) => { const r = ev.reason; add('error', (r && r.message) || String(r) || 'A promise failed', r); });
   // console errors and warnings are copied into the log too (and still go to the console)
+  let ortNotes = 0, ortT = null;
   ['error', 'warn'].forEach((lv) => {
     const orig = console[lv].bind(console);
-    console[lv] = (...a) => { try { add(lv, a.map((x) => (x instanceof Error ? x.message : typeof x === 'string' ? x : str(x))).join(' ').slice(0, 2000), a.find((x) => x instanceof Error)); } catch (e) { /* ignore */ } orig(...a); };
+    console[lv] = (...a) => { try {
+      // the AI runtime's own notes ("[W:onnxruntime …] could not constant fold …") are not errors: counted, not listed
+      if (typeof a[0] === 'string' && /\[W:onnxruntime|\[I:onnxruntime/.test(a[0])) { ortNotes++; clearTimeout(ortT); ortT = setTimeout(() => { add('info', `AI runtime notes: ${ortNotes} (harmless)`); ortNotes = 0; }, 800); orig(...a); return; } add(lv, a.map((x) => (x instanceof Error ? x.message : typeof x === 'string' ? x : str(x))).join(' ').slice(0, 2000), a.find((x) => x instanceof Error)); } catch (e) { /* ignore */ } orig(...a); };
   });
   const env = () => {
     const n = navigator, lines = [`ImageCraft debug log — ${new Date().toISOString()}`, `Page: ${location.protocol}//${location.pathname.split('/').slice(-2).join('/')}`, `Browser: ${n.userAgent}`, `Screen: ${screen.width} × ${screen.height} at ${devicePixelRatio}×, window ${innerWidth} × ${innerHeight}`, `Processor threads: ${n.hardwareConcurrency || '?'}, memory: ${n.deviceMemory ? n.deviceMemory + ' GB or more' : '?'}`];

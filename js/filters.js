@@ -338,5 +338,73 @@
     return new ImageData(Uint8ClampedArray.from(cur), W, H);
   }
 
-  IC.filters = { pyramidBlend, aliasCheck, antialias, light, colour, autoLevels, autoFix, whiteBalance, greyscale, sepia, invert, threshold, posterize, blur, sharpen, denoise, median, despeckle, deblock, undither, pixelate, resize, scale2x, scale3x, rotate: rotateAny, rotate90: rotate, flip, crop, trimBox, canvasSize, makeClear, flatten, copy, canvasOf };
+
+  // ------------------------------------------------------------------ faded prints: colour and detail
+  // Auto colour, the way a photo lab corrects a faded print: (1) each colour's own darkest and lightest points stretched
+  // to black and white (a fade lifts and tints the blacks and dulls the whites differently in each colour); (2) the
+  // midtones made neutral with a gamma for each colour (a curve, not a flat shift, so blacks and whites stay put),
+  // judged from nearly-grey midtone pixels; (3) colour that faded brought back, by how much is missing.
+  //   strength 0–100 (mix with the original), keepTone: true leaves a picture that is meant to be one colour (sepia,
+  //   cyanotype) toned, only correcting its levels.
+  function autoColour(img, { strength = 100, clip = 0.3, keepTone = 'auto', saturation = true } = {}) {
+    const d = img.data, N = d.length / 4, H = [new Uint32Array(256), new Uint32Array(256), new Uint32Array(256)];
+    for (let i = 0; i < d.length; i += 4) { if (d[i + 3] < 128) continue; H[0][d[i]]++; H[1][d[i + 1]]++; H[2][d[i + 2]]++; }
+    const ends = (h) => { const cut = (N * clip) / 100; let a = 0, t = 0; while (a < 254 && t + h[a] <= cut) t += h[a++]; let b = 255; t = 0; while (b > a + 1 && t + h[b] <= cut) t += h[b--]; return [a, b]; };
+    const E = H.map(ends);
+    // a toned picture (sepia and the like): its colour hardly varies from pixel to pixel
+    let sv = 0, sm = [0, 0, 0], n0 = 0;
+    for (let i = 0; i < d.length; i += 16) { const r = d[i], g = d[i + 1], b = d[i + 2], l = (r + g + b) / 3; if (l < 20 || l > 235) continue; sm[0] += r - l; sm[1] += g - l; sm[2] += b - l; n0++; }
+    if (n0) { sm = sm.map((v) => v / n0); for (let i = 0; i < d.length; i += 16) { const r = d[i], g = d[i + 1], b = d[i + 2], l = (r + g + b) / 3; if (l < 20 || l > 235) continue; sv += (r - l - sm[0]) ** 2 + (g - l - sm[1]) ** 2 + (b - l - sm[2]) ** 2; } sv = Math.sqrt(sv / n0 / 3); }
+    const toned = keepTone === true || (keepTone === 'auto' && sv < 5.5); let skinEase = 1;
+    // levels: per colour, or (toned) the same for all three so the tone stays
+    let L = E;
+    if (toned) { const lo = Math.min(...E.map((e) => e[0])), hi = Math.max(...E.map((e) => e[1])); L = [[lo, hi], [lo, hi], [lo, hi]]; }
+    const stretch = (v, c) => Math.max(0, Math.min(1, (v - L[c][0]) / Math.max(1, L[c][1] - L[c][0])));
+    // midtone gammas from nearly-grey midtones (after the stretch)
+    let gam = [1, 1, 1];
+    if (!toned) {
+      const acc = [0, 0, 0]; let n = 0;
+      for (let i = 0; i < d.length; i += 8) { const v = [stretch(d[i], 0), stretch(d[i + 1], 1), stretch(d[i + 2], 2)], l = (v[0] + v[1] + v[2]) / 3, sat = Math.max(...v) - Math.min(...v); if (l > 0.25 && l < 0.75 && sat < 0.18) { acc[0] += Math.log(v[0] + 1e-3); acc[1] += Math.log(v[1] + 1e-3); acc[2] += Math.log(v[2] + 1e-3); n++; } }
+      if (n > N * 0.01) { const m = acc.map((a) => a / n), target = (m[0] + m[1] + m[2]) / 3; gam = m.map((v) => Math.max(0.6, Math.min(1.6, target / v))); }
+    }
+    // skin protection: the warm, skin-like pixels of the picture (red over green over blue) must stay warm after the
+    // correction (pinkish, peach or tan, never grey-lilac); if they would not, the midtone curves are eased back
+    if (!toned) {
+      const skin = []; for (let i = 0; i < d.length; i += 12) { const r = d[i], g = d[i + 1], b = d[i + 2]; if (r > 60 && r > g && g > b && r - b > 25 && r - b < 140 && (r + g + b) / 3 > 50) skin.push(i); }
+      if (skin.length > N * 0.004) {
+        const warm = (gg) => { let rb = 0, rg = 0; for (const i of skin) { const r = Math.pow(stretch(d[i], 0), gg[0]), g = Math.pow(stretch(d[i + 1], 1), gg[1]), b = Math.pow(stretch(d[i + 2], 2), gg[2]); rb += r - b; rg += r - g; } return [rb / skin.length, rg / skin.length]; };
+        const full = gam.slice(); let used = 1;
+        for (const t of [1, 0.75, 0.5, 0.25, 0]) { const gg = full.map((v) => Math.pow(v, t)), [rb, rg] = warm(gg); used = t; gam = gg; if (rb > 0.09 && rg > 0.03) break; }
+        skinEase = used;
+      }
+    }
+    // how much colour faded: the picture's average saturation against a natural photo's (about 0.22 in HSV terms)
+    let boost = 0;
+    if (saturation && !toned) { let ss = 0, ns = 0; for (let i = 0; i < d.length; i += 16) { const v = [stretch(d[i], 0) ** gam[0], stretch(d[i + 1], 1) ** gam[1], stretch(d[i + 2], 2) ** gam[2]], mx = Math.max(...v); if (mx > 0.1) { ss += (mx - Math.min(...v)) / mx; ns++; } } const avg = ns ? ss / ns : 0.22; boost = Math.max(0, Math.min(0.6, (0.22 - avg) * 2.2)); }
+    const T = [0, 1, 2].map((c) => { const t = new Float32Array(256); for (let v = 0; v < 256; v++) t[v] = Math.pow(stretch(v, c), gam[c]) * 255; return t; });
+    const o = copy(img), od = o.data, k = strength / 100;
+    for (let i = 0; i < od.length; i += 4) {
+      let r = T[0][d[i]], g = T[1][d[i + 1]], b = T[2][d[i + 2]];
+      if (boost) { const l = 0.299 * r + 0.587 * g + 0.114 * b, s0 = (Math.max(r, g, b) - Math.min(r, g, b)) / 255, f = 1 + boost * (1 - s0); r = l + (r - l) * f; g = l + (g - l) * f; b = l + (b - l) * f; }
+      od[i] = clamp(d[i] + (r - d[i]) * k); od[i + 1] = clamp(d[i + 1] + (g - d[i + 1]) * k); od[i + 2] = clamp(d[i + 2] + (b - d[i + 2]) * k);
+    }
+    o.colourInfo = { toned, gamma: gam.map((v) => +v.toFixed(2)), levels: L, boost: +boost.toFixed(2), skinEase };
+    return o;
+  }
+  // Clarity: local contrast. The picture's large-scale brightness (a wide blur) is taken away and the rest made
+  // stronger, on brightness only and mostly in the midtones, so texture and detail stand out without hard halos or
+  // colour shifts. amount 0–100; radius in pixels (default: 1.5% of the picture's size).
+  function clarity(img, { amount = 35, radius = 0 } = {}) {
+    const W = img.width, H = img.height, R = radius || Math.max(4, Math.round(Math.max(W, H) * 0.015));
+    const s = img.data, Y = new ImageData(W, H), yd = Y.data;
+    for (let i = 0; i < s.length; i += 4) { const l = 0.299 * s[i] + 0.587 * s[i + 1] + 0.114 * s[i + 2]; yd[i] = yd[i + 1] = yd[i + 2] = l; yd[i + 3] = 255; }
+    const B = blur(Y, { radius: R }).data, o = copy(img), d = o.data, k = (amount / 100) * 1.2;
+    for (let i = 0; i < d.length; i += 4) {
+      const l = yd[i], m = l / 255, mid = 4 * m * (1 - m), dl = (l - B[i]) * k * mid, nl = Math.max(0, Math.min(255, l + dl)), f = l > 1 ? nl / l : 1;
+      d[i] = clamp(s[i] * f); d[i + 1] = clamp(s[i + 1] * f); d[i + 2] = clamp(s[i + 2] * f);
+    }
+    return o;
+  }
+
+  IC.filters = { autoColour, clarity, pyramidBlend, aliasCheck, antialias, light, colour, autoLevels, autoFix, whiteBalance, greyscale, sepia, invert, threshold, posterize, blur, sharpen, denoise, median, despeckle, deblock, undither, pixelate, resize, scale2x, scale3x, rotate: rotateAny, rotate90: rotate, flip, crop, trimBox, canvasSize, makeClear, flatten, copy, canvasOf };
 })();
