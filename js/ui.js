@@ -263,7 +263,7 @@
   const DEPTHS = [['1', '1-bit · 2 colours'], ['2', '2-bit · 4 colours'], ['3', '3-bit · 8 colours'], ['4', '4-bit · 16 colours'], ['5', '5-bit · 32 colours'], ['6', '6-bit · 64 colours'], ['7', '7-bit · 128 colours'], ['8', '8-bit · 256 colours'], ['high15', '15-bit · 32,768 colours (high colour)'], ['high16', '16-bit · 65,536 colours (high colour)']];
   const LEVELS = [['0', 'Any colour (24-bit)'], ['8', 'Atari ST: from 512 colours'], ['16', 'Amiga / Atari STE: from 4,096'], ['4', 'EGA: from 64 colours'], ['64', 'VGA: from 262,144']];
   const PALS = [['adaptive', 'Best for this picture'], ...Object.entries(C.PALETTES).map(([k, p]) => [k, p.name])];
-  const UPS = [['smooth', 'Best (automatic)'], ['area', 'Pixel averaging (area)'], ['nohalo', 'Sharp, no halos'], ['lanczos', 'Lanczos (sharpest)'], ['cubic', 'Cubic'], ['mitchell', 'Soft (Mitchell)'], ['linear', 'Linear'], ['nearest', 'Square pixels (pixel art, exact)'], ['scale2x', 'Pixel art, rounded corners (Scale2x)'], ['scale3x', 'Pixel art ×3 (Scale3x)'], ['smoothpixel', 'Pixel art made smooth'], ['ai-esrgan', 'AI 4× Real-ESRGAN (real photos)'], ['ai-esrgan2', 'AI 2× Real-ESRGAN'], ['ai-sharp', 'AI 2× (clean pictures)'], ['ai-photo', 'AI 4× (old photos)'], ['ai-jpeg', 'AI 4× (JPEG clean-up)']];
+  const UPS = [['smooth', 'Best (automatic)'], ['splat', 'Splat (edge-following blobs)'], ['area', 'Pixel averaging (area)'], ['nohalo', 'Sharp, no halos'], ['lanczos', 'Lanczos (sharpest)'], ['cubic', 'Cubic'], ['mitchell', 'Soft (Mitchell)'], ['linear', 'Linear'], ['nearest', 'Square pixels (pixel art, exact)'], ['scale2x', 'Pixel art, rounded corners (Scale2x)'], ['scale3x', 'Pixel art ×3 (Scale3x)'], ['smoothpixel', 'Pixel art made smooth'], ['ai-esrgan', 'AI 4× Real-ESRGAN (real photos)'], ['ai-esrgan2', 'AI 2× Real-ESRGAN'], ['ai-sharp', 'AI 2× (clean pictures)'], ['ai-photo', 'AI 4× (old photos)'], ['ai-jpeg', 'AI 4× (JPEG clean-up)']];
   const ai = (k) => /^ai-/.test(k) ? k.slice(3) : null;
   async function upscaleWith(img, method, factor, say, linear = true) {
     const k = ai(method);
@@ -357,6 +357,23 @@
         seg('from', 'From', [['step', 'A step in History'], ['pic', 'Another open picture']]), { t: 'stepsel', k: 'step', label: 'Version', show: (s) => s.from === 'step' }, { t: 'picsel', k: 'other', label: 'Picture (a cut-out is placed by its solid parts)', show: (s) => s.from === 'pic' }, sel('mode', 'How', IC.detail.MODES.map((m) => [m, { normal: 'Normal (mix)', multiply: 'Multiply (darker)', screen: 'Screen (lighter)', overlay: 'Overlay (contrast)', softlight: 'Soft light', lighten: 'Lighten only', darken: 'Darken only', difference: 'Difference (shows changes)', luminosity: 'Its brightness, my colours', colour: 'Its colours, my brightness' }[m]])),
         range('amount', 'Amount %', 0, 100), note('Use Where to bring the version back only in some places: the sharper version on the texture, the smoother one on the sky.')],
       run: (img, s) => { const src = s.from === 'pic' ? pics[s.other] && pics[s.other].steps[pics[s.other].at].img : pic().steps[s.step] && pic().steps[s.step].img; if (!src) throw new Error(s.from === 'pic' ? 'Open another picture first (for example a cut-out you repaired).' : 'Choose a version.'); return IC.detail.blend(img, src, { mode: s.mode, amount: s.amount }); } },
+    facerefine: { title: 'Face refine', icon: IK.cutout, live: false, s: { skin: 30, eyes: 40, whites: 30, irises: 30, lips: 20, teeth: 20 },
+      fields: [range('skin', 'Smooth the skin', 0, 100), range('eyes', 'Clear the eyes', 0, 100), range('whites', 'Brighter, neutral eye whites', 0, 100), range('irises', 'Iris contrast', 0, 100), range('lips', 'Lip colour', 0, 100), range('teeth', 'Whiter teeth', 0, 100), { t: 'out' },
+        note('Each part of each face is found (478 points per face) and given its own treatment. Nothing is redrawn or invented: the eyes, mouth and skin stay the person’s own. The first use downloads the face finder (about 4 MB). Press Preview.')],
+      report: () => (tool && tool.faces != null ? `<p class="hint"><b>${tool.faces}</b> face${tool.faces === 1 ? '' : 's'} found.</p>` : ''),
+      run: async (img, s, say) => {
+        say && say('Finding faces…'); const faces = await IC.faces.ensure(img); if (tool) tool.faces = faces.length; if (!faces.length) throw new Error('No faces found in this picture.');
+        const M = IC.maps, part = (p) => IC.faces.partMask(img, faces, p); let o = img;
+        const lumW = (m, im) => { const d = im.data, w = new Float32Array(m.length); for (let i = 0; i < m.length; i++) { const l = (0.299 * d[i * 4] + 0.587 * d[i * 4 + 1] + 0.114 * d[i * 4 + 2]) / 255; w[i] = m[i] * Math.max(0, Math.min(1, (l - 0.25) / 0.35)); } return w; };
+        say && say('Refining each part…');
+        if (s.skin) o = M.apply(o, IC.detail.diffuse(o, { strength: s.skin * 0.6, keepEdges: 75 }), part('skin'));
+        if (s.eyes) o = M.apply(o, X.sharpen(o, { amount: s.eyes * 2, radius: 1, threshold: 2 }), part('eyes'));
+        if (s.irises) o = M.apply(o, X.light(o, { contrast: s.irises * 0.6 }), part('irises'));
+        if (s.whites) { const w = lumW(part('eyewhites'), o), k = s.whites / 100; o = M.apply(o, X.light(X.colour(o, { saturation: -70 }), { brightness: 6 }), w.map((v) => v * k)); }
+        if (s.lips) o = M.apply(o, X.colour(o, { vibrance: s.lips * 0.6 }), part('lips'));
+        if (s.teeth) { const w = lumW(part('mouth'), o), k = s.teeth / 100; o = M.apply(o, X.light(X.colour(o, { saturation: -60 }), { brightness: 5 }), w.map((v) => v * k)); }
+        return o;
+      } },
     shadows: { title: 'Recover shadows', icon: IK.light, s: { shadows: 50, highlights: 20, detail: 10, maxGain: 3 },
       fields: [range('shadows', 'Lift the shadows', 0, 100), range('highlights', 'Hold back bright areas', 0, 100), range('detail', 'Detail', 0, 60), range('maxGain', 'Most a dark area may brighten (×)', 1.5, 6, 0.1),
         note('Brightens dark areas (an underexposed subject, deep shade) while keeping their texture and leaving the sky alone: the picture’s broad lighting is evened out, its detail kept. The limit stops noise in the shadows being blown up.')],
@@ -365,11 +382,13 @@
       fields: [range('amount', 'Amount', 0, 100), range('radius', 'Size (0 = automatic)', 0, 80), note('Brings out texture and detail (faces, fabric, leaves) by strengthening local contrast in the midtones, without the hard edges of sharpening.')],
       run: (img, s) => X.clarity(img, s) },
     balance: { title: 'Fix a colour cast', icon: IK.balance, s: { method: 'auto', strength: 80, percent: 1, rgb: null },
-      fields: [seg('method', 'How', [['auto', 'Greys to grey'], ['grey', 'Average to grey'], ['white', 'Brightest to white'], ['pick', 'Click something white']]),
+      fields: [seg('method', 'How', [['auto', 'Greys to grey'], ['grey', 'Average to grey'], ['white', 'Brightest to white'], ['faces', 'Eye whites and teeth'], ['pick', 'Click something white']]),
         range('percent', 'Brightest part used (%)', 0.1, 10, 0.1, (s) => s.method === 'white'), { t: 'swatch', k: 'rgb', label: 'Picked colour (click the picture)', show: (s) => s.method === 'pick' && s.rgb }, note('Click something in the picture that should be white or grey: a shirt, paper, a wall, a cloud.', (s) => s.method === 'pick' && !s.rgb),
         range('strength', 'Strength', 0, 100),
         note('Greys to grey makes only the nearly-grey things neutral, so a sunset stays warm. Average to grey suits most old photos that went yellow, red or blue (it can turn a mostly-blue scene too warm). Brightest to white suits pictures with something white in them. Clicking a white thing is the most exact.')],
-      pick: (s, rgb) => { s.method = 'pick'; s.rgb = rgb; }, live: (s) => s.method !== 'pick' || !!s.rgb, run: (img, s) => X.whiteBalance(img, s) },
+      pick: (s, rgb) => { s.method = 'pick'; s.rgb = rgb; }, live: (s) => s.method !== 'pick' || !!s.rgb,
+      // eye whites and teeth are nearly neutral in life: a grey card that is already in the photo
+      run: async (img, s, say) => { if (s.method !== 'faces') return X.whiteBalance(img, s); say && say('Finding faces…'); const f = await IC.faces.ensure(img), rgb = IC.faces.greyCard(img, f); if (!rgb) throw new Error(f.length ? 'The eye whites and teeth are too small or hidden to judge the colour from.' : 'No faces found in this picture.'); return X.whiteBalance(img, { method: 'pick', rgb, strength: s.strength }); } },
     threshold: { title: 'Black and white (threshold)', icon: IK.threshold, s: { level: 128 }, fields: [range('level', 'Light enough to be white', 1, 254)], run: (img, s) => X.threshold(img, s) },
     posterize: { title: 'Posterize', icon: IK.posterize, s: { levels: 4 }, fields: [range('levels', 'Steps for each colour', 2, 16)], run: (img, s) => X.posterize(img, s) },
     sepia: { title: 'Sepia (old photo)', icon: IK.sepia, s: { strength: 100 }, fields: [range('strength', 'Strength', 0, 100)], run: (img, s) => X.sepia(img, s) },
@@ -597,7 +616,7 @@
     const t = tool; if (!t) return; const my = ++token;
     busy(`${t.def.title}…`);
     try {
-      await wait(0); const t0 = performance.now(); const r0 = await t.def.run(t.base, t.s, (m) => { if (my === token) busyNow(m); }), r = masked(t, r0);
+      await wait(0); const t0 = performance.now(); if (t.s.wMap) await IC.maps.prepare([t.s.wMap, t.s.wOp ? t.s.wMap2 : ''], t.base); const r0 = await t.def.run(t.base, t.s, (m) => { if (my === token) busyNow(m); }), r = masked(t, r0);
       if (my !== token || tool !== t) return;
       ICLOG.info(`${t.def.title}: ${t.base.width} × ${t.base.height} → ${r.width} × ${r.height} in ${Math.round(performance.now() - t0)} ms`, JSON.stringify(t.s).slice(0, 400));
       const sizeChanged = !t.preview ? r.width !== t.base.width || r.height !== t.base.height : r.width !== t.preview.width || r.height !== t.preview.height;
@@ -749,8 +768,9 @@
   function openMap(id, mode) {
     const img = now(); if (!img) return; if (tool) closeTool(true);
     const m = IC.maps.LIST.find((x) => x.id === id); mode = mode || (m.grey ? 'grey' : 'heat');
-    busyNow(`Measuring: ${m.name}…`);
-    setTimeout(() => {
+    busyNow(m.needsFaces && !IC.faces.known(img) ? 'Finding faces (the first time downloads the face finder)…' : `Measuring: ${m.name}…`);
+    setTimeout(async () => {
+      try { await IC.maps.prepare(id, img); } catch (e) { busy(null); ICLOG.error('Face finder failed', e); toast('The face finder could not start: ' + e.message); return; }
       const t0 = performance.now(), map = IC.maps.make(id, img);
       mapView = { id, mode, img: mode === 'grey' ? IC.maps.grey(map, img.width, img.height) : IC.maps.heat(map, img) };
       ICLOG.info(`Map ${m.name}: ${img.width} × ${img.height} in ${Math.round(performance.now() - t0)} ms`);
@@ -1018,6 +1038,7 @@
       { id: 'detail', label: 'Detail', hue: '#c2410c', groups: [
         ['Curves', [B('Curves', IK.light, T('curves'), { big: true, title: 'Curves for brightness or each colour, with Where for curves layers' }), B('Blend a version', IK.compare, T('blendstep'), { big: true, title: 'Mix an earlier step back in (like layers), anywhere or through a map' })]],
         ['Detail', [B('Detail equaliser', IK.sharpen, T('equalizer'), { big: true, title: 'Fine, small, medium and large detail, each with its own amount' }), B('Even the light', IK.light, T('gradient'), { big: true, title: 'Gradient domain: big brightness jumps smaller, faint detail bigger' }), B('Crisp edges', IK.sharpen, T('crisp'), { big: true, title: 'Shock filter: soft edges made crisp without halos' }), B('Edge-keeping smooth', IK.denoise, T('diffuse'), { big: true, title: 'Perona–Malik diffusion: smooth, but never across an edge' })]],
+        ['Faces', [B('Face refine', IK.cutout, T('facerefine'), { big: true, title: 'Find each face’s skin, eyes, irises, lips and teeth and treat each on its own (nothing redrawn)' })]],
         ['Maps', [B('Maps and channels', IK.grid, () => { showSide('left'); showTab('maps'); }, { big: true, title: 'See the picture measured into maps and channels' })]],
       ] },
       { id: 'colours', label: 'Colours', hue: '#b44be1', groups: [

@@ -75,12 +75,14 @@
   // black and white at the threshold that best splits the picture into two groups (Otsu's method)
   LIST.push({ id: 'bw', name: 'Black and white', group: 'Channels', grey: true, what: 'Two values only, split at the level that best separates the picture into dark and light (Otsu’s method): clean shapes for masking or tracing.',
     make: (img) => { const L = lumOf(img), h = new Float64Array(256); L.forEach((v) => h[Math.min(255, Math.round(v * 255))]++); const N = L.length; let sum = 0; for (let i = 0; i < 256; i++) sum += i * h[i]; let sB = 0, wB = 0, best = 0, th = 128; for (let t = 0; t < 256; t++) { wB += h[t]; if (!wB) continue; const wF = N - wB; if (!wF) break; sB += t * h[t]; const mB = sB / wB, mF = (sum - sB) / wF, v = wB * wF * (mB - mF) ** 2; if (v > best) { best = v; th = t; } } return L.map((v) => (v * 255 > th ? 1 : 0)); } });
+  if (IC.faces) IC.faces.PARTS.forEach(([part, name]) => LIST.push({ id: 'f_' + part, name, group: 'Faces (AI)', needsFaces: true, what: `${name}, from the face finder (478 points on each face; nothing is redrawn). The first use downloads it (about 4 MB).`, make: (img) => IC.faces.partMask(img, IC.faces.known(img), part) }));
   const byId = Object.fromEntries(LIST.map((m) => [m.id, m]));
 
   // maps are remembered for the picture they were made from (the same ImageData object)
   const memo = new WeakMap();
   function make(id, img) {
     let m = memo.get(img); if (!m) { m = {}; memo.set(img, m); }
+    if (byId[id].needsFaces && !IC.faces.known(img)) return byId[id].make(img); // not looked yet: an empty map, not remembered
     if (!m[id]) m[id] = byId[id].make(img);
     return m[id];
   }
@@ -112,5 +114,7 @@
     for (let p = 0; p < msk.length; p++) { const t = msk[p]; for (let c = 0; c < 4; c++) d[p * 4 + c] = a[p * 4 + c] + (b[p * 4 + c] - a[p * 4 + c]) * t; }
     return o;
   }
-  IC.maps = { LIST, make, heat, grey, mask, apply, box, combined, OPS };
+    // anything a map needs first (the face finder looks at the picture once)
+  async function prepare(ids, img) { for (const id of [].concat(ids)) if (id && byId[id] && byId[id].needsFaces) await IC.faces.ensure(img); }
+  IC.maps = { LIST, make, heat, grey, mask, apply, box, combined, OPS, prepare };
 })();

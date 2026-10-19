@@ -1,0 +1,8 @@
+{
+  "name": "imagecraft-face-libs",
+  "private": true,
+  "description": "Bundles MediaPipe Tasks Vision (Face Landmarker, Apache-2.0) into lib/craft-face-libs.js, loaded only when a face tool is used: npm install, then npm run build",
+  "scripts": { "build": "esbuild entry.js --bundle --minify --format=iife --legal-comments=eof --platform=browser --outfile=../craft-face-libs.js" },
+  "dependencies": { "@mediapipe/tasks-vision": "1.0.1" },
+  "devDependencies": { "esbuild": "0.28.2" }
+}

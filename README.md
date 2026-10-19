@@ -49,6 +49,13 @@ Classic formats fit the picture to that machine's screen and colours for you (th
 - **Edge-keeping smooth**: Perona–Malik diffusion, which smooths grain but never across an edge.
 - **Blend a version**: mix an earlier step, or **another open picture**, back in (normal, multiply, screen, overlay, soft light, lighten, darken, difference, brightness only, colour only), anywhere or through a map. With **Remove background › Cut out to a new picture**, a subject becomes a picture of its own: repair it, then blend it back; its see-through parts leave the rest untouched.
 
+### Faces (no redrawing)
+
+- **Face refine** (Detail tab): each face is found with MediaPipe Face Landmarker (478 points a face) and its parts treated on their own: skin smoothed, eyes cleared, iris contrast, brighter neutral eye whites, lip colour, whiter teeth. Nothing is redrawn or invented, so every face stays the person's own. Small faces in group photos are searched in overlapping tiles on a contrast-boosted copy, and a face counts only when it is found more than once (a face-like pattern on a shirt is not).
+- **Face part maps** (Maps tab): faces, face skin, eyes, irises, eye whites, lips, mouth and teeth, eyebrows: masks for any tool.
+- **Fix a colour cast › Eye whites and teeth**: they are nearly neutral in life, a grey card already in the photo.
+- The face finder (about 150 KB here, plus a 4 MB model and its runtime downloaded once) loads only when first used.
+
 ### Restore old photos
 
 - **Auto colour** (Adjust tab): corrects a faded print the way a photo lab would: each colour's own black and white points, the midtones made neutral with a curve, and faded colour brought back by how much is missing. Skin tones and greenery are protected (the correction eases off rather than turning faces grey or grass brown), and a sepia or toned picture keeps its tone: a picture with almost no colour other than its main hue is treated as toned, a very faded colour print gets part of the correction, and Make neutral forces a full one.
@@ -127,6 +134,7 @@ Open-source libraries it uses are listed with their licences in Credits.
 
 - [ImageTracer](https://github.com/jankovicsandras/imagetracerjs) (public domain / Unlicense) for SVG outlines.
 - [Transformers.js](https://github.com/huggingface/transformers.js) and ONNX Runtime Web (Apache-2.0) for the AI helpers, in `lib/craft-ai-libs.js`. Models: U²-Net (Apache-2.0), BEN2 (MIT), SlimSAM (Apache-2.0), Swin2SR (Apache-2.0), Real-ESRGAN (BSD-3-Clause; the ONNX export by SceneWorks).
+- [MediaPipe Tasks Vision](https://github.com/google-ai-edge/mediapipe) and its Face Landmarker model (Apache-2.0), bundled as `lib/craft-face-libs.js` (built from `lib/face-build`).
 - [Instrument Sans](https://github.com/Instrument/instrument-sans) (SIL Open Font License) for the interface.
 
 ## Development notes

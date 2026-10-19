@@ -184,6 +184,7 @@
       return resize(s, { width: W, height: H, method: 'area', linear });
     }
     if (method === 'nearest') { const src = canvasOf(img); return draw(W, H, (x) => { x.imageSmoothingEnabled = false; x.drawImage(src, 0, 0, W, H); }); }
+    if (method === 'splat' && IC.resample) return W >= img.width ? IC.resample.splat(img, W, H, { linear }) : IC.resample.resize(img, W, H, { method: 'auto', linear });
     const m = method === 'smooth' ? 'auto' : method;
     if (IC.resample && W * H <= 60e6 && img.width * img.height <= 60e6) return IC.resample.resize(img, W, H, { method: m, linear });
     // very big pictures: the browser's own scaling, shrinking in halves so fine detail averages instead of shimmering
