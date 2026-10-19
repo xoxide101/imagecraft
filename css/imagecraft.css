@@ -174,3 +174,14 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 .dbg details summary { cursor: pointer; color: var(--muted); }
 .dbg pre { margin: 4px 0 0; white-space: pre-wrap; font: inherit; color: var(--muted); }
 .st-err { color: #e5484d; font-weight: 700; cursor: pointer; border: 0; background: transparent; padding: 0; }
+
+/* maps */
+.maplist { display: grid; gap: 4px; padding: 0 8px 12px; }
+.maplist h4 { margin: 8px 4px 2px; font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.maplist button { display: grid; grid-template-columns: 56px 1fr; gap: 8px; align-items: center; text-align: left; border: 2px solid transparent; border-radius: 8px; background: transparent; padding: 4px; cursor: pointer; }
+.maplist button:hover { background: var(--panel-2); }
+.maplist button[aria-current="true"] { border-color: var(--accent); background: var(--accent-soft); }
+.maplist canvas { width: 56px; height: 42px; object-fit: contain; border-radius: 4px; background: #111; }
+.maplist b { font-size: 12px; } .maplist small { display: block; color: var(--muted); font-size: 10.5px; line-height: 1.3; }
+.mapbar { position: absolute; left: 50%; top: 12px; transform: translateX(-50%); z-index: 6; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; justify-content: center; max-width: calc(100% - 24px); background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 6px 10px; box-shadow: 0 4px 14px rgba(0,0,0,.2); }
+.mapbar b { margin-right: 4px; }

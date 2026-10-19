@@ -14,9 +14,11 @@
       <div class="tabs" role="tablist" aria-label="Side panel">
         <button class="tab" data-tab="pics" role="tab" aria-selected="true">Pictures</button>
         <button class="tab" data-tab="hist" role="tab">History</button>
+        <button class="tab" data-tab="maps" role="tab" title="The picture measured into maps and channels, to look at and to use as masks">Maps</button>
         <button class="tab" data-tab="debug" role="tab" title="Errors and what happened, for finding problems">Debug</button>
       </div>
       <div class="tabbody" id="tab-pics"><div class="pics" id="pics"></div><div class="pad"><button class="btn outline wide" id="pics-open">Open pictures…</button><p class="hint" style="margin-top:8px">Open several at once (or drop them in) to convert them together with Batch convert.</p></div></div>
+      <div class="tabbody" id="tab-maps" hidden><p class="hint pad">Click a map to see it full size. Every tool can use any map as a mask (its <b>Where</b> section).</p><div class="maplist" id="maplist"></div></div>
       <div class="tabbody" id="tab-debug" hidden><div class="dbg-tools"><button class="btn outline" id="dbg-copy">Copy</button><button class="btn outline" id="dbg-save">Save…</button><button class="btn outline" id="dbg-clear">Clear</button></div><label class="check pad" style="padding-top:0"><input type="checkbox" id="dbg-errors"> Errors and warnings only</label><ol class="dbg" id="dbg-list"></ol></div>
       <div class="tabbody" id="tab-hist" hidden><ol class="hist" id="hist"></ol><p class="hint pad">Click a step to go back to it. Every step can be undone; nothing changes your file until you save.</p></div>
     </aside>
@@ -31,6 +33,7 @@
         <div class="cropbox" id="cropbox" hidden><i data-h="nw"></i><i data-h="n"></i><i data-h="ne"></i><i data-h="e"></i><i data-h="se"></i><i data-h="s"></i><i data-h="sw"></i><i data-h="w"></i></div>
       </div>
       <div class="busy" id="busy" hidden></div>
+      <div class="mapbar" id="mapbar" hidden></div>
       <div class="welcome" id="welcome">
         <div class="welcome-in">
           <div class="logo" id="welcome-logo"></div>
@@ -92,6 +95,7 @@
 <script src="js/formats.js"></script>
 <script src="js/resample.js"></script>
 <script src="js/restore.js"></script>
+<script src="js/maps.js"></script>
 <script src="js/colour.js"></script>
 <script src="js/filters.js"></script>
 <script src="js/ascii.js"></script>

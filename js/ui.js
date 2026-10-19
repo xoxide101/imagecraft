@@ -97,7 +97,7 @@
     select(pics.length - 1, true);
   }
   function select(i, fresh) {
-    if (tool) closeTool(true);
+    if (tool) closeTool(true); if (mapView) { mapView = null; $('mapbar').hidden = true; }
     cur = i; view.fit = true; renderPics(); renderHist(); renderProps(); show(); fitView(); status();
     $('welcome').hidden = !!pic(); $('stage').hidden = !pic();
     if (fresh) colourCount();
@@ -107,7 +107,7 @@
     if (p.steps.length > MAX_STEPS) p.steps.splice(1, 1);
     p.at = p.steps.length - 1; p.dirty = true; afterChange();
   }
-  function afterChange() { renderPics(); renderHist(); renderProps(); show(); if (view.fit) fitView(); status(); colourCount(); }
+  function afterChange() { if (mapView) { mapView = null; $('mapbar').hidden = true; } renderPics(); renderHist(); renderProps(); show(); if (view.fit) fitView(); status(); colourCount(); }
   const canUndo = () => !!pic() && pic().at > 0 && !tool;
   const canRedo = () => !!pic() && pic().at < pic().steps.length - 1 && !tool;
   function undo() { if (tool) { closeTool(); return; } if (canUndo()) { pic().at--; afterChange(); } }
@@ -159,7 +159,8 @@
 
   // ------------------------------------------------------------------ the view: zoom, pan, compare
   const view = { zoom: 1, x: 0, y: 0, fit: true, bg: 'check', compare: false, split: 0.5, grid: false };
-  const shown = () => (tool && tool.preview) || now();
+  let mapView = null; // { id, mode: 'heat' | 'grey', img }
+  const shown = () => (mapView && mapView.img) || (tool && tool.preview) || now();
   function show() {
     const img = shown(); if (!img) return;
     const v = $('view'); if (v.width !== img.width || v.height !== img.height) { v.width = img.width; v.height = img.height; }
@@ -539,12 +540,26 @@
 
   // ------------------------------------------------------------------ running a tool
   let tool = null, token = 0, timer = null;
+  // Where: any tool that keeps the picture's size can work only where a map says (a mask: white = apply, black = leave)
+  const NO_MASK = new Set(['resize', 'crop', 'canvas', 'straighten', 'looks', 'text', 'trace', 'upscale', 'remaster', 'modern', 'depth', 'noisemap']);
+  const maskable = (def) => !NO_MASK.has(def.id) && !def.viewOnly;
+  const MASK_FIELDS = [
+    { t: 'html', html: () => '<h3 style="margin:10px 0 0">Where</h3>' },
+    sel('wMap', 'Apply', [['', 'Everywhere'], ...IC.maps.LIST.map((m) => [m.id, `Only on: ${m.name}`])]),
+    sel('wOp', 'Combined with a second map (Calculations)', [['', 'No'], ['multiply', 'Multiply: where both are'], ['add', 'Add: where either is'], ['subtract', 'Subtract: the first, not the second'], ['difference', 'Difference'], ['lighter', 'Lighter of the two'], ['darker', 'Darker of the two']], (s) => !!s.wMap),
+    sel('wMap2', 'Second map', IC.maps.LIST.map((m) => [m.id, m.name]), (s) => !!s.wMap && !!s.wOp),
+    chk('wInvert', 'Everywhere except there', (s) => !!s.wMap), range('wLevel', 'Starts at', 0, 1, 0.01, (s) => !!s.wMap), range('wSoft', 'Softness of the change', 0.02, 1, 0.01, (s) => !!s.wMap), range('wFeather', 'Feather the edges (pixels)', 0, 40, 1, (s) => !!s.wMap),
+    { t: 'btns', show: (s) => !!s.wMap, buttons: [{ label: 'Show the mask / the result', run: () => { tool.showMask = !tool.showMask; } }] },
+  ];
+  const maskOf = (t) => IC.maps.mask(t.base, { map: t.s.wMap, map2: t.s.wOp ? t.s.wMap2 : '', op: t.s.wOp, invert: t.s.wInvert, level: t.s.wLevel, softness: t.s.wSoft, feather: t.s.wFeather });
+  const masked = (t, r) => (t.s.wMap && r.width === t.base.width && r.height === t.base.height ? IC.maps.apply(t.base, r, maskOf(t)) : r);
   const isLive = (t) => (typeof t.def.live === 'function' ? t.def.live(t.s) : t.def.live !== false);
   function openTool(id, preset) {
     if (!pic()) { toast('Open a picture first.'); return; }
     if (tool) closeTool(true);
     const def = TOOLS[id], base = now();
-    tool = { def, base, s: { ...JSON.parse(JSON.stringify(typeof def.s === 'function' ? def.s(base) : def.s)), ...(preset || {}) }, preview: null };
+    tool = { def, base, s: { ...JSON.parse(JSON.stringify(typeof def.s === 'function' ? def.s(base) : def.s)), ...(maskable(def) ? { wMap: '', wOp: '', wMap2: 'skin', wInvert: false, wLevel: 0.35, wSoft: 0.3, wFeather: 2 } : {}), ...(preset || {}) }, preview: null };
+    if (mapView) closeMap();
     showSide('right'); renderProps(); if (def.enter) def.enter();
     if (isLive(tool)) schedule(0); else show();
   }
@@ -557,19 +572,19 @@
     const t = tool; if (!t) return; const my = ++token;
     busy(`${t.def.title}…`);
     try {
-      await wait(0); const t0 = performance.now(); const r = await t.def.run(t.base, t.s, (m) => { if (my === token) busyNow(m); });
+      await wait(0); const t0 = performance.now(); const r0 = await t.def.run(t.base, t.s, (m) => { if (my === token) busyNow(m); }), r = masked(t, r0);
       if (my !== token || tool !== t) return;
       ICLOG.info(`${t.def.title}: ${t.base.width} × ${t.base.height} → ${r.width} × ${r.height} in ${Math.round(performance.now() - t0)} ms`, JSON.stringify(t.s).slice(0, 400));
       const sizeChanged = !t.preview ? r.width !== t.base.width || r.height !== t.base.height : r.width !== t.preview.width || r.height !== t.preview.height;
-      t.preview = r; busy(null); show(); if (sizeChanged && view.fit) fitView(); renderOut();
+      t.out = r; t.preview = t.showMask && t.s.wMap ? IC.maps.grey(maskOf(t), t.base.width, t.base.height) : r; busy(null); show(); if (sizeChanged && view.fit) fitView(); renderOut();
     } catch (e) { ICLOG.error(`${t.def.title} failed`, e); if (my === token) { busy(null); toast(e.message || String(e)); } }
   }
   async function applyTool() {
     const t = tool; if (!t) return;
     if (t.def.viewOnly) { closeTool(); return; }
-    if (t.def.final) { const r = await t.def.final(t.base, t.s); closeTool(true); push(t.def.title, r); return; }
+    if (t.def.final) { const r = masked(t, await t.def.final(t.base, t.s)); closeTool(true); push(t.def.title + (t.s.wMap ? ' (masked)' : ''), r); return; }
     if (t.def.id === 'crop' || !t.preview || t.stale) { await runPreview(); if (tool !== t || !t.preview) return; }
-    const r = t.preview; closeTool(true); push(t.def.title, r);
+    const r = t.out || t.preview; closeTool(true); push(t.def.title + (t.s && t.s.wMap ? ' (masked)' : ''), r);
   }
   // a tool that needs no settings: done at once, as a step
   function quick(label, fn) {
@@ -594,6 +609,7 @@
       if (f.t === 'html') { const d0 = document.createElement('div'); d0.innerHTML = f.html(t.s); into.append(d0); return; }
       if (f.t === 'note') { const p = document.createElement('p'); p.className = 'hint'; p.innerHTML = f.html; into.append(p); return; }
       if (f.t === 'out') { const o = document.createElement('div'); o.id = 'tool-out'; into.append(o); return; }
+      if (f.t === 'btns' && f.show && !f.show(t.s)) return;
       if (f.t === 'btns') { const r = document.createElement('div'); r.className = 'btns'; f.buttons.forEach((b) => { const e = document.createElement('button'); e.className = 'btn ' + (b.primary ? 'primary' : 'outline'); e.type = 'button'; e.textContent = b.label; e.onclick = () => { b.run(t.s, t.base); t.stale = true; renderProps(); if (d.id === 'crop') placeCrop(); else if (isLive(t)) schedule(0); }; r.append(e); }); into.append(r); return; }
       if (f.t === 'looks') { into.append(looksTiles()); return; }
       const lab = document.createElement('label'); lab.className = f.t === 'check' ? 'check' : 'field';
@@ -608,7 +624,7 @@
       else if (f.t === 'swatch') { const r = document.createElement('div'); r.style.cssText = 'display:flex;gap:8px;align-items:center'; const i = document.createElement('input'); i.type = 'color'; i.className = 'input'; i.style.width = '64px'; i.value = hexOf(v); i.oninput = () => set(f.k, rgbOf(i.value)); r.append(i, Object.assign(document.createElement('span'), { className: 'hint', textContent: hexOf(v) })); lab.append(r); }
       into.append(lab);
     };
-    d.fields.forEach((f) => build(f, sec));
+    (maskable(d) ? d.fields.concat(MASK_FIELDS) : d.fields).forEach((f) => build(f, sec));
     const acts = document.createElement('div'); acts.className = 'sec';
     const live = isLive(t);
     acts.innerHTML = `<div class="btns">${!live && d.id !== 'crop' ? '<button class="btn outline" data-a="preview">Preview</button>' : ''}${d.viewOnly ? '<button class="btn primary" data-a="cancel">Close</button>' : `<button class="btn" data-a="cancel">Cancel</button><button class="btn primary" data-a="apply">${esc(d.applyLabel || 'Apply')}</button>`}</div>
@@ -662,7 +678,50 @@
     const L = $('hist'); L.innerHTML = ''; const p = pic(); if (!p) return;
     p.steps.forEach((s, i) => { const li = document.createElement('li'), b = document.createElement('button'); b.innerHTML = `<span class="n">${i}</span>${esc(s.label)}`; b.setAttribute('aria-current', String(i === p.at)); if (i > p.at) b.className = 'undone'; b.onclick = () => goStep(i); li.append(b); L.append(li); });
   }
-  const showTab = (name) => { document.querySelectorAll('.tab').forEach((x) => x.setAttribute('aria-selected', String(x.dataset.tab === name))); ['pics', 'hist', 'debug'].forEach((k) => { $('tab-' + k).hidden = k !== name; }); if (name === 'debug') renderLog(); };
+  const showTab = (name) => { document.querySelectorAll('.tab').forEach((x) => x.setAttribute('aria-selected', String(x.dataset.tab === name))); ['pics', 'hist', 'maps', 'debug'].forEach((k) => { $('tab-' + k).hidden = k !== name; }); if (name === 'debug') renderLog(); if (name === 'maps') renderMaps(); };
+  // ------------------------------------------------------------------ maps (left panel, Maps tab; one shown at a time over the picture)
+  let thumbFor = null, thumbSmall = null;
+  function renderMaps() {
+    const L = $('maplist'); if (!L || $('tab-maps').hidden) return;
+    const img = now(); if (!img) { L.innerHTML = '<p class="hint">Open a picture first.</p>'; return; }
+    L.innerHTML = ''; let group = null;
+    IC.maps.LIST.forEach((m) => {
+      const g = m.group || 'Measured'; if (g !== group) { group = g; L.insertAdjacentHTML('beforeend', `<h4>${esc(g)}</h4>`); }
+      const b = document.createElement('button'); b.type = 'button'; b.dataset.map = m.id; b.title = m.what; b.setAttribute('aria-current', String(!!mapView && mapView.id === m.id));
+      const c = document.createElement('canvas'); c.width = 112; c.height = 84; b.append(c); b.insertAdjacentHTML('beforeend', `<span><b>${esc(m.name)}</b><small>${esc(m.what)}</small></span>`);
+      b.onclick = () => openMap(m.id); L.append(b);
+    });
+    // small pictures of each map, made from a small copy (quick), one at a time so the page stays responsive
+    if (thumbFor !== img) { thumbFor = img; const k = Math.min(1, 240 / Math.max(img.width, img.height)); thumbSmall = X.resize(img, { width: img.width * k, height: img.height * k }); }
+    const small = thumbSmall, list = [...L.querySelectorAll('button')];
+    (async () => { for (const b of list) { await wait(5); if (thumbSmall !== small || !document.body.contains(b)) return; const m = IC.maps.LIST.find((x) => x.id === b.dataset.map); const map = IC.maps.make(m.id, small), v = m.grey ? IC.maps.grey(map, small.width, small.height) : IC.maps.heat(map, small), c = b.querySelector('canvas'), x = c.getContext('2d'); x.fillStyle = '#111'; x.fillRect(0, 0, c.width, c.height); const kk = Math.min(c.width / small.width, c.height / small.height); x.drawImage(X.canvasOf(v), (c.width - small.width * kk) / 2, (c.height - small.height * kk) / 2, small.width * kk, small.height * kk); } })();
+  }
+  function openMap(id, mode) {
+    const img = now(); if (!img) return; if (tool) closeTool(true);
+    const m = IC.maps.LIST.find((x) => x.id === id); mode = mode || (m.grey ? 'grey' : 'heat');
+    busyNow(`Measuring: ${m.name}…`);
+    setTimeout(() => {
+      const t0 = performance.now(), map = IC.maps.make(id, img);
+      mapView = { id, mode, img: mode === 'grey' ? IC.maps.grey(map, img.width, img.height) : IC.maps.heat(map, img) };
+      ICLOG.info(`Map ${m.name}: ${img.width} × ${img.height} in ${Math.round(performance.now() - t0)} ms`);
+      busy(null); show(); renderMapBar(); renderMaps();
+    }, 20);
+  }
+  function closeMap() { mapView = null; $('mapbar').hidden = true; show(); renderMaps(); }
+  function renderMapBar() {
+    const bar = $('mapbar'); if (!mapView) { bar.hidden = true; return; }
+    const m = IC.maps.LIST.find((x) => x.id === mapView.id);
+    bar.innerHTML = `<b>Map: ${esc(m.name)}</b><div class="seg"><button class="btn" data-m="heat" aria-pressed="${mapView.mode === 'heat'}">Heat</button><button class="btn" data-m="grey" aria-pressed="${mapView.mode === 'grey'}">Grey (mask)</button></div><button class="btn outline" data-a="open">Open as a picture</button><button class="btn outline" data-a="clear">Make see-through by it</button><button class="btn primary" data-a="back">Back to the picture</button>`;
+    bar.hidden = false;
+    bar.onclick = (e) => {
+      const b = e.target.closest('button'); if (!b) return;
+      if (b.dataset.m) { openMap(mapView.id, b.dataset.m); return; }
+      const img = now(), map = IC.maps.make(mapView.id, img);
+      if (b.dataset.a === 'back') closeMap();
+      else if (b.dataset.a === 'open') { const g = IC.maps.grey(map, img.width, img.height); closeMap(); addPic(`${baseName(pic().name)} – ${m.name}.png`, g, { format: 'Map', bits: 8 }); toast(`${m.name} opened as a picture of its own.`); }
+      else if (b.dataset.a === 'clear') { const o = new ImageData(new Uint8ClampedArray(img.data), img.width, img.height); for (let p = 0; p < map.length; p++) o.data[p * 4 + 3] = Math.round(o.data[p * 4 + 3] * map[p]); closeMap(); push(`See-through by ${m.name}`, o); }
+    };
+  }
   document.querySelectorAll('.tab').forEach((t) => t.addEventListener('click', () => showTab(t.dataset.tab)));
   const showSide = (side) => { if (matchMedia('(max-width: 980px)').matches) document.querySelector('.work').classList.add(side === 'right' ? 'show-right' : 'show-left'); };
 

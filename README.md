@@ -34,6 +34,12 @@ Classic formats fit the picture to that machine's screen and colours for you (th
 - **Dithering**: Floyd–Steinberg, Atkinson, Jarvis, Stucki, Burkes, Sierra, Sierra Lite, ordered 2 × 2 / 4 × 4 / 8 × 8, and noise, with a strength slider.
 - **Computer looks**: Atari ST, Amiga, Commodore 64, ZX Spectrum, Amstrad CPC, CGA, EGA, VGA, Macintosh, Game Boy, Apple II, PICO-8 and Teletext, at the real screen size (with tall or wide pixels where the machine had them) or kept at your picture's size.
 
+### Maps, channels and masks
+
+- **Maps** (left panel, Maps tab): the picture measured into maps, one shown at a time: edges, texture, smooth areas, noise, specks and damage, skin, greenery, sky, shadows, midtones, highlights, colourfulness, haze, sharp or blurred, and clipped. Shown as heat maps or as grey masks (white = most).
+- **Channels**: red, green, blue; cyan, magenta, yellow and black (CMYK separations); Lab lightness and its two colour axes; **extreme greyscale** (contrast pushed to the limit area by area, so scratches, creases and faint detail show) and **black and white** (split automatically, Otsu's method). Damage and detail often live in different channels. Any map can be **opened as a picture** of its own, or used to **make the picture see-through**.
+- **Where** (in every tool that keeps the picture's size): apply the tool only where a map says, with a level, softness and feather (like Levels on a mask), inverted, or **combined with a second map** (Calculations: multiply, add, subtract, difference, lighter, darker). For example: sharpen only the texture but not the skin; take noise out of the smooth areas only; deepen the colour of the sky alone. Press Show the mask to see it.
+
 ### Restore old photos
 
 - **Auto colour** (Adjust tab): corrects a faded print the way a photo lab would: each colour's own black and white points, the midtones made neutral with a curve, and faded colour brought back by how much is missing. Skin tones and greenery are protected (the correction eases off rather than turning faces grey or grass brown), and a sepia or toned picture keeps its tone: a picture with almost no colour other than its main hue is treated as toned, a very faded colour print gets part of the correction, and Make neutral forces a full one.
