@@ -80,6 +80,8 @@ Classic formats fit the picture to that machine's screen and colours for you (th
 
 - **Smooth out noise** (edges stay sharp), **Dust and scratches**, **Remove JPEG blocks**, **Undither** (blends dithering dots back into smooth colour).
 - **Make bigger** and **Resize**: Best (sharp edges without halos), Pixel averaging (every pixel counted by how much it covers), Lanczos, Cubic, Soft (Mitchell), Linear, square pixels, Scale2x and Scale3x for pixel art, smooth pixel art (grown with Scale2x and averaged back down), or **AI upscaling**: Real-ESRGAN 2× and 4× (the standard for real-world photos: crisp edges, JPEG blocks cleaned), and Swin2SR 2× for clean pictures, 4× for old photos and 4× JPEG clean-up with an AI strength slider that mixes in the classic enlargement. Averaging is done in linear light, as light really adds up, so fine detail and edges keep their brightness.
+- **Combine photos** (Clean up › Bigger): several shots of the same scene (a handheld burst, or the same print scanned a few times) are lined up to a fraction of a pixel and merged. **Super-resolution** uses the tiny shifts between the shots to fill in detail between the pixels, the way phone cameras and DLSS-style game upscalers use several frames. **Average** removes noise, and **Median** also drops things that moved (passers-by). Each part can be lined up on its own, for handheld shots. On a test with 8 shots at half size, Super 2× scored 33.7 dB against 30.8 for the best single-shot enlargement (4 shots: 33.4).
+- **Sharpen › Smart (CAS)**: contrast-adaptive sharpening after AMD FidelityFX CAS (the FSR 1 sharpener, MIT). Each pixel is sharpened by how much room its neighbours leave, so there are no halos or clipping, and flat areas are left alone.
 - **Modernise** in one go: pixel art, a dithered screen, an old photo or scan, or a blocky JPEG.
 - **Remove background**: by colour from the edges (click leftovers to take them too), or an **AI cut-out** for photos. Make a colour see-through, or fill see-through parts.
 
@@ -135,6 +137,7 @@ Open-source libraries it uses are listed with their licences in Credits.
 - [ImageTracer](https://github.com/jankovicsandras/imagetracerjs) (public domain / Unlicense) for SVG outlines.
 - [Transformers.js](https://github.com/huggingface/transformers.js) and ONNX Runtime Web (Apache-2.0) for the AI helpers, in `lib/craft-ai-libs.js`. Models: U²-Net (Apache-2.0), BEN2 (MIT), SlimSAM (Apache-2.0), Swin2SR (Apache-2.0), Real-ESRGAN (BSD-3-Clause; the ONNX export by SceneWorks).
 - [MediaPipe Tasks Vision](https://github.com/google-ai-edge/mediapipe) and its Face Landmarker model (Apache-2.0), bundled as `lib/craft-face-libs.js` (built from `lib/face-build`).
+- Smart sharpen follows AMD FidelityFX CAS (MIT); the method was re-written here from its published description, not copied.
 - [Instrument Sans](https://github.com/Instrument/instrument-sans) (SIL Open Font License) for the interface.
 
 ## Development notes

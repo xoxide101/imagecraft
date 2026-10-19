@@ -357,6 +357,22 @@
         seg('from', 'From', [['step', 'A step in History'], ['pic', 'Another open picture']]), { t: 'stepsel', k: 'step', label: 'Version', show: (s) => s.from === 'step' }, { t: 'picsel', k: 'other', label: 'Picture (a cut-out is placed by its solid parts)', show: (s) => s.from === 'pic' }, sel('mode', 'How', IC.detail.MODES.map((m) => [m, { normal: 'Normal (mix)', multiply: 'Multiply (darker)', screen: 'Screen (lighter)', overlay: 'Overlay (contrast)', softlight: 'Soft light', lighten: 'Lighten only', darken: 'Darken only', difference: 'Difference (shows changes)', luminosity: 'Its brightness, my colours', colour: 'Its colours, my brightness' }[m]])),
         range('amount', 'Amount %', 0, 100), note('Use Where to bring the version back only in some places: the sharper version on the texture, the smoother one on the sky.')],
       run: (img, s) => { const src = s.from === 'pic' ? pics[s.other] && pics[s.other].steps[pics[s.other].at].img : pic().steps[s.step] && pic().steps[s.step].img; if (!src) throw new Error(s.from === 'pic' ? 'Open another picture first (for example a cut-out you repaired).' : 'Choose a version.'); return IC.detail.blend(img, src, { mode: s.mode, amount: s.amount }); } },
+    stack: { title: 'Combine photos', icon: IK.upscale, live: false, applyLabel: 'Make the combined picture',
+      s: () => ({ use: pics.map((p, k) => k).filter((k) => k !== cur), mode: 'super', scale: '2', local: true }),
+      fields: [note('Several shots of the same scene (a handheld burst, or the same scan done a few times) hold more than any one of them. They are lined up to a fraction of a pixel and merged: the noise averages away, and with Super, the tiny shifts between shots fill in detail between the pixels (how phones and DLSS-style upscalers do it).'),
+        { t: 'picmulti', k: 'use', label: 'Shots to combine' },
+        seg('mode', 'How', [['super', 'Super-resolution'], ['average', 'Average (less noise)'], ['median', 'Median (removes passers-by)']]),
+        seg('scale', 'Size', [['1', 'Same size'], ['2', '2× bigger'], ['3', '3× bigger']], (s) => s.mode === 'super'),
+        chk('local', 'Line up each part on its own (handheld, slight movement)'), { t: 'out' }, note('Press Preview. The result opens as a new picture.')],
+      report: () => (tool && tool.shifts ? `<p class="hint">Lined up <b>${tool.shifts.length}</b> shots; moves found: ${tool.shifts.map(([x, y]) => `${x.toFixed(1)}, ${y.toFixed(1)}`).join(' · ')} pixels.</p>` : ''),
+      run: async (img, s, say) => {
+        const others = s.use.filter((k) => k !== cur && pics[k]).map((k) => pics[k].steps[pics[k].at].img);
+        if (!others.length) throw new Error('Open at least one more shot of the same scene first (File › Open, several at once).');
+        const shots = [img, ...others.map((o) => (o.width === img.width && o.height === img.height ? o : X.resize(o, { width: img.width, height: img.height })))];
+        if (s.mode === 'super' && img.width * img.height * s.scale * s.scale > 40e6) throw new Error('That would be over 40 megapixels: choose a smaller size, or crop first.');
+        const r = await IC.stack.combine(shots, { mode: s.mode, scale: s.mode === 'super' ? +s.scale : 1, local: s.local, onStep: (m) => say && say(m) });
+        tool.shifts = r.shifts.slice(1); return r.img;
+      } },
     facerefine: { title: 'Face refine', icon: IK.cutout, live: false, s: { skin: 30, eyes: 40, whites: 30, irises: 30, lips: 20, teeth: 20 },
       fields: [range('skin', 'Smooth the skin', 0, 100), range('eyes', 'Clear the eyes', 0, 100), range('whites', 'Brighter, neutral eye whites', 0, 100), range('irises', 'Iris contrast', 0, 100), range('lips', 'Lip colour', 0, 100), range('teeth', 'Whiter teeth', 0, 100), { t: 'out' },
         note('Each part of each face is found (478 points per face) and given its own treatment. Nothing is redrawn or invented: the eyes, mouth and skin stay the person’s own. The first use downloads the face finder (about 4 MB). Press Preview.')],
@@ -393,7 +409,7 @@
     posterize: { title: 'Posterize', icon: IK.posterize, s: { levels: 4 }, fields: [range('levels', 'Steps for each colour', 2, 16)], run: (img, s) => X.posterize(img, s) },
     sepia: { title: 'Sepia (old photo)', icon: IK.sepia, s: { strength: 100 }, fields: [range('strength', 'Strength', 0, 100)], run: (img, s) => X.sepia(img, s) },
     blur: { title: 'Blur', icon: IK.blur, s: { radius: 2 }, fields: [range('radius', 'How much (pixels)', 1, 40)], run: (img, s) => X.blur(img, s) },
-    sharpen: { title: 'Sharpen', icon: IK.sharpen, s: { amount: 80, radius: 1, threshold: 2 }, fields: [range('amount', 'Amount (%)', 0, 300), range('radius', 'Radius', 1, 5), range('threshold', 'Leave smooth areas (threshold)', 0, 30)], run: (img, s) => X.sharpen(img, s) },
+    sharpen: { title: 'Sharpen', icon: IK.sharpen, s: { how: 'smart', amount: 80, cas: 60, radius: 1, threshold: 2 }, fields: [seg('how', 'How', [['smart', 'Smart (CAS)'], ['classic', 'Classic (unsharp mask)']]), range('cas', 'Amount (%)', 0, 100, 1, (s) => s.how === 'smart'), range('amount', 'Amount (%)', 0, 300, 1, (s) => s.how !== 'smart'), range('radius', 'Radius', 1, 5, 1, (s) => s.how !== 'smart'), range('threshold', 'Leave smooth areas (threshold)', 0, 30, 1, (s) => s.how !== 'smart'), note('Smart sharpens each pixel by how much room it has (AMD’s contrast-adaptive sharpening, the FSR 1 sharpener): no halos, no clipping, flat areas left alone.')], run: (img, s) => (s.how === 'smart' ? X.cas(img, { amount: s.cas }) : X.sharpen(img, s)) },
     pixelate: { title: 'Pixelate', icon: IK.pixelate, s: { size: 8 }, fields: [range('size', 'Square size', 2, 64)], run: (img, s) => X.pixelate(img, s) },
     depth: { title: 'Colour depth', icon: IK.depth, s: { depth: '4', palette: 'adaptive', levels: '0', grey: false, dither: 'fs', amount: 100 },
       fields: [sel('depth', 'Colour depth', DEPTHS), chk('grey', 'Greys only'), sel('palette', 'Colours', PALS, (s) => !/high/.test(s.depth) && !s.grey), sel('levels', 'Chosen from', LEVELS, (s) => s.palette === 'adaptive' && !/high/.test(s.depth) && !s.grey),
@@ -584,7 +600,7 @@
   // ------------------------------------------------------------------ running a tool
   let tool = null, token = 0, timer = null;
   // Where: any tool that keeps the picture's size can work only where a map says (a mask: white = apply, black = leave)
-  const NO_MASK = new Set(['resize', 'crop', 'canvas', 'straighten', 'looks', 'text', 'trace', 'upscale', 'remaster', 'modern', 'depth', 'noisemap']);
+  const NO_MASK = new Set(['resize', 'crop', 'canvas', 'straighten', 'looks', 'text', 'trace', 'upscale', 'remaster', 'modern', 'depth', 'noisemap', 'stack']);
   const maskable = (def) => !NO_MASK.has(def.id) && !def.viewOnly;
   const MASK_FIELDS = [
     { t: 'html', html: () => '<h3 style="margin:10px 0 0">Where</h3>' },
@@ -628,6 +644,7 @@
     if (t.def.viewOnly) { closeTool(); return; }
     if (t.def.final) { const r = masked(t, await t.def.final(t.base, t.s)); closeTool(true); push(t.def.title + (t.s.wMap ? ' (masked)' : ''), r); return; }
     if (t.def.id === 'crop' || !t.preview || t.stale) { await runPreview(); if (tool !== t || !t.preview) return; }
+    if (t.def.id === 'stack') { const r = t.out || t.preview, nm = `${baseName(pic().name)} – combined.png`; closeTool(true); addPic(nm, r, { format: 'Combined', bits: 24 }); toast('The combined picture is open as a new picture.'); return; }
     const r = t.out || t.preview; closeTool(true); push(t.def.title + (t.s && t.s.wMap ? ' (masked)' : ''), r);
   }
   // a tool that needs no settings: done at once, as a step
@@ -656,6 +673,7 @@
       if (f.t === 'btns' && f.show && !f.show(t.s)) return;
       if (f.t === 'btns') { const r = document.createElement('div'); r.className = 'btns'; f.buttons.forEach((b) => { const e = document.createElement('button'); e.className = 'btn ' + (b.primary ? 'primary' : 'outline'); e.type = 'button'; e.textContent = b.label; e.onclick = () => { b.run(t.s, t.base); t.stale = true; renderProps(); if (d.id === 'crop') placeCrop(); else if (isLive(t)) schedule(0); }; r.append(e); }); into.append(r); return; }
       if (f.t === 'looks') { into.append(looksTiles()); return; }
+      if (f.t === 'picmulti') { const box = document.createElement('div'); box.className = 'field'; box.innerHTML = `<span>${esc(f.label)}</span>`; pics.forEach((p, k) => { const l = document.createElement('label'); l.className = 'check'; const c = document.createElement('input'); c.type = 'checkbox'; c.checked = k === cur || t.s[f.k].includes(k); c.disabled = k === cur; c.onchange = () => { const v = t.s[f.k].filter((q) => q !== k); if (c.checked) v.push(k); set(f.k, v, true); }; l.append(c, document.createTextNode(' ' + p.name + (k === cur ? ' (the one to match)' : ''))); box.append(l); }); into.append(box); return; }
       if (f.t === 'picsel') { if (f.show && !f.show(t.s)) return; const lab = document.createElement('label'); lab.className = 'field'; lab.innerHTML = `<span>${esc(f.label)}</span>`; const i = document.createElement('select'); i.className = 'input'; pics.forEach((p, k) => { if (k !== cur) i.add(new Option(p.name, k)); }); if (!i.options.length) i.add(new Option('(open or make another picture first)', -1)); i.value = String(t.s[f.k]); i.onchange = () => set(f.k, +i.value, true); lab.append(i); into.append(lab); return; }
       if (f.t === 'stepsel') { if (f.show && !f.show(t.s)) return; const lab = document.createElement('label'); lab.className = 'field'; lab.innerHTML = `<span>${esc(f.label)}</span>`; const i = document.createElement('select'); i.className = 'input'; pic().steps.forEach((st, k) => { if (k !== pic().at) i.add(new Option(`${k}. ${st.label}`, k)); }); i.value = String(t.s[f.k]); i.onchange = () => set(f.k, +i.value, true); lab.append(i); into.append(lab); return; }
       if (f.t === 'curve') { into.append(curveEditor(t, set)); return; }
@@ -1050,7 +1068,7 @@
         ['Restore', [B('Remove noise', IK.denoise, T('nlm'), { big: true, title: 'Smart noise removal (non-local means): grain and colour blotches' }), B('Deblur', IK.sharpen, T('deblur'), { big: true, title: 'Undo soft focus, out of focus or camera shake (Wiener deconvolution)' }), B('Faded detail', IK.light, T('clahe'), { big: true, title: 'Adaptive contrast for faded photos (CLAHE)' }), { col: [B('Where the noise is', IK.grid, T('noisemap'))] }]],
         ['Clean', [B('Smooth out noise', IK.denoise, T('denoise'), { big: true }), B('Dust and scratches', IK.dust, T('despeckle'), { big: true }), B('JPEG blocks', IK.jpeg, T('deblock'), { big: true, title: 'Remove JPEG blocks and smudges' }), B('Undither', IK.undither, T('undither'), { big: true, title: 'Blend dithering dots back into smooth colour' })]],
         ['Background', [B('Remove background', IK.cutout, T('cutout'), { big: true })]],
-        ['Bigger', [B('Make bigger', IK.upscale, T('upscale'), { big: true, title: 'Smooth, pixel-art or AI upscaling' }), B('Modernise', IK.modern, T('modern'), { big: true }), B('Remaster shapes', IK.svg, T('remaster'), { big: true, title: 'Recognise the shapes, draw them again crisply at the new size, and blend with the original' })]],
+        ['Bigger', [B('Make bigger', IK.upscale, T('upscale'), { big: true, title: 'Smooth, pixel-art or AI upscaling' }), B('Combine photos', IK.upscale, T('stack'), { big: true, title: 'Merge several shots of the same scene: less noise, and more detail than any one shot' }), B('Modernise', IK.modern, T('modern'), { big: true }), B('Remaster shapes', IK.svg, T('remaster'), { big: true, title: 'Recognise the shapes, draw them again crisply at the new size, and blend with the original' })]],
       ] },
       { id: 'convert', label: 'Convert', hue: '#138a9e', groups: [
         ['Save', [B('Save as', I.save, openSave, { big: true, key: 'Ctrl+S' }), B('Batch convert', IK.batch, openBatch, { big: true, title: 'Convert every open picture at once, into a ZIP' })]],

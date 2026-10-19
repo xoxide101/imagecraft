@@ -102,6 +102,25 @@
     return new ImageData(Uint8ClampedArray.from(a), W, H);
   }
   // unsharp mask: amount 0–300 %, radius, and a threshold so smooth areas (skin, sky) stay smooth
+  // Contrast-adaptive sharpening (after AMD FidelityFX CAS, MIT): each pixel is sharpened by how much room its
+  // neighbours leave before black or white, so flat areas and strong edges get less and nothing rings or clips.
+  function cas(img, { amount = 60 } = {}) {
+    const W = img.width, H = img.height, s = img.data, out = new ImageData(W, H), d = out.data, peak = -1 / (8 - 3 * Math.min(1, amount / 100));
+    const at = (x, y, c) => s[(Math.min(H - 1, Math.max(0, y)) * W + Math.min(W - 1, Math.max(0, x))) * 4 + c] / 255;
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const o = (y * W + x) * 4;
+      for (let c = 0; c < 3; c++) {
+        const m = at(x, y, c), n = at(x, y - 1, c), so = at(x, y + 1, c), e = at(x + 1, y, c), w = at(x - 1, y, c);
+        let mn = Math.min(m, n, so, e, w), mx = Math.max(m, n, so, e, w);
+        const mn2 = Math.min(mn, at(x - 1, y - 1, c), at(x + 1, y - 1, c), at(x - 1, y + 1, c), at(x + 1, y + 1, c)), mx2 = Math.max(mx, at(x - 1, y - 1, c), at(x + 1, y - 1, c), at(x - 1, y + 1, c), at(x + 1, y + 1, c));
+        mn += mn2; mx += mx2; // the cross plus the ring, as CAS does
+        const amp = Math.sqrt(Math.max(0, Math.min(1, Math.min(mn, 2 - mx) / Math.max(1e-5, mx)))), k = amp * peak;
+        d[o + c] = Math.round(Math.max(0, Math.min(1, (m + k * (n + so + e + w)) / (1 + 4 * k))) * 255);
+      }
+      d[o + 3] = s[o + 3];
+    }
+    return out;
+  }
   function sharpen(img, { amount = 80, radius = 1, threshold: th = 2 } = {}) {
     const bl = blur(img, { radius }), o = copy(img), d = o.data, b = bl.data, k = amount / 100;
     for (let i = 0; i < d.length; i += 4) for (let c = 0; c < 3; c++) { const diff = d[i + c] - b[i + c]; if (Math.abs(diff) > th) d[i + c] = clamp(d[i + c] + diff * k); }
@@ -522,5 +541,5 @@
     return o;
   }
 
-  IC.filters = { dehaze, hazeLevel, isToned, shadowRecover, guided, autoColour, clarity, pyramidBlend, aliasCheck, antialias, light, colour, autoLevels, autoFix, whiteBalance, greyscale, sepia, invert, threshold, posterize, blur, sharpen, denoise, median, despeckle, deblock, undither, pixelate, resize, scale2x, scale3x, rotate: rotateAny, rotate90: rotate, flip, crop, trimBox, canvasSize, makeClear, flatten, copy, canvasOf };
+  IC.filters = { cas, dehaze, hazeLevel, isToned, shadowRecover, guided, autoColour, clarity, pyramidBlend, aliasCheck, antialias, light, colour, autoLevels, autoFix, whiteBalance, greyscale, sepia, invert, threshold, posterize, blur, sharpen, denoise, median, despeckle, deblock, undither, pixelate, resize, scale2x, scale3x, rotate: rotateAny, rotate90: rotate, flip, crop, trimBox, canvasSize, makeClear, flatten, copy, canvasOf };
 })();

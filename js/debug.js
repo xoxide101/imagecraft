@@ -25,7 +25,10 @@
     const orig = console[lv].bind(console);
     console[lv] = (...a) => { try {
       // the AI runtime's own notes ("[W:onnxruntime …] could not constant fold …") are not errors: counted, not listed
-      if (typeof a[0] === 'string' && /\[W:onnxruntime|\[I:onnxruntime/.test(a[0])) { ortNotes++; clearTimeout(ortT); ortT = setTimeout(() => { add('info', `AI runtime notes: ${ortNotes} (harmless)`); ortNotes = 0; }, 800); orig(...a); return; } add(lv, a.map((x) => (x instanceof Error ? x.message : typeof x === 'string' ? x : str(x))).join(' ').slice(0, 2000), a.find((x) => x instanceof Error)); } catch (e) { /* ignore */ } orig(...a); };
+      if (typeof a[0] === 'string' && /\[W:onnxruntime|\[I:onnxruntime/.test(a[0])) { ortNotes++; clearTimeout(ortT); ortT = setTimeout(() => { add('info', `AI runtime notes: ${ortNotes} (harmless)`); ortNotes = 0; }, 800); orig(...a); return; }
+      // the face finder (MediaPipe) prints its start-up notes as errors: "INFO: Created TensorFlow Lite XNNPACK delegate…"
+      if (typeof a[0] === 'string' && /^INFO:/.test(a[0])) { add('info', a[0].slice(0, 300)); orig(...a); return; }
+      add(lv, a.map((x) => (x instanceof Error ? x.message : typeof x === 'string' ? x : str(x))).join(' ').slice(0, 2000), a.find((x) => x instanceof Error)); } catch (e) { /* ignore */ } orig(...a); };
   });
   const env = () => {
     const n = navigator, lines = [`ImageCraft debug log — ${new Date().toISOString()}`, `Page: ${location.protocol}//${location.pathname.split('/').slice(-2).join('/')}`, `Browser: ${n.userAgent}`, `Screen: ${screen.width} × ${screen.height} at ${devicePixelRatio}×, window ${innerWidth} × ${innerHeight}`, `Processor threads: ${n.hardwareConcurrency || '?'}, memory: ${n.deviceMemory ? n.deviceMemory + ' GB or more' : '?'}`];
