@@ -5,6 +5,7 @@
      cutout(src)            → { W, H, a: Uint8Array 0–255 (255 = keep) }  U²-Net (Apache-2.0; U²-Netp on a basic computer),
                                                                            or BEN2 (MIT) for the best quality (slower)
      pick(src, pts)         → { W, H, a }  pts = [[u, v, 1 keep | 0 not]]  SlimSAM (Apache-2.0)
+     find(src, words)       → { w, h, maps: [Float32Array 0–1] } one map per word or phrase   CLIPSeg (Apache-2.0)
      upscale(src, kind)     → canvas, 2× or 4× bigger                       Swin2SR (Apache-2.0): 'sharp' 2×, 'photo' 4×
                                                                            (real-world photos: noise and blur), 'jpeg' 4×
    The models come from huggingface.co; the library (Transformers.js, Apache-2.0) is lib/craft-ai-libs.js. */
@@ -19,9 +20,10 @@
     jpeg: { gpuDtype: 'fp32', id: 'Xenova/swin2SR-compressed-sr-x4-48', name: 'Upscale 4× (JPEG clean-up)', what: 'For pictures spoilt by JPEG blocks and smudges: four times bigger with the blocks taken out.', mb: { gpu: 30, cpu: 10 }, licence: 'Apache-2.0', scale: 4 },
     esrgan: { raw: 'https://huggingface.co/SceneWorks/real-esrgan-onnx/resolve/main/real_esrgan_x4.onnx', name: 'Upscale 4× (Real-ESRGAN, real photos)', what: 'The standard for real-world photos: four times bigger, with crisp edges and natural texture in grass, gravel, fabric and leaves; also cleans JPEG blocks and noise.', mb: { gpu: 67, cpu: 67 }, licence: 'BSD-3-Clause', scale: 4 },
     esrgan2: { raw: 'https://huggingface.co/SceneWorks/real-esrgan-onnx/resolve/main/real_esrgan_x2.onnx', name: 'Upscale 2× (Real-ESRGAN)', what: 'Real-ESRGAN at twice the size, for photos that only need a little more.', mb: { gpu: 67, cpu: 67 }, licence: 'BSD-3-Clause', scale: 2 },
+    find: { id: 'Xenova/clipseg-rd64-refined', name: 'Find things by name', what: 'Finds sky, grass, trees, people, clothes, buildings and anything you name in a picture, by what they are rather than by their colour, so it works on sepia and faded prints too. (About 15 seconds a picture on the processor.)', mb: { gpu: 139, cpu: 139 }, licence: 'Apache-2.0' },
     pick: { id: 'Xenova/slimsam-77-uniform', name: 'Pick an object', what: 'Click an object in a picture and it is outlined for you, to keep or take out.', mb: { gpu: 21, cpu: 14 }, licence: 'Apache-2.0' },
   };
-  const DEFAULTS = { on: true, gpu: null, use: { cutout: true, best: false, sharp: true, photo: true, jpeg: true, esrgan: true, esrgan2: true, pick: true } };
+  const DEFAULTS = { on: true, gpu: null, use: { cutout: true, best: false, sharp: true, photo: true, jpeg: true, esrgan: true, esrgan2: true, find: true, pick: true } };
   let settings = DEFAULTS;
   try { settings = { ...DEFAULTS, ...JSON.parse(localStorage.getItem(KEY) || '{}') }; settings.use = { ...DEFAULTS.use, ...(settings.use || {}) }; } catch (e) { /* ignore */ }
   const save = () => { try { localStorage.setItem(KEY, JSON.stringify(settings)); } catch (e) { /* ignore */ } };
@@ -131,6 +133,8 @@
           const buf = await fetchCached(url, (l, t) => progress(k, { loaded: l, total: t }));
           r = await T.ort.InferenceSession.create(new Uint8Array(buf), { executionProviders: ['wasm'] });
         }
+        // CLIPSeg runs on the processor in 8-bit (dependable everywhere; the full-precision file is 545 MB)
+        else if (k === 'find') r = { tok: await T.AutoTokenizer.from_pretrained(m.id), processor: await T.AutoProcessor.from_pretrained(m.id), model: await T.AutoModel.from_pretrained(m.id, { ...opts, device: 'wasm', dtype: 'q8' }) };
         else r = { model: await T.SamModel.from_pretrained(m.id, opts), processor: await T.AutoProcessor.from_pretrained(m.id, { progress_callback: opts.progress_callback }) };
         progress(k, { status: 'ready' }); return r;
       } catch (e) {
@@ -240,6 +244,16 @@
     if (any) { const od = ox.getImageData(0, 0, out.width, out.height); for (let i = 3; i < ad.length; i += 4) od.data[i] = ad[i]; ox.putImageData(od, 0, 0); }
     return out;
   }
+  // Find things by name (CLIPSeg): one 352 × 352 map of 0–1 per word, for the whole picture
+  async function find(src, words) {
+    const T = await lib(), c = await canvasOf(src, 1024), raw = await rawOf(T, c);
+    return run('find', async ({ tok, processor, model }) => {
+      const ti = tok(words, { padding: true, truncation: true }), ii = await processor(words.map(() => raw)), { logits } = await model({ ...ti, ...ii });
+      const dims = logits.dims, h = dims[dims.length - 2], w = dims[dims.length - 1], d = logits.data, maps = [];
+      for (let k = 0; k < words.length; k++) { const m = new Float32Array(w * h); for (let i = 0; i < m.length; i++) m[i] = 1 / (1 + Math.exp(-d[k * w * h + i])); maps.push(m); }
+      return { w, h, maps };
+    });
+  }
   function pick(src, pts) {
     return remember('pick:' + keyOf(src) + JSON.stringify(pts), (async () => {
       const T = await lib(), c = await canvasOf(src, 1024), image = await rawOf(T, c);
@@ -316,5 +330,5 @@
     };
   }
 
-  window.CRAFTAI = { sizeOf, probe: () => probed, found: () => found, settings: () => settings, enabled, ready, cutout, pick, upscale, onProgress, downloaded, forget, openSettings, MODELS };
+  window.CRAFTAI = { find, sizeOf, probe: () => probed, found: () => found, settings: () => settings, enabled, ready, cutout, pick, upscale, onProgress, downloaded, forget, openSettings, MODELS };
 })();

@@ -69,6 +69,18 @@
     ['lightness', 'Lightness (Lab L*)', (r, g, b) => lab(r, g, b)[0] / 100], ['labA', 'Green ↔ red (Lab a*)', (r, g, b) => Math.max(0, Math.min(1, lab(r, g, b)[1] / 60 + 0.5))], ['labB', 'Blue ↔ yellow (Lab b*)', (r, g, b) => Math.max(0, Math.min(1, lab(r, g, b)[2] / 60 + 0.5))],
   ];
   CHANNELS.forEach(([id, name, f]) => LIST.push({ id, name, group: 'Channels', what: `The picture’s ${name.toLowerCase()} on its own, white = most.`, grey: true, make: ch(f) }));
+  // stretched ("false") channels: a toned or faded print keeps almost nothing in its colour separations (magenta 0–9%
+  // on a sepia print), so each is stretched from its own 0.5% to 99.5% to show the faint differences (stains, fading,
+  // toning, the ghost of a colour) as a full-range map, like the false colour of telescope pictures
+  function stretch(v, lo = 0.005, hi = 0.995) {
+    const h = new Uint32Array(1024); for (let i = 0; i < v.length; i++) h[Math.min(1023, Math.max(0, Math.round(v[i] * 1023)))]++;
+    let c = 0, a = 0, b = 1023; const n = v.length; for (let i = 0; i < 1024; i++) { c += h[i]; if (c >= n * lo) { a = i; break; } }
+    c = 0; for (let i = 1023; i >= 0; i--) { c += h[i]; if (c >= n * (1 - hi)) { b = i; break; } }
+    const A = a / 1023, B = Math.max(A + 1 / 255, b / 1023), o = new Float32Array(v.length); for (let i = 0; i < v.length; i++) o[i] = Math.max(0, Math.min(1, (v[i] - A) / (B - A)));
+    o.range = [A, B]; return o;
+  }
+  CHANNELS.filter(([id]) => ['cyan', 'magenta', 'yellow', 'labA', 'labB'].includes(id)).forEach(([id, name, f]) => LIST.push({ id: id + 'S', name: name.replace(/ \(.*\)/, '') + ', stretched', group: 'Channels, stretched', grey: true,
+    what: `The ${name.toLowerCase()} stretched to its own full range, so faint differences show (on a faded or toned print this channel may hold only a few percent).`, make: (img) => stretch(ch(f)(img)) }));
   // extreme greyscale: lightness with its contrast pushed to the limit, area by area, so faint marks and detail show
   LIST.push({ id: 'extreme', name: 'Extreme greyscale', group: 'Channels', grey: true, what: 'Lightness with the contrast pushed to the limit in every area: scratches, creases, faint detail and stains stand out.',
     make: (img) => { const W = img.width, H = img.height, L = ch((r, g, b) => lab(r, g, b)[0] / 100)(img), R = scaleR(img, 0.03), m = box(L, W, H, R), sd = localStd(L, W, H, R); return L.map((v, i) => Math.max(0, Math.min(1, 0.5 + (v - m[i]) / (2.5 * sd[i] + 0.01)))); } });
@@ -76,13 +88,76 @@
   LIST.push({ id: 'bw', name: 'Black and white', group: 'Channels', grey: true, what: 'Two values only, split at the level that best separates the picture into dark and light (Otsu’s method): clean shapes for masking or tracing.',
     make: (img) => { const L = lumOf(img), h = new Float64Array(256); L.forEach((v) => h[Math.min(255, Math.round(v * 255))]++); const N = L.length; let sum = 0; for (let i = 0; i < 256; i++) sum += i * h[i]; let sB = 0, wB = 0, best = 0, th = 128; for (let t = 0; t < 256; t++) { wB += h[t]; if (!wB) continue; const wF = N - wB; if (!wF) break; sB += t * h[t]; const mB = sB / wB, mF = (sum - sB) / wF, v = wB * wF * (mB - mF) ** 2; if (v > best) { best = v; th = t; } } return L.map((v) => (v * 255 > th ? 1 : 0)); } });
   if (IC.faces) IC.faces.PARTS.forEach(([part, name]) => LIST.push({ id: 'f_' + part, name, group: 'Faces (AI)', needsFaces: true, what: `${name}, from the face finder (478 points on each face; nothing is redrawn). The first use downloads it (about 4 MB).`, make: (img) => IC.faces.partMask(img, IC.faces.known(img), part) }));
+  // ------------------------------------------------------------------ AI: things found by what they are (CLIPSeg)
+  // The colour rules above judge by colour, so a sepia or colour-cast print fools them (everything is skin-coloured,
+  // nothing is green). These ask a model that knows what sky, grass and people look like; its coarse answer (352 × 352)
+  // is then snapped to the picture's own edges with a guided filter.
+  const findMemo = new WeakMap(); // picture → Map(words → 352² map)
+  const SCENE = [['sky', 'Sky', 'the sky'], ['trees', 'Trees and bushes', 'trees and bushes'], ['grass', 'Grass and lawn', 'grass'], ['flowers', 'Flowers', 'flowers'], ['people', 'People', 'a person'], ['clothes', 'Clothes', 'clothes'], ['hair', 'Hair', 'hair'], ['buildings', 'Buildings and walls', 'a building'], ['ground', 'Road, path and ground', 'the road and ground'], ['vehicles', 'Cars and bikes', 'a car or motorbike'], ['water', 'Water', 'water']];
+  function found(img, words) {
+    const fm = findMemo.get(img), r = fm && fm.get(words); const W = img.width, H = img.height;
+    if (!r) return new Float32Array(W * H);
+    // the coarse map, enlarged smoothly, then snapped to the picture's edges
+    const o = new Float32Array(W * H), fx = r.w / W, fy = r.h / H;
+    for (let y = 0; y < H; y++) { const sy = Math.min(r.h - 1, Math.max(0, (y + 0.5) * fy - 0.5)), y0 = Math.floor(sy), y1 = Math.min(r.h - 1, y0 + 1), ty = sy - y0;
+      for (let x = 0; x < W; x++) { const sx = Math.min(r.w - 1, Math.max(0, (x + 0.5) * fx - 0.5)), x0 = Math.floor(sx), x1 = Math.min(r.w - 1, x0 + 1), tx = sx - x0, m = r.m;
+        o[y * W + x] = (m[y0 * r.w + x0] * (1 - tx) + m[y0 * r.w + x1] * tx) * (1 - ty) + (m[y1 * r.w + x0] * (1 - tx) + m[y1 * r.w + x1] * tx) * ty; } }
+    const q = IC.filters.guidedBy(lumOf(img), o, W, H, scaleR(img, 0.012), 0.0004);
+    // the model's certainty is modest (0.3 is a clear yes): stretched so a clear yes is white; nothing there stays dark
+    const sorted = Float32Array.from(q).sort(), top = Math.max(0.25, sorted[Math.floor(sorted.length * 0.995)]), lo = 0.06;
+    return q.map((v) => Math.max(0, Math.min(1, (v - lo) / (top - lo))));
+  }
+  SCENE.forEach(([id, name, words]) => LIST.push({ id: 's_' + id, name, group: 'Scene (AI)', needsFind: [words], what: `${name}, recognised by what it is, not by colour (works on sepia, black-and-white and faded prints). The first use downloads the finder (CLIPSeg, Apache-2.0, about 139 MB).`, make: (img) => found(img, words) }));
+  // skin, learned from this picture's own faces: the colour of the cheeks and forehead the face finder found, looked for
+  // nearby (necks, arms, hands), so a colour cast or a sepia tone does not matter
+  const labOf = (r, g, b) => lab(r / 255, g / 255, b / 255);
+  LIST.push({ id: 'skinface', name: 'Skin (learned from the faces)', group: 'Faces (AI)', needsFaces: true, what: 'The skin colour of the faces in this picture, found again on necks, arms and hands nearby. Works with any colour cast or tone.',
+    make: (img) => {
+      const W = img.width, H = img.height, o = new Float32Array(W * H), faces = IC.faces && IC.faces.known(img); if (!faces || !faces.length) return o;
+      const sk = IC.faces.partMask(img, faces, 'skin'), d = img.data; let n = 0; const S = [0, 0, 0], Q = [0, 0, 0];
+      for (let p = 0; p < W * H; p += 2) if (sk[p] > 0.6) { const v = labOf(d[p * 4], d[p * 4 + 1], d[p * 4 + 2]); for (let c = 0; c < 3; c++) { S[c] += v[c]; Q[c] += v[c] * v[c]; } n++; }
+      if (n < 20) return o;
+      const mu = S.map((s) => s / n), sd = Q.map((q, c) => Math.max([8, 2.5, 2.5][c], Math.sqrt(Math.max(0, q / n - mu[c] * mu[c])) * 1.6));
+      const boxes = faces.map((f) => ({ x: f.box[0], y: f.box[1], w: f.box[2] - f.box[0], h: f.box[3] - f.box[1] })), reach = (x, y) => { let best = 0; for (const b of boxes) { const cx = b.x + b.w / 2, cy = b.y + b.h * 0.9, dx = (x - cx) / (b.w * 1.6), dy = (y - cy) / (b.h * 2.6), r = dx * dx + (dy < 0 ? 4 * dy * dy : dy * dy); best = Math.max(best, Math.exp(-1.5 * r)); } return best; };
+      for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { const p = y * W + x, v = labOf(d[p * 4], d[p * 4 + 1], d[p * 4 + 2]); let e = 0; for (let c = 0; c < 3; c++) { const z = (v[c] - mu[c]) / sd[c]; e += z * z; } o[p] = Math.max(sk[p], Math.exp(-0.5 * e) * reach(x, y)); }
+      return box(o, W, H, 1);
+    } });
+  // the main subject and the background (the cut-out AI: U²-Net, or BEN2 when chosen): restore each its own way; the
+  // background is not what matters, but it gives colour hints
+  const cutMemo = new WeakMap();
+  function subjectOf(img) {
+    const r = cutMemo.get(img), W = img.width, H = img.height, o = new Float32Array(W * H); if (!r) return o;
+    const fx = r.W / W, fy = r.H / H;
+    for (let y = 0; y < H; y++) { const sy = Math.min(r.H - 1, Math.max(0, (y + 0.5) * fy - 0.5)), y0 = Math.floor(sy), y1 = Math.min(r.H - 1, y0 + 1), ty = sy - y0;
+      for (let x = 0; x < W; x++) { const sx = Math.min(r.W - 1, Math.max(0, (x + 0.5) * fx - 0.5)), x0 = Math.floor(sx), x1 = Math.min(r.W - 1, x0 + 1), tx = sx - x0, a = r.a;
+        o[y * W + x] = ((a[y0 * r.W + x0] * (1 - tx) + a[y0 * r.W + x1] * tx) * (1 - ty) + (a[y1 * r.W + x0] * (1 - tx) + a[y1 * r.W + x1] * tx) * ty) / 255; } }
+    return o;
+  }
+  LIST.push({ id: 'subject', name: 'Main subject', group: 'Subject (AI)', needsCut: true, what: 'The main subject (people, an animal, an object), found by the cut-out AI. Restore it with care.', make: (img) => subjectOf(img) });
+  LIST.push({ id: 'background', name: 'Background', group: 'Subject (AI)', needsCut: true, what: 'Everything but the main subject: it can take stronger clean-up, and gives colour hints.', make: (img) => subjectOf(img).map((v) => 1 - v) });
+  // anything named: "the motorbike\", "a tear in the paper", "flowers" (added from the Maps tab)
+  function addFind(text) {
+    const words = String(text).trim().slice(0, 80); if (!words) return null; const id = 'q:' + words.toLowerCase();
+    if (!byId[id]) { const m = { id, name: `“${words}”`, group: 'Found by name (AI)', needsFind: [words], what: `Where the picture shows “${words}”, found by the AI finder.`, make: (img) => found(img, words) }; LIST.push(m); byId[id] = m; }
+    return id;
+  }
+  // colour rules cannot see on a picture whose colours all lean one way (sepia, a strong cast): measured once
+  const castMemo = new WeakMap();
+  function castRatio(img) {
+    if (castMemo.has(img)) return castMemo.get(img);
+    const d = img.data, n = img.width * img.height, st = Math.max(1, Math.floor(n / 40000)); let k = 0, sa = 0, sb = 0, qa = 0, qb = 0;
+    for (let p = 0; p < n; p += st) { const r = d[p * 4], g = d[p * 4 + 1], b = d[p * 4 + 2], a = r - g, y = 0.5 * (r + g) - b; sa += a; sb += y; qa += a * a; qb += y * y; k++; }
+    const ma = sa / k, mb = sb / k, sd = Math.sqrt(Math.max(0, qa / k - ma * ma) + Math.max(0, qb / k - mb * mb)), v = Math.hypot(ma, mb) / Math.max(1, sd);
+    castMemo.set(img, v); return v;
+  }
+  const colourBlind = (img) => castRatio(img) > 1.2 || (IC.filters.isToned && IC.filters.isToned(img));
   const byId = Object.fromEntries(LIST.map((m) => [m.id, m]));
 
   // maps are remembered for the picture they were made from (the same ImageData object)
   const memo = new WeakMap();
   function make(id, img) {
     let m = memo.get(img); if (!m) { m = {}; memo.set(img, m); }
-    if (byId[id].needsFaces && !IC.faces.known(img)) return byId[id].make(img); // not looked yet: an empty map, not remembered
+    if (!known(id, img)) return byId[id].make(img); // the AI has not looked yet: an empty map, not remembered
     if (!m[id]) m[id] = byId[id].make(img);
     return m[id];
   }
@@ -115,6 +190,36 @@
     return o;
   }
     // anything a map needs first (the face finder looks at the picture once)
-  async function prepare(ids, img) { for (const id of [].concat(ids)) if (id && byId[id] && byId[id].needsFaces) await IC.faces.ensure(img); }
-  IC.maps = { LIST, make, heat, grey, mask, apply, box, combined, OPS, prepare };
+  async function prepare(ids, img) {
+    const want = new Set();
+    for (const id of [].concat(ids)) { const m = id && byId[id]; if (!m) continue; if (m.needsFaces) await IC.faces.ensure(img); if (m.needsFind) m.needsFind.forEach((w) => want.add(w)); if (m.needsCut && !cutMemo.has(img)) { const c = document.createElement('canvas'); c.width = img.width; c.height = img.height; c.getContext('2d').putImageData(img, 0, 0); cutMemo.set(img, await CRAFTAI.cutout(c)); } }
+    if (!want.size) return;
+    let fm = findMemo.get(img); if (!fm) { fm = new Map(); findMemo.set(img, fm); }
+    // the scene words go together the first time (one look at the picture, about 15 seconds)
+    const missing = [...want].filter((w) => !fm.has(w)); if (!missing.length) return;
+    if (missing.some((w) => SCENE.some((s) => s[2] === w))) SCENE.forEach((s) => { if (!fm.has(s[2]) && !missing.includes(s[2])) missing.push(s[2]); });
+    const c = document.createElement('canvas'); c.width = img.width; c.height = img.height; c.getContext('2d').putImageData(img, 0, 0);
+    const r = await CRAFTAI.find(c, missing); missing.forEach((w, i) => fm.set(w, { w: r.w, h: r.h, m: r.maps[i] }));
+  }
+  const known = (id, img) => { const m = byId[id]; if (!m) return false; if (m.needsFaces && !IC.faces.known(img)) return false; if (m.needsCut && !cutMemo.has(img)) return false; if (m.needsFind) { const fm = findMemo.get(img); return !!fm && m.needsFind.every((w) => fm.has(w)); } return true; };
+  // a smaller copy (thumbnails) shares what the AI found in the full picture
+  const share = (from, to) => { if (findMemo.has(from)) findMemo.set(to, findMemo.get(from)); if (cutMemo.has(from)) cutMemo.set(to, cutMemo.get(from)); };
+  // a gap filled smoothly from what is around it (push–pull: averaged down a pyramid, then filled back up): a guess, for colour hints only
+  function fillGap(img, hole) {
+    const W = img.width, H = img.height, levels = []; let w = W, h = H, C = new Float32Array(W * H * 4); const s = img.data;
+    for (let p = 0; p < W * H; p++) { const k = 1 - hole[p]; for (let c = 0; c < 3; c++) C[p * 4 + c] = s[p * 4 + c] * k; C[p * 4 + 3] = k; }
+    levels.push([C, w, h]);
+    while (w > 1 || h > 1) { const w2 = Math.max(1, w >> 1), h2 = Math.max(1, h >> 1), D = new Float32Array(w2 * h2 * 4); for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const q = (Math.min(h2 - 1, y >> 1) * w2 + Math.min(w2 - 1, x >> 1)) * 4, p = (y * w + x) * 4; for (let c = 0; c < 4; c++) D[q + c] += C[p + c]; } C = D; w = w2; h = h2; levels.push([C, w, h]); }
+    for (let l = levels.length - 2; l >= 0; l--) { const [F, fw, fh] = levels[l], [G, gw, gh] = levels[l + 1]; for (let y = 0; y < fh; y++) for (let x = 0; x < fw; x++) { const p = (y * fw + x) * 4, a = F[p + 3]; if (a >= 0.999) continue; const t = 1 - Math.min(1, a), sx = Math.min(gw - 1, Math.max(0, (x + 0.5) / 2 - 0.5)), sy = Math.min(gh - 1, Math.max(0, (y + 0.5) / 2 - 0.5)), x0 = Math.floor(sx), y0 = Math.floor(sy), x1 = Math.min(gw - 1, x0 + 1), y1 = Math.min(gh - 1, y0 + 1), tx = sx - x0, ty = sy - y0; // the coarser level, read smoothly (bilinear), as colour per weight
+        const at = (xx, yy, c) => { const q = (yy * gw + xx) * 4; return G[q + c] / Math.max(1e-6, G[q + 3]); }; for (let c = 0; c < 3; c++) F[p + c] += ((at(x0, y0, c) * (1 - tx) + at(x1, y0, c) * tx) * (1 - ty) + (at(x0, y1, c) * (1 - tx) + at(x1, y1, c) * tx) * ty) * t; F[p + 3] = a + t; } }
+    const out = new ImageData(W, H), d = out.data, F = levels[0][0]; for (let p = 0; p < W * H; p++) { const a = Math.max(1e-6, F[p * 4 + 3]); for (let c = 0; c < 3; c++) d[p * 4 + c] = Math.round(F[p * 4 + c] / a); d[p * 4 + 3] = 255; } return out;
+  }
+  // false colour: the stretched cyan, magenta and yellow inked again as a picture (black left out)
+  function falseColour(img, { amount = 100 } = {}) {
+    const n = img.width * img.height, sep = [0, 1, 2].map((i) => stretch(ch((r, g, b) => cmyk(r, g, b, i))(img))), K = ch((r, g, b) => cmyk(r, g, b, 3))(img), out = new ImageData(img.width, img.height), d = out.data, s = img.data, k = amount / 100;
+    const ranges = sep.map((v) => v.range);
+    for (let p = 0; p < n; p++) { const o = p * 4, kk = 1 - 0.5 * K[p]; for (let c = 0; c < 3; c++) d[o + c] = Math.round(s[o + c] * (1 - k) + 255 * (1 - sep[c][p]) * kk * k); d[o + 3] = s[o + 3]; }
+    out.ranges = ranges; return out;
+  }
+  IC.maps = { fillGap, addFind, known, share, castRatio, colourBlind, stretch, falseColour, LIST, make, heat, grey, mask, apply, box, combined, OPS, prepare };
 })();

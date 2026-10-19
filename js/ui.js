@@ -359,7 +359,26 @@
       run: (img, s) => { const src = s.from === 'pic' ? pics[s.other] && pics[s.other].steps[pics[s.other].at].img : pic().steps[s.step] && pic().steps[s.step].img; if (!src) throw new Error(s.from === 'pic' ? 'Open another picture first (for example a cut-out you repaired).' : 'Choose a version.'); return IC.detail.blend(img, src, { mode: s.mode, amount: s.amount }); } },
     assess: { title: 'Ask AI what it needs', icon: IK.modern, viewOnly: true, s: {}, run: (img) => img,
       fields: [{ t: 'custom', render: (into, t) => assessPanel(into, t) }] },
-    stack: { title: 'Combine photos', icon: IK.upscale, live: false, applyLabel: 'Make the combined picture',
+    split: { title: 'Split subject and background', icon: IK.cutout, live: false, applyLabel: 'Make the two pictures', s: { fill: true, grow: 2 },
+      fields: [note('The main subject and the background become two pictures of their own (like layers): restore the subject with care and the background more freely, then put them back together with Detail › Blend a version › Another open picture (the subject is placed by its solid parts).'),
+        chk('fill', 'Fill the gap in the background smoothly (a guess from around it, for colour hints)'), range('grow', 'Take a little more round the subject (pixels)', 0, 12), { t: 'out' }, note('Press Preview to see the subject. The first use downloads the cut-out AI.')],
+      run: async (img, s, say) => {
+        say && say('Finding the main subject…'); await IC.maps.prepare('subject', img);
+        let m = IC.maps.make('subject', img); const W = img.width, H = img.height;
+        const sub = new ImageData(new Uint8ClampedArray(img.data), W, H); for (let p = 0; p < W * H; p++) sub.data[p * 4 + 3] = Math.round(img.data[p * 4 + 3] * m[p]);
+        let hole = m; if (s.grow > 0) { const g = IC.maps.box(m.map((v) => (v > 0.15 ? 1 : 0)), W, H, s.grow); hole = g.map((v, i) => Math.max(m[i], v > 0.02 ? 1 : 0)); }
+        const bg = s.fill ? IC.maps.fillGap(img, hole) : new ImageData(new Uint8ClampedArray(img.data), W, H); if (!s.fill) for (let p = 0; p < W * H; p++) bg.data[p * 4 + 3] = Math.round(img.data[p * 4 + 3] * (1 - hole[p]));
+        if (tool) tool.outputs = [['subject', sub, 32], ['background', bg, s.fill ? 24 : 32]]; return sub;
+      } },
+    chroma: { title: 'Rebuild colour detail', icon: IK.colour, s: { strength: 100, size: 4 },
+      fields: [note('A JPEG keeps the brightness in full but the colour at half size, in 8 × 8 blocks; old prints and scans smear colour more than brightness too. Colour edges almost always sit on brightness edges, so the colour is made to follow the brightness detail that is really there. Nothing is invented and the brightness is not touched.'),
+        range('size', 'Block size to smooth over', 2, 16), range('strength', 'Strength %', 0, 100), note('4 is best for most JPEGs (tested: colour error 2.2 dB lower on a heavily compressed one). Raise it when False colour shows big colour blocks.')],
+      run: (img, s) => X.chromaRebuild(img, s) },
+    falsecolour: { title: 'False colour', icon: IK.colour, toNew: 'false colour', applyLabel: 'Open as a new picture', s: { amount: 100 },
+      fields: [note('Each colour separation (cyan, magenta, yellow) is stretched to its own full range and inked again, so differences of a few percent become strong colours. On a black-and-white or sepia print it shows stains, uneven toning, fading and retouching; on a faded colour print, which dye layer has gone. For looking and for masks: it is not the real colour.'), range('amount', 'Amount %', 0, 100), { t: 'out' }],
+      report: () => (tool && tool.out && tool.out.ranges ? `<p class="hint">How much of each ink this picture really holds: ${['cyan', 'magenta', 'yellow'].map((n, i) => `${n} ${Math.round(tool.out.ranges[i][0] * 100)}–${Math.round(tool.out.ranges[i][1] * 100)}%`).join(', ')}.</p>` : ''),
+      run: (img, s) => IC.maps.falseColour(img, s) },
+    stack: { title: 'Combine photos', icon: IK.upscale, live: false, toNew: 'combined', applyLabel: 'Make the combined picture',
       s: () => ({ use: pics.map((p, k) => k).filter((k) => k !== cur), mode: 'super', scale: '2', local: true }),
       fields: [note('Several shots of the same scene (a handheld burst, or the same scan done a few times) hold more than any one of them. They are lined up to a fraction of a pixel and merged: the noise averages away, and with Super, the tiny shifts between shots fill in detail between the pixels (how phones and DLSS-style upscalers do it).'),
         { t: 'picmulti', k: 'use', label: 'Shots to combine' },
@@ -602,7 +621,7 @@
   // ------------------------------------------------------------------ running a tool
   let tool = null, token = 0, timer = null;
   // Where: any tool that keeps the picture's size can work only where a map says (a mask: white = apply, black = leave)
-  const NO_MASK = new Set(['resize', 'crop', 'canvas', 'straighten', 'looks', 'text', 'trace', 'upscale', 'remaster', 'modern', 'depth', 'noisemap', 'stack']);
+  const NO_MASK = new Set(['resize', 'crop', 'canvas', 'straighten', 'looks', 'text', 'trace', 'upscale', 'remaster', 'modern', 'depth', 'noisemap', 'stack', 'split', 'falsecolour', 'assess']);
   const maskable = (def) => !NO_MASK.has(def.id) && !def.viewOnly;
   const MASK_FIELDS = [
     { t: 'html', html: () => '<h3 style="margin:10px 0 0">Where</h3>' },
@@ -693,7 +712,8 @@
     if (t.def.viewOnly) { closeTool(); return; }
     if (t.def.final) { const r = masked(t, await t.def.final(t.base, t.s)); closeTool(true); push(t.def.title + (t.s.wMap ? ' (masked)' : ''), r); return; }
     if (t.def.id === 'crop' || !t.preview || t.stale) { await runPreview(); if (tool !== t || !t.preview) return; }
-    if (t.def.id === 'stack') { const r = t.out || t.preview, nm = `${baseName(pic().name)} – combined.png`; closeTool(true); addPic(nm, r, { format: 'Combined', bits: 24 }); toast('The combined picture is open as a new picture.'); return; }
+    if (t.def.id === 'split') { if (!t.outputs || t.stale) { await runPreview(); if (tool !== t || !t.outputs) return; } const nm = baseName(pic().name), outs = t.outputs; closeTool(true); outs.forEach(([k, im, bits]) => addPic(`${nm} – ${k}.png`, im, { format: k === 'subject' ? 'Subject (cut out)' : 'Background', bits })); toast('The subject and the background are open as two pictures: restore each, then put them back with Detail › Blend a version.'); return; }
+    if (t.def.toNew) { if (!t.out && !t.preview) { await runPreview(); if (tool !== t) return; } const r = t.out || t.preview, nm = `${baseName(pic().name)} – ${t.def.toNew}.png`; closeTool(true); addPic(nm, r, { format: t.def.title, bits: 24 }); toast(`The ${t.def.toNew} picture is open as a new picture.`); return; }
     const r = t.out || t.preview; closeTool(true); push(t.def.title + (t.s && t.s.wMap ? ' (masked)' : ''), r);
   }
   // a tool that needs no settings: done at once, as a step
@@ -822,6 +842,11 @@
     const L = $('maplist'); if (!L || $('tab-maps').hidden) return;
     const img = now(); if (!img) { L.innerHTML = '<p class="hint">Open a picture first.</p>'; return; }
     L.innerHTML = ''; let group = null;
+    const fb = document.createElement('form'); fb.className = 'row'; fb.style.cssText = 'gap:6px;margin:0 0 8px';
+    fb.innerHTML = '<input class="input" name="q" placeholder="Find… (the motorbike, a tear, flowers)" style="flex:1;min-width:0" aria-label="Find something by name"><button class="btn outline" type="submit">Find</button>';
+    fb.onsubmit = (e) => { e.preventDefault(); const id = IC.maps.addFind(fb.q.value); if (id) openMap(id, 'heat'); };
+    L.append(fb);
+    if (IC.maps.colourBlind(img)) L.insertAdjacentHTML('beforeend', '<p class="hint">This picture’s colours all lean one way (sepia, toned or a strong cast), so the colour-based Skin, Greenery and Sky maps mark the wrong things. Use <b>Scene (AI)</b> and <b>Skin (learned from the faces)</b> instead.</p>');
     IC.maps.LIST.forEach((m) => {
       const g = m.group || 'Measured'; if (g !== group) { group = g; L.insertAdjacentHTML('beforeend', `<h4>${esc(g)}</h4>`); }
       const b = document.createElement('button'); b.type = 'button'; b.dataset.map = m.id; b.title = m.what; b.setAttribute('aria-current', String(!!mapView && mapView.id === m.id));
@@ -830,15 +855,16 @@
     });
     // small pictures of each map, made from a small copy (quick), one at a time so the page stays responsive
     if (thumbFor !== img) { thumbFor = img; const k = Math.min(1, 240 / Math.max(img.width, img.height)); thumbSmall = X.resize(img, { width: img.width * k, height: img.height * k }); }
-    const small = thumbSmall, list = [...L.querySelectorAll('button')];
+    IC.maps.share(img, thumbSmall);
+    const small = thumbSmall, list = [...L.querySelectorAll('button[data-map]')];
     (async () => { for (const b of list) { await wait(5); if (thumbSmall !== small || !document.body.contains(b)) return; const m = IC.maps.LIST.find((x) => x.id === b.dataset.map); const map = IC.maps.make(m.id, small), v = m.grey ? IC.maps.grey(map, small.width, small.height) : IC.maps.heat(map, small), c = b.querySelector('canvas'), x = c.getContext('2d'); x.fillStyle = '#111'; x.fillRect(0, 0, c.width, c.height); const kk = Math.min(c.width / small.width, c.height / small.height); x.drawImage(X.canvasOf(v), (c.width - small.width * kk) / 2, (c.height - small.height * kk) / 2, small.width * kk, small.height * kk); } })();
   }
   function openMap(id, mode) {
     const img = now(); if (!img) return; if (tool) closeTool(true);
     const m = IC.maps.LIST.find((x) => x.id === id); mode = mode || (m.grey ? 'grey' : 'heat');
-    busyNow(m.needsFaces && !IC.faces.known(img) ? 'Finding faces (the first time downloads the face finder)…' : `Measuring: ${m.name}…`);
+    busyNow(m.needsFaces && !IC.faces.known(img) ? 'Finding faces (the first time downloads the face finder)…' : m.needsFind && !IC.maps.known(id, img) ? 'Recognising what is in the picture (the first time downloads the finder, about 139 MB)…' : `Measuring: ${m.name}…`);
     setTimeout(async () => {
-      try { await IC.maps.prepare(id, img); } catch (e) { busy(null); ICLOG.error('Face finder failed', e); toast('The face finder could not start: ' + e.message); return; }
+      try { await IC.maps.prepare(id, img); } catch (e) { busy(null); ICLOG.error(m.needsFind ? 'The finder failed' : 'Face finder failed', e); toast((m.needsFind ? 'The finder could not start: ' : 'The face finder could not start: ') + e.message); return; }
       const t0 = performance.now(), map = IC.maps.make(id, img);
       mapView = { id, mode, img: mode === 'grey' ? IC.maps.grey(map, img.width, img.height) : IC.maps.heat(map, img) };
       ICLOG.info(`Map ${m.name}: ${img.width} × ${img.height} in ${Math.round(performance.now() - t0)} ms`);
@@ -849,7 +875,8 @@
   function renderMapBar() {
     const bar = $('mapbar'); if (!mapView) { bar.hidden = true; return; }
     const m = IC.maps.LIST.find((x) => x.id === mapView.id);
-    bar.innerHTML = `<b>Map: ${esc(m.name)}</b><div class="seg"><button class="btn" data-m="heat" aria-pressed="${mapView.mode === 'heat'}">Heat</button><button class="btn" data-m="grey" aria-pressed="${mapView.mode === 'grey'}">Grey (mask)</button></div><button class="btn outline" data-a="open">Open as a picture</button><button class="btn outline" data-a="clear">Make see-through by it</button><button class="btn primary" data-a="back">Back to the picture</button>`;
+    const blind = ['skin', 'green', 'sky'].includes(m.id) && IC.maps.colourBlind(now());
+    bar.innerHTML = `<b>Map: ${esc(m.name)}</b>${blind ? '<span class="hint" title="This map judges by colour, and this picture’s colours all lean one way (sepia, toned or a strong cast), so it marks the wrong things. The Scene (AI) maps and Skin (learned from the faces) recognise things by what they are.">⚠ Colours too even to judge by: use Scene (AI)</span>' : ''}<div class="seg"><button class="btn" data-m="heat" aria-pressed="${mapView.mode === 'heat'}">Heat</button><button class="btn" data-m="grey" aria-pressed="${mapView.mode === 'grey'}">Grey (mask)</button></div><button class="btn outline" data-a="open">Open as a picture</button><button class="btn outline" data-a="clear">Make see-through by it</button><button class="btn primary" data-a="back">Back to the picture</button>`;
     bar.hidden = false;
     bar.onclick = (e) => {
       const b = e.target.closest('button'); if (!b) return;
@@ -1107,15 +1134,15 @@
         ['Curves', [B('Curves', IK.light, T('curves'), { big: true, title: 'Curves for brightness or each colour, with Where for curves layers' }), B('Blend a version', IK.compare, T('blendstep'), { big: true, title: 'Mix an earlier step back in (like layers), anywhere or through a map' })]],
         ['Detail', [B('Detail equaliser', IK.sharpen, T('equalizer'), { big: true, title: 'Fine, small, medium and large detail, each with its own amount' }), B('Even the light', IK.light, T('gradient'), { big: true, title: 'Gradient domain: big brightness jumps smaller, faint detail bigger' }), B('Crisp edges', IK.sharpen, T('crisp'), { big: true, title: 'Shock filter: soft edges made crisp without halos' }), B('Edge-keeping smooth', IK.denoise, T('diffuse'), { big: true, title: 'Perona–Malik diffusion: smooth, but never across an edge' })]],
         ['Faces', [B('Face refine', IK.cutout, T('facerefine'), { big: true, title: 'Find each face’s skin, eyes, irises, lips and teeth and treat each on its own (nothing redrawn)' })]],
-        ['Maps', [B('Maps and channels', IK.grid, () => { showSide('left'); showTab('maps'); }, { big: true, title: 'See the picture measured into maps and channels' })]],
+        ['Maps', [B('Maps and channels', IK.grid, () => { showSide('left'); showTab('maps'); }, { big: true, title: 'See the picture measured into maps and channels' }), B('False colour', IK.colour, T('falsecolour'), { big: true, title: 'Stretch the faint colour differences to full strength: stains, toning and fading show' })]],
       ] },
       { id: 'colours', label: 'Colours', hue: '#b44be1', groups: [
         ['Depth', [B('Colour depth', IK.depth, T('depth'), { big: true, title: '1, 2, 4 or 8-bit colour, high colour, palettes and dithering' }), B('Computer looks', IK.retro, T('looks'), { big: true, title: 'Atari ST, Amiga, C64, ZX Spectrum, CGA, EGA, VGA, Macintosh, Game Boy…' })]],
         ['See-through', [{ col: [B('Make a colour see-through', IK.clearC, T('clear')), B('Fill see-through parts', IK.canvas, T('flatten')), B('Remove background', IK.cutout, T('cutout'))] }]],
       ] },
       { id: 'clean', label: 'Clean up', hue: '#1e9e8a', groups: [
-        ['Old photo', [B('Restore old photo', IK.modern, () => openTool('modern', { kind: 'photo', bigger: 1 }), { big: true, title: 'Dust, noise, blur, colour cast and fading fixed in one go, measured from the picture' }), B('Ask AI what it needs', IK.modern, T('assess'), { big: true, title: 'A vision model in Ollama on this computer looks at the picture, says what it is and what is wrong, and ticks the tools to fix it' })]],
-        ['Restore', [B('Remove noise', IK.denoise, T('nlm'), { big: true, title: 'Smart noise removal (non-local means): grain and colour blotches' }), B('Deblur', IK.sharpen, T('deblur'), { big: true, title: 'Undo soft focus, out of focus or camera shake (Wiener deconvolution)' }), B('Faded detail', IK.light, T('clahe'), { big: true, title: 'Adaptive contrast for faded photos (CLAHE)' }), { col: [B('Where the noise is', IK.grid, T('noisemap'))] }]],
+        ['Old photo', [B('Restore old photo', IK.modern, () => openTool('modern', { kind: 'photo', bigger: 1 }), { big: true, title: 'Dust, noise, blur, colour cast and fading fixed in one go, measured from the picture' }), B('Split subject and background', IK.cutout, T('split'), { big: true, title: 'The main subject and the background as two pictures (layers), each restored its own way' }), B('Ask AI what it needs', IK.modern, T('assess'), { big: true, title: 'A vision model in Ollama on this computer looks at the picture, says what it is and what is wrong, and ticks the tools to fix it' })]],
+        ['Restore', [B('Remove noise', IK.denoise, T('nlm'), { big: true, title: 'Smart noise removal (non-local means): grain and colour blotches' }), B('Deblur', IK.sharpen, T('deblur'), { big: true, title: 'Undo soft focus, out of focus or camera shake (Wiener deconvolution)' }), B('Faded detail', IK.light, T('clahe'), { big: true, title: 'Adaptive contrast for faded photos (CLAHE)' }), { col: [B('Where the noise is', IK.grid, T('noisemap')), B('Rebuild colour detail', IK.colour, T('chroma'), { title: 'Colour blocks and smears (JPEG, old scans) made to follow the real brightness detail' })] }]],
         ['Clean', [B('Smooth out noise', IK.denoise, T('denoise'), { big: true }), B('Dust and scratches', IK.dust, T('despeckle'), { big: true }), B('JPEG blocks', IK.jpeg, T('deblock'), { big: true, title: 'Remove JPEG blocks and smudges' }), B('Undither', IK.undither, T('undither'), { big: true, title: 'Blend dithering dots back into smooth colour' })]],
         ['Background', [B('Remove background', IK.cutout, T('cutout'), { big: true })]],
         ['Bigger', [B('Make bigger', IK.upscale, T('upscale'), { big: true, title: 'Smooth, pixel-art or AI upscaling' }), B('Combine photos', IK.upscale, T('stack'), { big: true, title: 'Merge several shots of the same scene: less noise, and more detail than any one shot' }), B('Modernise', IK.modern, T('modern'), { big: true }), B('Remaster shapes', IK.svg, T('remaster'), { big: true, title: 'Recognise the shapes, draw them again crisply at the new size, and blend with the original' })]],

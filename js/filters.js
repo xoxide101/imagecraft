@@ -121,6 +121,22 @@
     }
     return out;
   }
+  // Rebuild colour detail: a JPEG keeps brightness in full but colour at half size in 8 × 8 blocks, and old prints and
+  // scans smear colour more than brightness. Colour edges nearly always sit on brightness edges, so the colour is
+  // smoothed over the block size (the blocks go) and then made to follow the brightness detail that is really there
+  // (a guided filter, colour as a local linear function of brightness). Nothing is invented: brightness is untouched.
+  function chromaRebuild(img, { strength = 100, size = 8 } = {}) {
+    const W = img.width, H = img.height, s = img.data, n = W * H, Y = new Float32Array(n), Cb = new Float32Array(n), Cr = new Float32Array(n);
+    for (let p = 0; p < n; p++) { const r = s[p * 4] / 255, g = s[p * 4 + 1] / 255, b = s[p * 4 + 2] / 255; Y[p] = 0.299 * r + 0.587 * g + 0.114 * b; Cb[p] = (b - Y[p]) * 0.564; Cr[p] = (r - Y[p]) * 0.713; }
+    const R = Math.max(1, Math.round(size / 2)), sm = (A) => boxMean(boxMean(A, W, H, R), W, H, R);
+    const nb = guidedBy(Y, sm(Cb), W, H, size, 0.0008), nr = guidedBy(Y, sm(Cr), W, H, size, 0.0008), k = strength / 100, out = new ImageData(W, H), d = out.data;
+    for (let p = 0; p < n; p++) {
+      const cb = Cb[p] + (nb[p] - Cb[p]) * k, cr = Cr[p] + (nr[p] - Cr[p]) * k, y = Y[p];
+      const r = y + cr / 0.713, b = y + cb / 0.564, g = (y - 0.299 * r - 0.114 * b) / 0.587;
+      d[p * 4] = Math.round(Math.max(0, Math.min(1, r)) * 255); d[p * 4 + 1] = Math.round(Math.max(0, Math.min(1, g)) * 255); d[p * 4 + 2] = Math.round(Math.max(0, Math.min(1, b)) * 255); d[p * 4 + 3] = s[p * 4 + 3];
+    }
+    return out;
+  }
   function sharpen(img, { amount = 80, radius = 1, threshold: th = 2 } = {}) {
     const bl = blur(img, { radius }), o = copy(img), d = o.data, b = bl.data, k = amount / 100;
     for (let i = 0; i < d.length; i += 4) for (let c = 0; c < 3; c++) { const diff = d[i + c] - b[i + c]; if (Math.abs(diff) > th) d[i + c] = clamp(d[i + c] + diff * k); }
@@ -541,5 +557,5 @@
     return o;
   }
 
-  IC.filters = { cas, dehaze, hazeLevel, isToned, shadowRecover, guided, autoColour, clarity, pyramidBlend, aliasCheck, antialias, light, colour, autoLevels, autoFix, whiteBalance, greyscale, sepia, invert, threshold, posterize, blur, sharpen, denoise, median, despeckle, deblock, undither, pixelate, resize, scale2x, scale3x, rotate: rotateAny, rotate90: rotate, flip, crop, trimBox, canvasSize, makeClear, flatten, copy, canvasOf };
+  IC.filters = { chromaRebuild, guidedBy, cas, dehaze, hazeLevel, isToned, shadowRecover, guided, autoColour, clarity, pyramidBlend, aliasCheck, antialias, light, colour, autoLevels, autoFix, whiteBalance, greyscale, sepia, invert, threshold, posterize, blur, sharpen, denoise, median, despeckle, deblock, undither, pixelate, resize, scale2x, scale3x, rotate: rotateAny, rotate90: rotate, flip, crop, trimBox, canvasSize, makeClear, flatten, copy, canvasOf };
 })();
