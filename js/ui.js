@@ -357,6 +357,8 @@
         seg('from', 'From', [['step', 'A step in History'], ['pic', 'Another open picture']]), { t: 'stepsel', k: 'step', label: 'Version', show: (s) => s.from === 'step' }, { t: 'picsel', k: 'other', label: 'Picture (a cut-out is placed by its solid parts)', show: (s) => s.from === 'pic' }, sel('mode', 'How', IC.detail.MODES.map((m) => [m, { normal: 'Normal (mix)', multiply: 'Multiply (darker)', screen: 'Screen (lighter)', overlay: 'Overlay (contrast)', softlight: 'Soft light', lighten: 'Lighten only', darken: 'Darken only', difference: 'Difference (shows changes)', luminosity: 'Its brightness, my colours', colour: 'Its colours, my brightness' }[m]])),
         range('amount', 'Amount %', 0, 100), note('Use Where to bring the version back only in some places: the sharper version on the texture, the smoother one on the sky.')],
       run: (img, s) => { const src = s.from === 'pic' ? pics[s.other] && pics[s.other].steps[pics[s.other].at].img : pic().steps[s.step] && pic().steps[s.step].img; if (!src) throw new Error(s.from === 'pic' ? 'Open another picture first (for example a cut-out you repaired).' : 'Choose a version.'); return IC.detail.blend(img, src, { mode: s.mode, amount: s.amount }); } },
+    assess: { title: 'Ask AI what it needs', icon: IK.modern, viewOnly: true, s: {}, run: (img) => img,
+      fields: [{ t: 'custom', render: (into, t) => assessPanel(into, t) }] },
     stack: { title: 'Combine photos', icon: IK.upscale, live: false, applyLabel: 'Make the combined picture',
       s: () => ({ use: pics.map((p, k) => k).filter((k) => k !== cur), mode: 'super', scale: '2', local: true }),
       fields: [note('Several shots of the same scene (a handheld burst, or the same scan done a few times) hold more than any one of them. They are lined up to a fraction of a pixel and merged: the noise averages away, and with Super, the tiny shifts between shots fill in detail between the pixels (how phones and DLSS-style upscalers do it).'),
@@ -623,6 +625,53 @@
     showSide('right'); renderProps(); if (def.enter) def.enter();
     if (isLive(tool)) schedule(0); else show();
   }
+  // Ask AI (Ollama): connect, choose a model, look, then run the ticked steps one by one (each a step in History)
+  function assessPanel(into, t) {
+    const O = IC.ollama, st = (t.oll = t.oll || { status: 'checking' }), el = document.createElement('div'); into.append(el);
+    const again = () => { if (tool === t) renderProps(); };
+    if (st.status === 'checking' && !st.started) { st.started = true; O.models().then((m) => { st.models = m; st.status = m.length ? 'ok' : 'none'; if (!O.cfg.model || !m.some((x) => x.name === O.cfg.model)) O.cfg.model = m.length ? m[0].name : ''; again(); }, (e) => { st.status = e.blocked ? 'blocked' : 'error'; st.err = e.message; again(); }); }
+    const p = (h) => { const d = document.createElement('div'); d.innerHTML = h; el.append(d); return d; };
+    p('<p class="hint">A vision model running in <b>Ollama</b> on this computer looks at the picture and says what it is and what is wrong with it. It only describes: ImageCraft’s own tools do the work, as steps you can undo. Nothing leaves this computer.</p>');
+    if (st.status === 'checking') { p('<p class="hint">Looking for Ollama…</p>'); return; }
+    if (st.status === 'blocked') { p(`<p class="hint"><b>Could not reach Ollama</b> at ${esc(O.cfg.url)}. If it is not running, start it. If it is running:</p><p class="hint">${O.ORIGIN_HELP}</p>`); }
+    if (st.status === 'error') p(`<p class="hint"><b>Ollama:</b> ${esc(st.err)}</p>`);
+    if (st.status === 'none') p('<p class="hint">Ollama is running, but none of its models can see pictures. In a command prompt: <code>ollama pull qwen3.5</code> (about 6.6 GB; good at counting faces and naming colours and materials) or <code>ollama pull gemma3</code> (3.3 GB, quicker).</p>');
+    if (st.status === 'blocked' || st.status === 'error' || st.status === 'none') {
+      const b = p('<div class="btns"><button class="btn outline" type="button">Try again</button></div>'); b.querySelector('button').onclick = () => { t.oll = { status: 'checking' }; again(); }; return;
+    }
+    const lab = document.createElement('label'); lab.className = 'field'; lab.innerHTML = '<span>Model</span>'; const sel = document.createElement('select'); sel.className = 'input';
+    st.models.forEach((m) => sel.add(new Option(`${m.name} (${m.gb.toFixed(1)} GB)`, m.name))); sel.value = O.cfg.model; sel.onchange = () => { O.cfg.model = sel.value; O.save(); }; lab.append(sel); el.append(lab);
+    const look = p('<div class="btns"><button class="btn primary" type="button">Look at the picture</button></div>').querySelector('button');
+    look.onclick = async () => {
+      const img = t.base; busyNow('Asking Ollama…');
+      try { st.result = await O.assess(img, { model: sel.value, onStep: (m) => { if (tool === t) busyNow(m); } }); st.steps = O.recipe(st.result); ICLOG.add('info', `Ask AI: ${st.result.model} took ${st.result.seconds.toFixed(0)} s`); }
+      catch (e) { ICLOG.error('Ask AI failed', e); toast(e.blocked ? 'Could not reach Ollama.' : e.message); if (e.blocked) st.status = 'blocked'; }
+      busy(null); again();
+    };
+    const a = st.result; if (!a) { p('<p class="hint">The first look loads the model, which can take a minute; after that 10 to 30 seconds on a mid-range graphics card. qwen3.5 was the most truthful in tests; smaller models tend to list damage that is not there.</p>'); return; }
+    const later = O.notYet(a);
+    p(`<div class="hint" style="margin-top:8px"><b>${esc(a.subject)}</b><br>${esc(a.kind)}, ${esc(a.colour)}, ${esc(a.era)}${a.faces ? `, ${a.faces} face${a.faces === 1 ? '' : 's'}` : ''}.<br>Seen: ${a.problems.length ? a.problems.map(esc).join(', ') : 'no damage'}.<br><i>${esc(a.materials)}</i></div>`);
+    if (st.steps.length) {
+      const box = document.createElement('div'); box.className = 'field'; box.innerHTML = '<span>Steps to run (each one goes into History)</span>';
+      st.steps.forEach((s0) => { const l = document.createElement('label'); l.className = 'check'; const c = document.createElement('input'); c.type = 'checkbox'; c.checked = s0.on; c.onchange = () => { s0.on = c.checked; }; l.append(c, document.createTextNode(` ${TOOLS[s0.id].title} — for ${s0.why}`)); box.append(l); });
+      el.append(box);
+      const go = p('<div class="btns"><button class="btn primary" type="button">Run the ticked steps</button></div>').querySelector('button');
+      go.onclick = () => { const steps = st.steps.filter((s0) => s0.on); if (!steps.length) return toast('Tick at least one step.'); closeTool(true); runSteps(steps); };
+    }
+    if (later.length) p(`<p class="hint">Not mended yet: ${later.map(esc).join(', ')}. Repair tools are still to come.</p>`);
+    if (a.problems.includes('low resolution')) p('<p class="hint">It looks small: try Make bigger after the clean-up.</p>');
+    p(`<div class="field"><span>How it should look (to guide later steps)</span><p class="hint" style="user-select:text">${esc(a.description)}</p></div>`);
+    const cp = p('<div class="btns"><button class="btn outline" type="button">Copy the description</button></div>').querySelector('button');
+    cp.onclick = () => { navigator.clipboard.writeText(`${a.subject}. ${a.materials}. ${a.description}`).then(() => toast('Copied.'), () => toast('Could not copy.')); };
+  }
+  async function runSteps(steps) {
+    for (const s0 of steps) {
+      const def = TOOLS[s0.id], img = pic().steps[pic().at].img; busyNow(`${def.title}…`); await wait(0);
+      try { const base = typeof def.s === 'function' ? def.s(img) : JSON.parse(JSON.stringify(def.s)); const out = await def.run(img, { ...base, ...s0.s }, (m) => busyNow(m)); push(def.title, out); }
+      catch (e) { busy(null); ICLOG.error(`${def.title} failed`, e); toast(`${def.title}: ${e.message}`); return; }
+    }
+    busy(null); toast(`Done: ${steps.length} step${steps.length === 1 ? '' : 's'}. Each is in History; Undo goes back one at a time.`);
+  }
   function closeTool(quiet) {
     if (!tool) return; const d = tool.def; tool = null; token++; clearTimeout(timer); busy(null);
     if (d.leave) d.leave(); if (!quiet) { renderProps(); show(); if (view.fit) fitView(); }
@@ -673,6 +722,7 @@
       if (f.t === 'btns' && f.show && !f.show(t.s)) return;
       if (f.t === 'btns') { const r = document.createElement('div'); r.className = 'btns'; f.buttons.forEach((b) => { const e = document.createElement('button'); e.className = 'btn ' + (b.primary ? 'primary' : 'outline'); e.type = 'button'; e.textContent = b.label; e.onclick = () => { b.run(t.s, t.base); t.stale = true; renderProps(); if (d.id === 'crop') placeCrop(); else if (isLive(t)) schedule(0); }; r.append(e); }); into.append(r); return; }
       if (f.t === 'looks') { into.append(looksTiles()); return; }
+      if (f.t === 'custom') { f.render(into, t); return; }
       if (f.t === 'picmulti') { const box = document.createElement('div'); box.className = 'field'; box.innerHTML = `<span>${esc(f.label)}</span>`; pics.forEach((p, k) => { const l = document.createElement('label'); l.className = 'check'; const c = document.createElement('input'); c.type = 'checkbox'; c.checked = k === cur || t.s[f.k].includes(k); c.disabled = k === cur; c.onchange = () => { const v = t.s[f.k].filter((q) => q !== k); if (c.checked) v.push(k); set(f.k, v, true); }; l.append(c, document.createTextNode(' ' + p.name + (k === cur ? ' (the one to match)' : ''))); box.append(l); }); into.append(box); return; }
       if (f.t === 'picsel') { if (f.show && !f.show(t.s)) return; const lab = document.createElement('label'); lab.className = 'field'; lab.innerHTML = `<span>${esc(f.label)}</span>`; const i = document.createElement('select'); i.className = 'input'; pics.forEach((p, k) => { if (k !== cur) i.add(new Option(p.name, k)); }); if (!i.options.length) i.add(new Option('(open or make another picture first)', -1)); i.value = String(t.s[f.k]); i.onchange = () => set(f.k, +i.value, true); lab.append(i); into.append(lab); return; }
       if (f.t === 'stepsel') { if (f.show && !f.show(t.s)) return; const lab = document.createElement('label'); lab.className = 'field'; lab.innerHTML = `<span>${esc(f.label)}</span>`; const i = document.createElement('select'); i.className = 'input'; pic().steps.forEach((st, k) => { if (k !== pic().at) i.add(new Option(`${k}. ${st.label}`, k)); }); i.value = String(t.s[f.k]); i.onchange = () => set(f.k, +i.value, true); lab.append(i); into.append(lab); return; }
@@ -1064,7 +1114,7 @@
         ['See-through', [{ col: [B('Make a colour see-through', IK.clearC, T('clear')), B('Fill see-through parts', IK.canvas, T('flatten')), B('Remove background', IK.cutout, T('cutout'))] }]],
       ] },
       { id: 'clean', label: 'Clean up', hue: '#1e9e8a', groups: [
-        ['Old photo', [B('Restore old photo', IK.modern, () => openTool('modern', { kind: 'photo', bigger: 1 }), { big: true, title: 'Dust, noise, blur, colour cast and fading fixed in one go, measured from the picture' })]],
+        ['Old photo', [B('Restore old photo', IK.modern, () => openTool('modern', { kind: 'photo', bigger: 1 }), { big: true, title: 'Dust, noise, blur, colour cast and fading fixed in one go, measured from the picture' }), B('Ask AI what it needs', IK.modern, T('assess'), { big: true, title: 'A vision model in Ollama on this computer looks at the picture, says what it is and what is wrong, and ticks the tools to fix it' })]],
         ['Restore', [B('Remove noise', IK.denoise, T('nlm'), { big: true, title: 'Smart noise removal (non-local means): grain and colour blotches' }), B('Deblur', IK.sharpen, T('deblur'), { big: true, title: 'Undo soft focus, out of focus or camera shake (Wiener deconvolution)' }), B('Faded detail', IK.light, T('clahe'), { big: true, title: 'Adaptive contrast for faded photos (CLAHE)' }), { col: [B('Where the noise is', IK.grid, T('noisemap'))] }]],
         ['Clean', [B('Smooth out noise', IK.denoise, T('denoise'), { big: true }), B('Dust and scratches', IK.dust, T('despeckle'), { big: true }), B('JPEG blocks', IK.jpeg, T('deblock'), { big: true, title: 'Remove JPEG blocks and smudges' }), B('Undither', IK.undither, T('undither'), { big: true, title: 'Blend dithering dots back into smooth colour' })]],
         ['Background', [B('Remove background', IK.cutout, T('cutout'), { big: true })]],

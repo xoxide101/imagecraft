@@ -98,6 +98,14 @@ Auto fix, auto levels, brightness, contrast, midtones, shadows and highlights; s
 
 Small AI models that run inside the browser, on the graphics card if there is one (the upscalers run there about 16 times faster than on the processor): the background cut-out (U²-Net, or BEN2 for finer edges), object picking (SlimSAM) and upscaling (Swin2SR). Each downloads once from Hugging Face when first used (or with Download now in Convert › AI helpers) and is kept by the browser for offline use. The computer is checked automatically.
 
+### Ask AI what it needs (Ollama, optional)
+
+**Clean up › Ask AI what it needs**: if [Ollama](https://ollama.com) runs on the same computer with a vision model, the model looks at the picture. It says what the picture is (subject, era, kind, colour or toned, how many faces, the materials and colours) and what damage it can see. ImageCraft turns that into ticked steps with its own tools, such as Dust and scratches, Remove noise, Deblur, Dehaze, Auto colour keeping a sepia tone, Fix a colour cast and Face refine, and runs them one by one into History. The model only describes; nothing is redrawn, and nothing leaves the computer (cloud models are not offered). The description of how the picture should look can be copied, to guide later steps.
+
+- Best model in tests: **qwen3.5** (`ollama pull qwen3.5`, 6.6 GB). It counted all 7 faces in a group photo, named real colours and materials, and listed only damage that was there. Smaller gemma3 and gemma4 tended to list creases and stains on a clean picture.
+- It takes about 10 to 30 seconds on a mid-range graphics card once the model is loaded (the first look loads it). ImageCraft asks for a short context (8k), so the model fits on the card.
+- **Opened as a file?** Ollama refuses pages without a web address until it is told to allow them: `setx OLLAMA_ORIGINS *` in a command prompt, then quit and restart Ollama. `*` lets any page use Ollama, websites included, so you may prefer to set it only while you use ImageCraft. (Ollama does not accept the narrower "null".) A page served from `localhost` works without it.
+
 ## When something goes wrong
 
 The **Debug** tab (left panel, or View › Debug log) lists errors and what happened: files opened and saved, tools run and how long they took, AI models that would not load. A red error count appears in the status bar when there is one. **Copy** or **Save** the log to send it along with a question.
