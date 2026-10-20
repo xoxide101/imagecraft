@@ -34,6 +34,16 @@ Classic formats fit the picture to that machine's screen and colours for you (th
 - **Dithering**: Floyd–Steinberg, Atkinson, Jarvis, Stucki, Burkes, Sierra, Sierra Lite, ordered 2 × 2 / 4 × 4 / 8 × 8, and noise, with a strength slider.
 - **Computer looks**: Atari ST, Amiga, Commodore 64, ZX Spectrum, Amstrad CPC, CGA, EGA, VGA, Macintosh, Game Boy, Apple II, PICO-8 and Teletext, at the real screen size (with tall or wide pixels where the machine had them) or kept at your picture's size.
 
+### Deep colour (16 bits per colour)
+
+Every picture is expanded to full colour when it opens, so a palette never limits what the tools can do. Beyond that, each History step keeps **16 bits per colour** (65,536 levels instead of 256), so a chain of edits doesn't round away detail or band smooth skies. The status bar shows **16-bit** when a step has it.
+
+- **How**: a tool written for 8 bits runs eight times on copies of the picture nudged by up to one level, and the results are averaged. The fractions each run rounds away come back. In a test of five tone edits on a dark gradient, the sky kept 30 levels instead of 15 and the largest jump between rows fell from 4 levels to 3. It only happens when you press Apply (previews stay quick). A tool too slow to run eight times carries the in-between levels through instead.
+- **On screen** and in 8-bit files the 16 bits are shown through a fine ordered dither, so gradients stay smooth.
+- **Files**: 16-bit PNG and TIFF open with all 16 bits (tested value for value against Pillow and against hand-made files using every PNG filter). PNG and TIFF save as 48-bit or 64-bit (16 bits per colour, with see-through), the default when the picture has 16 bits.
+- **Smooth out banding** (Clean up › Clean › Banding): stripes in skies and shadows, from too few levels or from brightening a dark picture, are smoothed where four pixels a little way off are all within a level or two (after the f3kdb idea). Edges and texture stay, and with 16 bits the bands don't come back. On the test: 125 levels instead of 21 down the sky, and the largest jump fell to 2 levels.
+- Only the latest 6 steps keep 16 bits, to save memory (a 12-megapixel step takes about 96 MB at 16 bits).
+
 ### Maps, channels and masks
 
 - **Maps** (left panel, Maps tab): the picture measured into maps, one shown at a time: edges, texture, smooth areas, noise, specks and damage, skin, greenery, sky, shadows, midtones, highlights, colourfulness, haze, sharp or blurred, and clipped. Shown as heat maps or as grey masks (white = most).

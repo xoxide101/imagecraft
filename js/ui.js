@@ -92,8 +92,8 @@
   const now = () => (pic() ? pic().steps[pic().at].img : null);
   const baseName = (n) => (n || 'picture').replace(/\.[a-z0-9]+$/i, '');
   const MAX_STEPS = 24;
-  function addPic(name, img, info, size) {
-    pics.push({ name, info: info || {}, size: size || 0, steps: [{ label: `Opened (${info && info.format ? info.format : 'picture'})`, img }], at: 0, dirty: false });
+  function addPic(name, img, info, size, deep) {
+    pics.push({ name, info: info || {}, size: size || 0, steps: [{ label: `Opened (${info && info.format ? info.format : 'picture'})`, img, deep: deep || undefined }], at: 0, dirty: false });
     select(pics.length - 1, true);
   }
   function select(i, fresh) {
@@ -102,11 +102,45 @@
     $('welcome').hidden = !!pic(); $('stage').hidden = !pic();
     if (fresh) colourCount();
   }
-  function push(label, img) {
-    const p = pic(); p.steps.length = p.at + 1; p.steps.push({ label, img });
+  function push(label, img, deep) {
+    const p = pic(); p.steps.length = p.at + 1; p.steps.push({ label, img, deep: deep || undefined });
     if (p.steps.length > MAX_STEPS) p.steps.splice(1, 1);
+    p.steps.forEach((s, i) => { if (i > 0 && i < p.steps.length - DEEP_KEEP) delete s.deep; }); // older steps keep 8 bits (memory)
     p.at = p.steps.length - 1; p.dirty = true; afterChange();
   }
+  // ------------------------------------------------------------------ deep colour: 16 bits per channel between steps
+  // Each step can carry a 16-bit copy (Uint16Array RGBA, 0–65535); the 8-bit picture shown is made from it through an
+  // ordered dither, so smooth skies do not band. A tool written for 8 bits is run 8 times on copies jittered by up to
+  // one level (each pixel through all 8 offsets once) and the results are averaged: the fractions every tool rounds
+  // away come back. Tested over 5 tone steps on a dark gradient: twice the levels in the sky and a third of the error.
+  // A tool too slow for 8 runs (over about 3 s in all) carries the input's in-between levels through instead.
+  const DEEP_K = 8, DEEP_KEEP = 6;
+  const jitter = (i, k) => { const h = (Math.imul((i >> 2) + 1, 2654435761) >>> 0) % DEEP_K; return (((k + h + (i & 3) * 3) % DEEP_K + 0.5) / DEEP_K) * 2 - 1; };
+  async function deepRun(fn, st, out8, ms, mask) {
+    const inImg = st.img, W = inImg.width, H = inImg.height, N = W * H * 4, D = st.deep, s8 = inImg.data;
+    const src = D ? (i) => D[i] / 257 : (i) => s8[i];
+    let acc = null;
+    if (ms * DEEP_K < 3000) {
+      for (let k = 0; k < DEEP_K; k++) {
+        const im = new ImageData(W, H), d = im.data; for (let i = 0; i < N; i++) d[i] = (i & 3) === 3 ? Math.round(src(i)) : Math.round(src(i) + jitter(i, k));
+        const o = await fn(im); if (!o || !o.data || o.width !== out8.width || o.height !== out8.height) return null;
+        if (!acc) acc = new Float32Array(o.data.length); const od = o.data; for (let i = 0; i < od.length; i++) acc[i] += od[i];
+        await wait(0);
+      }
+      for (let i = 0; i < acc.length; i++) acc[i] /= DEEP_K;
+    } else if (D && out8.width === W && out8.height === H) { acc = new Float32Array(N); const od = out8.data; for (let i = 0; i < N; i++) acc[i] = (i & 3) === 3 ? od[i] : od[i] + (D[i] / 257 - s8[i]); }
+    else return null;
+    if (mask && acc.length === N) for (let p = 0, q = 0; p < N; p += 4, q++) { const m = mask[q]; for (let c = 0; c < 4; c++) acc[p + c] = src(p + c) + (acc[p + c] - src(p + c)) * m; }
+    const deep = new Uint16Array(acc.length); for (let i = 0; i < acc.length; i++) deep[i] = Math.max(0, Math.min(65535, Math.round(acc[i] * 257)));
+    return deep;
+  }
+  // a new step from a tool's 8-bit result, with its 16-bit copy worked out
+  async function pushDeep(label, out8, fn, ms, mask) {
+    const st = pic().steps[pic().at]; let deep = null;
+    if (fn && deepOn) { busyNow(`${label} (in 16 bits)…`); try { deep = await deepRun(fn, st, out8, ms, mask); } catch (e) { ICLOG.warn(`${label}: the 16-bit pass was skipped`, e); } }
+    push(label, deep ? F.down16(deep, out8.width, out8.height) : out8, deep);
+  }
+  let deepOn = true; try { deepOn = localStorage.getItem('imagecraft-deep') !== 'off'; } catch (e) { /* blocked storage */ }
   function afterChange() { if (mapView) { mapView = null; $('mapbar').hidden = true; } renderPics(); renderHist(); renderProps(); show(); if (view.fit) fitView(); status(); colourCount(); }
   const canUndo = () => !!pic() && pic().at > 0 && !tool;
   const canRedo = () => !!pic() && pic().at < pic().steps.length - 1 && !tool;
@@ -133,7 +167,7 @@
     for (const f of list) {
       busyNow(`Opening ${f.name}…`);
       const t0 = performance.now();
-      try { const r = await F.read(f); addPic(f.name, r.img, r.info, f.size); n++; ICLOG.info(`Opened ${f.name}: ${r.info.format}, ${r.img.width} × ${r.img.height}, ${kb(f.size || 0)} (${Math.round(performance.now() - t0)} ms)`); }
+      try { const r = await F.read(f); addPic(f.name, r.img, r.info, f.size, r.deep); n++; ICLOG.info(`Opened ${f.name}: ${r.info.format}, ${r.img.width} × ${r.img.height}, ${kb(f.size || 0)} (${Math.round(performance.now() - t0)} ms)`); }
       catch (e) { ICLOG.error(`Could not open ${f.name}`, e); toast(`${f.name}: ${e.message || 'could not be read'}`); }
     }
     busy(null);
@@ -459,6 +493,10 @@
       fields: [chk('stretch', 'Stretch to full black and white first'), range('clip', 'Strength (contrast limit)', 1, 6, 0.1), range('tiles', 'Areas across', 2, 16), range('amount', 'Mix (%)', 0, 100), note('Adaptive histogram equalisation: each part of the picture gets its own contrast back, so faded and dark corners recover without the whole picture going harsh.')],
       // the whole range stretched first (faded photos rarely reach black or white), then each area's own contrast
       run: (img, s) => IC.restore.clahe(s.stretch ? X.autoLevels(img, { clip: 0.3, perChannel: false }) : img, s) },
+    deband: { title: 'Smooth out banding', icon: IK.undither, s: { threshold: 3, radius: 16 },
+      fields: [note('Smooth gradients (skies, walls, shadows) that were rounded into stripes, from too few levels or from brightening a dark picture. Each pixel is compared with four others a little way off; where they are all within a level or two, it is a band edge and is smoothed. Edges and texture stay. The picture keeps 16 bits per colour afterwards, so the bands do not come back.'),
+        range('threshold', 'How big a step counts as a band (levels)', 1, 10), range('radius', 'How wide the bands are (pixels)', 4, 48)],
+      run: (img, s) => X.deband(img, s) },
     despeckle: { title: 'Dust and scratches', icon: IK.dust, s: { how: 'smart', threshold: 20, radius: 1 },
       fields: [seg('how', 'Way', [['smart', 'Smart (only the specks)'], ['simple', 'Simple']]), range('threshold', 'How much a speck stands out', 5, 120, 1), range('radius', 'Size of the specks', 1, 3, 1, (s) => s.how === 'simple'), { t: 'out' },
         note('Smart finds the specks first (dust, dropouts, salt-and-pepper dots), then repairs only those, each from the clean pixels around it; everything else stays exactly as it was.', (s) => s.how === 'smart')],
@@ -686,7 +724,7 @@
   async function runSteps(steps) {
     for (const s0 of steps) {
       const def = TOOLS[s0.id], img = pic().steps[pic().at].img; busyNow(`${def.title}…`); await wait(0);
-      try { const base = typeof def.s === 'function' ? def.s(img) : JSON.parse(JSON.stringify(def.s)); const out = await def.run(img, { ...base, ...s0.s }, (m) => busyNow(m)); push(def.title, out); }
+      try { const base = typeof def.s === 'function' ? def.s(img) : JSON.parse(JSON.stringify(def.s)); const t0 = performance.now(), sx = { ...base, ...s0.s }, out = await def.run(img, sx, (m) => busyNow(m)); await pushDeep(def.title, out, (im) => def.run(im, sx), performance.now() - t0); }
       catch (e) { busy(null); ICLOG.error(`${def.title} failed`, e); toast(`${def.title}: ${e.message}`); return; }
     }
     busy(null); toast(`Done: ${steps.length} step${steps.length === 1 ? '' : 's'}. Each is in History; Undo goes back one at a time.`);
@@ -702,7 +740,7 @@
     try {
       await wait(0); const t0 = performance.now(); if (t.s.wMap) await IC.maps.prepare([t.s.wMap, t.s.wOp ? t.s.wMap2 : ''], t.base); const r0 = await t.def.run(t.base, t.s, (m) => { if (my === token) busyNow(m); }), r = masked(t, r0);
       if (my !== token || tool !== t) return;
-      ICLOG.info(`${t.def.title}: ${t.base.width} × ${t.base.height} → ${r.width} × ${r.height} in ${Math.round(performance.now() - t0)} ms`, JSON.stringify(t.s).slice(0, 400));
+      t.ms = performance.now() - t0; ICLOG.info(`${t.def.title}: ${t.base.width} × ${t.base.height} → ${r.width} × ${r.height} in ${Math.round(t.ms)} ms`, JSON.stringify(t.s).slice(0, 400));
       const sizeChanged = !t.preview ? r.width !== t.base.width || r.height !== t.base.height : r.width !== t.preview.width || r.height !== t.preview.height;
       t.out = r; t.preview = t.showMask && t.s.wMap ? IC.maps.grey(maskOf(t), t.base.width, t.base.height) : r; busy(null); show(); if (sizeChanged && view.fit) fitView(); renderOut();
     } catch (e) { ICLOG.error(`${t.def.title} failed`, e); if (my === token) { busy(null); toast(e.message || String(e)); } }
@@ -714,14 +752,15 @@
     if (t.def.id === 'crop' || !t.preview || t.stale) { await runPreview(); if (tool !== t || !t.preview) return; }
     if (t.def.id === 'split') { if (!t.outputs || t.stale) { await runPreview(); if (tool !== t || !t.outputs) return; } const nm = baseName(pic().name), outs = t.outputs; closeTool(true); outs.forEach(([k, im, bits]) => addPic(`${nm} – ${k}.png`, im, { format: k === 'subject' ? 'Subject (cut out)' : 'Background', bits })); toast('The subject and the background are open as two pictures: restore each, then put them back with Detail › Blend a version.'); return; }
     if (t.def.toNew) { if (!t.out && !t.preview) { await runPreview(); if (tool !== t) return; } const r = t.out || t.preview, nm = `${baseName(pic().name)} – ${t.def.toNew}.png`; closeTool(true); addPic(nm, r, { format: t.def.title, bits: 24 }); toast(`The ${t.def.toNew} picture is open as a new picture.`); return; }
-    const r = t.out || t.preview; closeTool(true); push(t.def.title + (t.s && t.s.wMap ? ' (masked)' : ''), r);
+    const r = t.out || t.preview, mk = t.s && t.s.wMap && r.width === t.base.width && r.height === t.base.height ? maskOf(t) : null, s0 = JSON.parse(JSON.stringify(t.s || {})); closeTool(true);
+    await pushDeep(t.def.title + (t.s && t.s.wMap ? ' (masked)' : ''), r, (im) => t.def.run(im, s0), t.ms || 1e9, mk); busy(null);
   }
   // a tool that needs no settings: done at once, as a step
   function quick(label, fn) {
     if (!pic()) { toast('Open a picture first.'); return; }
     if (tool) closeTool(true);
     busyNow(`${label}…`);
-    setTimeout(async () => { const t0 = performance.now(); try { push(label, await fn(now())); ICLOG.info(`${label} in ${Math.round(performance.now() - t0)} ms`); } catch (e) { ICLOG.error(`${label} failed`, e); toast(e.message); } busy(null); }, 20);
+    setTimeout(async () => { const t0 = performance.now(); try { const out = await fn(now()), ms = performance.now() - t0; await pushDeep(label, out, fn, ms); ICLOG.info(`${label} in ${Math.round(ms)} ms`); } catch (e) { ICLOG.error(`${label} failed`, e); toast(e.message); } busy(null); }, 20);
   }
 
   // ------------------------------------------------------------------ the right-hand panel
@@ -917,7 +956,7 @@
   function status() {
     const img = now(), st = pic() && pic().steps[pic().at];
     const ne = ICLOG.errors(); $('st-err').hidden = !ne; $('st-err').textContent = `⚠ ${ne} error${ne === 1 ? '' : 's'}`;
-    $('st-size').innerHTML = img ? `<b>${fmtN(img.width)} × ${fmtN(img.height)}</b> pixels` : 'No picture open';
+    $('st-size').innerHTML = img ? `<b>${fmtN(img.width)} × ${fmtN(img.height)}</b> pixels${st && st.deep ? ' · <b title="This step keeps 16 bits per colour: smooth gradients, no banding. Save as PNG or TIFF 48/64-bit to keep them.">16-bit</b>' : ''}` : 'No picture open';
     $('st-cols').innerHTML = st && st.colours != null ? (st.colours < 0 ? 'Many colours' : `<b>${fmtN(st.colours)}</b> colour${st.colours === 1 ? '' : 's'}`) : '';
     statusHover();
   }
@@ -928,10 +967,10 @@
   }
 
   // ------------------------------------------------------------------ Save as
-  const DEPTH_NAME = { 1: '1-bit · 2 colours', 2: '2-bit · 4 colours', 3: '3-bit · 8 colours', 4: '4-bit · 16 colours', 5: '5-bit · 32 colours', 6: '6-bit · 64 colours', 7: '7-bit · 128 colours', 8: '8-bit · 256 colours', 16: '16-bit · 65,536 colours', 24: '24-bit · millions of colours', 32: '32-bit · millions, with see-through' };
+  const DEPTH_NAME = { 1: '1-bit · 2 colours', 2: '2-bit · 4 colours', 3: '3-bit · 8 colours', 4: '4-bit · 16 colours', 5: '5-bit · 32 colours', 6: '6-bit · 64 colours', 7: '7-bit · 128 colours', 8: '8-bit · 256 colours', 16: '16-bit · 65,536 colours', 24: '24-bit · millions of colours', 32: '32-bit · millions, with see-through', 48: '48-bit · 16 bits per colour (deep)', 64: '64-bit · 16 bits per colour, with see-through' };
   const NO_CLEAR = new Set(['jpg', 'pdf', 'pcx', 'bmp', 'ppm', 'pi1', 'pi2', 'pi3', 'neo', 'koa', 'scr', 'mac']);
   // formats (and depths) that cannot hold see-through: those parts are filled with a colour first
-  const noClear = (fmt, bits) => (NO_CLEAR.has(fmt) && !(fmt === 'bmp' && bits === 32)) || (fmt === 'tga' && bits !== 32) || ((fmt === 'png' || fmt === 'tif') && bits === 24);
+  const noClear = (fmt, bits) => (NO_CLEAR.has(fmt) && !(fmt === 'bmp' && bits === 32)) || (fmt === 'tga' && bits !== 32) || ((fmt === 'png' || fmt === 'tif') && (bits === 24 || bits === 48));
   const sv = { fmt: 'png', bits: 0, palette: 'adaptive', dither: 'fs', quality: 90, fit: 'cover', back: '#ffffff', name: '', aa: 0 };
   let saveTok = 0, saveBlob = null, savePrep = null;
   function openSave() {
@@ -943,6 +982,7 @@
     const f = F.FORMATS[fmt], st = pic().steps[pic().at], n = st.colours ?? F.countColours(now(), 257), clear = F.hasClear(now());
     if (sv.bits && f.depths.includes(sv.bits)) return sv.bits;
     if (f.depths.length === 1) return f.depths[0];
+    if (st.deep && f.depths.includes(48)) return clear ? 64 : 48; // a 16-bit step saves as 16 bits per colour
     const fits = f.depths.filter((b) => b <= 8 && (1 << b) >= n && n > 0);
     if (fits.length) return fits[0];
     return clear && f.depths.includes(32) ? 32 : f.depths.includes(24) ? 24 : f.depths[f.depths.length - 1];
@@ -999,7 +1039,7 @@
     setTimeout(async () => {
       if (my !== saveTok) return;
       try {
-        const bits = bitsFor(sv.fmt), o = { ...sv, bits, quality: sv.quality / 100 }, img = prepared(now(), sv.fmt, o);
+        const bits = bitsFor(sv.fmt), o = { ...sv, bits, quality: sv.quality / 100 }, img = prepared(now(), sv.fmt, o); if (img === now() && pic().steps[pic().at].deep) o.deep = pic().steps[pic().at].deep;
         const blob = await F.write(img, sv.fmt, o); if (my !== saveTok) return;
         saveBlob = blob; savePrep = img;
         const pv = $('save-prev'); pv.innerHTML = ''; pv.className = 'save-prev' + (img.width < 700 ? ' pixels' : '');
@@ -1045,7 +1085,7 @@
           if (max && Math.max(img.width, img.height) > max) { const k = max / Math.max(img.width, img.height); img = X.resize(img, { width: img.width * k, height: img.height * k }); }
           const cols = F.countColours(img, 257), clear = F.hasClear(img);
           let bits = want || (f.depths.length === 1 ? f.depths[0] : (f.depths.find((b) => b <= 8 && (1 << b) >= cols) || (clear && f.depths.includes(32) ? 32 : f.depths.includes(24) ? 24 : f.depths[f.depths.length - 1])));
-          const o = { bits, quality: q, palette: 'adaptive', dither, back: '#ffffff' }; img = prepared(img, fmt, o);
+          const o = { bits, quality: q, palette: 'adaptive', dither, back: '#ffffff' }, img0 = img; img = prepared(img, fmt, o); if (img === img0 && img0 === p.steps[p.at].img && p.steps[p.at].deep) o.deep = p.steps[p.at].deep;
           const blob = await F.write(img, fmt, o); let nm = `${baseName(p.name)}.${f.extFor ? f.extFor(o) : f.ext}`, k = 2; while (names.has(nm)) nm = `${baseName(p.name)} (${k++}).${f.ext}`; names.add(nm);
           files.push({ name: nm, bytes: new Uint8Array(await blob.arrayBuffer()) });
         } catch (e) { toast(`${p.name}: ${e.message}`); }
@@ -1143,7 +1183,7 @@
       { id: 'clean', label: 'Clean up', hue: '#1e9e8a', groups: [
         ['Old photo', [B('Restore old photo', IK.modern, () => openTool('modern', { kind: 'photo', bigger: 1 }), { big: true, title: 'Dust, noise, blur, colour cast and fading fixed in one go, measured from the picture' }), B('Split subject and background', IK.cutout, T('split'), { big: true, title: 'The main subject and the background as two pictures (layers), each restored its own way' }), B('Ask AI what it needs', IK.modern, T('assess'), { big: true, title: 'A vision model in Ollama on this computer looks at the picture, says what it is and what is wrong, and ticks the tools to fix it' })]],
         ['Restore', [B('Remove noise', IK.denoise, T('nlm'), { big: true, title: 'Smart noise removal (non-local means): grain and colour blotches' }), B('Deblur', IK.sharpen, T('deblur'), { big: true, title: 'Undo soft focus, out of focus or camera shake (Wiener deconvolution)' }), B('Faded detail', IK.light, T('clahe'), { big: true, title: 'Adaptive contrast for faded photos (CLAHE)' }), { col: [B('Where the noise is', IK.grid, T('noisemap')), B('Rebuild colour detail', IK.colour, T('chroma'), { title: 'Colour blocks and smears (JPEG, old scans) made to follow the real brightness detail' })] }]],
-        ['Clean', [B('Smooth out noise', IK.denoise, T('denoise'), { big: true }), B('Dust and scratches', IK.dust, T('despeckle'), { big: true }), B('JPEG blocks', IK.jpeg, T('deblock'), { big: true, title: 'Remove JPEG blocks and smudges' }), B('Undither', IK.undither, T('undither'), { big: true, title: 'Blend dithering dots back into smooth colour' })]],
+        ['Clean', [B('Smooth out noise', IK.denoise, T('denoise'), { big: true }), B('Dust and scratches', IK.dust, T('despeckle'), { big: true }), B('JPEG blocks', IK.jpeg, T('deblock'), { big: true, title: 'Remove JPEG blocks and smudges' }), B('Undither', IK.undither, T('undither'), { big: true, title: 'Blend dithering dots back into smooth colour' }), B('Banding', IK.undither, T('deband'), { big: true, title: 'Smooth out stripes in skies and shadows (banding)' })]],
         ['Background', [B('Remove background', IK.cutout, T('cutout'), { big: true })]],
         ['Bigger', [B('Make bigger', IK.upscale, T('upscale'), { big: true, title: 'Smooth, pixel-art or AI upscaling' }), B('Combine photos', IK.upscale, T('stack'), { big: true, title: 'Merge several shots of the same scene: less noise, and more detail than any one shot' }), B('Modernise', IK.modern, T('modern'), { big: true }), B('Remaster shapes', IK.svg, T('remaster'), { big: true, title: 'Recognise the shapes, draw them again crisply at the new size, and blend with the original' })]],
       ] },

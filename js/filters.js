@@ -137,6 +137,24 @@
     }
     return out;
   }
+  // Smooth out banding (after the f3kdb idea): each pixel is compared with four others a random distance away (the
+  // corners of a box); where all four are within a level or two of it, the area is a smooth gradient that was rounded
+  // into bands, and the pixel takes their average. Edges and texture differ by more and stay. Two sizes, so wide and
+  // narrow bands both go. With 16-bit steps the averages keep their in-between levels.
+  function deband(img, { threshold = 3, radius = 16 } = {}) {
+    const W = img.width, H = img.height, s = img.data; let cur = new Float32Array(s.length); for (let i = 0; i < s.length; i++) cur[i] = s[i];
+    for (const R of [radius, Math.max(2, radius >> 2)]) {
+      const o = Float32Array.from(cur);
+      for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+        const h = Math.imul(x * 73856093 ^ y * 19349663, 2654435761) >>> 0, dx = 1 + (h % R), dy = 1 + ((h >>> 12) % R), p = (y * W + x) * 4;
+        const q = [[x + dx, y + dy], [x - dx, y - dy], [x + dy, y - dx], [x - dy, y + dx]].map(([u, v]) => (Math.min(H - 1, Math.max(0, v)) * W + Math.min(W - 1, Math.max(0, u))) * 4);
+        let ok = true; for (const k of q) { for (let c = 0; c < 3; c++) if (Math.abs(cur[k + c] - cur[p + c]) > threshold) { ok = false; break; } if (!ok) break; }
+        if (ok) for (let c = 0; c < 3; c++) o[p + c] = (cur[q[0] + c] + cur[q[1] + c] + cur[q[2] + c] + cur[q[3] + c] + cur[p + c]) / 5;
+      }
+      cur = o;
+    }
+    const out = new ImageData(W, H); for (let i = 0; i < s.length; i++) out.data[i] = Math.round(cur[i]); return out;
+  }
   function sharpen(img, { amount = 80, radius = 1, threshold: th = 2 } = {}) {
     const bl = blur(img, { radius }), o = copy(img), d = o.data, b = bl.data, k = amount / 100;
     for (let i = 0; i < d.length; i += 4) for (let c = 0; c < 3; c++) { const diff = d[i + c] - b[i + c]; if (Math.abs(diff) > th) d[i + c] = clamp(d[i + c] + diff * k); }
@@ -557,5 +575,5 @@
     return o;
   }
 
-  IC.filters = { chromaRebuild, guidedBy, cas, dehaze, hazeLevel, isToned, shadowRecover, guided, autoColour, clarity, pyramidBlend, aliasCheck, antialias, light, colour, autoLevels, autoFix, whiteBalance, greyscale, sepia, invert, threshold, posterize, blur, sharpen, denoise, median, despeckle, deblock, undither, pixelate, resize, scale2x, scale3x, rotate: rotateAny, rotate90: rotate, flip, crop, trimBox, canvasSize, makeClear, flatten, copy, canvasOf };
+  IC.filters = { deband, chromaRebuild, guidedBy, cas, dehaze, hazeLevel, isToned, shadowRecover, guided, autoColour, clarity, pyramidBlend, aliasCheck, antialias, light, colour, autoLevels, autoFix, whiteBalance, greyscale, sepia, invert, threshold, posterize, blur, sharpen, denoise, median, despeckle, deblock, undither, pixelate, resize, scale2x, scale3x, rotate: rotateAny, rotate90: rotate, flip, crop, trimBox, canvasSize, makeClear, flatten, copy, canvasOf };
 })();

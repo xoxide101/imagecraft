@@ -14,6 +14,15 @@
   const u16le = (b, o) => b[o] | (b[o + 1] << 8), u16be = (b, o) => (b[o] << 8) | b[o + 1];
   const u32le = (b, o) => (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0, u32be = (b, o) => ((b[o] << 24) | (b[o + 1] << 16) | (b[o + 2] << 8) | b[o + 3]) >>> 0;
   const str = (b, o, n) => String.fromCharCode(...b.subarray(o, o + n));
+  // Deep colour: 16 bits per channel (Uint16Array RGBA, 0–65535) shown and saved at 8 bits through a 4 × 4 ordered
+  // dither, so the in-between levels survive as a fine pattern instead of bands
+  const BAYER = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5].map((v) => (v + 0.5) / 16);
+  function down16(deep, W, H) {
+    const img = new ImageData(W, H), d = img.data;
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { const p = (y * W + x) * 4, t = BAYER[(y & 3) * 4 + (x & 3)]; for (let c = 0; c < 3; c++) d[p + c] = Math.min(255, Math.floor(deep[p + c] / 257 + t)); d[p + 3] = Math.round(deep[p + 3] / 257); }
+    return img;
+  }
+  const up16 = (img) => { const s = img.data, o = new Uint16Array(s.length); for (let i = 0; i < s.length; i++) o[i] = s[i] * 257; return o; };
 
   // a growing byte buffer for the writers
   function Out() {
@@ -108,6 +117,15 @@
   async function writePNG(img, opts = {}) {
     const W = img.width, H = img.height, d = img.data;
     let bits = opts.bits, ix = null;
+    if (bits === 48 || bits === 64) { // 16 bits per channel, from the deep copy when there is one
+      const D = opts.deep && opts.deep.length === W * H * 4 ? opts.deep : up16(img), a = bits === 64, ch = a ? 4 : 3, rowLen = W * ch * 2, raw = new Uint8Array((rowLen + 1) * H);
+      for (let y = 0; y < H; y++) { const o = y * (rowLen + 1); raw[o] = 0; for (let x = 0; x < W; x++) for (let c = 0; c < ch; c++) { const v = D[(y * W + x) * 4 + c], q = o + 1 + (x * ch + c) * 2; raw[q] = v >> 8; raw[q + 1] = v & 255; } }
+      const cks = [], ck = (type, data) => { const out = Out(); out.u32be(data.length); const td = new Uint8Array(4 + data.length); for (let i = 0; i < 4; i++) td[i] = type.charCodeAt(i); td.set(data, 4); out.bytes(td).u32be(crcDone(td)); cks.push(out.done()); };
+      const hdr = Out(); hdr.u32be(W).u32be(H).u8(16).u8(a ? 6 : 2).u8(0).u8(0).u8(0); ck('IHDR', hdr.done());
+      if (opts.dpi) { const ppm = Math.round(opts.dpi / 0.0254), o = Out(); o.u32be(ppm).u32be(ppm).u8(1); ck('pHYs', o.done()); }
+      ck('IDAT', await zlib(raw)); ck('IEND', new Uint8Array(0));
+      return new Blob([new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]), ...cks], { type: 'image/png' });
+    }
     if (!bits || bits <= 8) { ix = indexed(img, 256); if (ix) { const n = ix.pal.length; bits = bits && (1 << bits) >= n ? bits : n <= 2 ? 1 : n <= 4 ? 2 : n <= 16 ? 4 : 8; } else bits = hasClear(img) ? 32 : 24; }
     const chunks = [], chunk = (type, data) => { const o = Out(); o.u32be(data.length); const td = new Uint8Array(4 + data.length); for (let i = 0; i < 4; i++) td[i] = type.charCodeAt(i); td.set(data, 4); o.bytes(td).u32be(crcDone(td)); chunks.push(o.done()); };
     const hdr = Out(); hdr.u32be(W).u32be(H);
@@ -135,6 +153,26 @@
     if (opts.dpi) { const ppm = Math.round(opts.dpi / 0.0254), o = Out(); o.u32be(ppm).u32be(ppm).u8(1); chunk('pHYs', o.done()); }
     chunk('IDAT', await zlib(raw)); chunk('IEND', new Uint8Array(0));
     return new Blob([new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]), ...chunks], { type: 'image/png' });
+  }
+  // a 16-bit PNG, read here so all 16 bits are kept (not interlaced; the browser reads the rest)
+  async function readPNG16(b) {
+    if (b.length < 33 || u32be(b, 0) !== 0x89504e47 || b[24] !== 16 || b[28] !== 0) return null;
+    const W = u32be(b, 16), H = u32be(b, 20), ch = { 0: 1, 2: 3, 4: 2, 6: 4 }[b[25]]; if (!ch) return null;
+    const parts = []; let o = 8; while (o + 8 <= b.length) { const len = u32be(b, o), type = str(b, o + 4, 4); if (type === 'IDAT') parts.push(b.subarray(o + 8, o + 8 + len)); if (type === 'IEND') break; o += 12 + len; }
+    const z = new Uint8Array(parts.reduce((s, p) => s + p.length, 0)); let k = 0; parts.forEach((p) => { z.set(p, k); k += p.length; });
+    const raw = await inflate(z), bpp = ch * 2, rowLen = W * bpp, px = new Uint8Array(rowLen * H); let prev = new Uint8Array(rowLen);
+    for (let y = 0; y < H; y++) {
+      const f = raw[y * (rowLen + 1)], src = raw.subarray(y * (rowLen + 1) + 1, (y + 1) * (rowLen + 1)), row = px.subarray(y * rowLen, (y + 1) * rowLen);
+      for (let i = 0; i < rowLen; i++) {
+        const a = i >= bpp ? row[i - bpp] : 0, up = prev[i], c = i >= bpp ? prev[i - bpp] : 0; let v = src[i];
+        if (f === 1) v += a; else if (f === 2) v += up; else if (f === 3) v += (a + up) >> 1; else if (f === 4) { const p = a + up - c, pa = Math.abs(p - a), pb = Math.abs(p - up), pc = Math.abs(p - c); v += pa <= pb && pa <= pc ? a : pb <= pc ? up : c; }
+        row[i] = v & 255;
+      }
+      prev = row;
+    }
+    const deep = new Uint16Array(W * H * 4);
+    for (let p = 0; p < W * H; p++) { const s = p * bpp, g = (q) => (px[s + q * 2] << 8) | px[s + q * 2 + 1], o4 = p * 4; if (ch < 3) { deep[o4] = deep[o4 + 1] = deep[o4 + 2] = g(0); deep[o4 + 3] = ch === 2 ? g(1) : 65535; } else { deep[o4] = g(0); deep[o4 + 1] = g(1); deep[o4 + 2] = g(2); deep[o4 + 3] = ch === 4 ? g(3) : 65535; } }
+    return { img: down16(deep, W, H), deep, info: { format: 'PNG', bits: ch * 16, note: '16 bits per colour (kept)' } };
   }
   // what bits a PNG file holds (the browser reads the pixels)
   function pngInfo(b) {
@@ -596,6 +634,13 @@
       raw.set(part.subarray(0, Math.min(part.length, raw.length - s * rps * rowB)), s * rps * rowB);
     }
     if (pred === 2 && bps === 8) for (let y = 0; y < H; y++) for (let x = spp; x < rowB; x++) raw[y * rowB + x] = (raw[y * rowB + x] + raw[y * rowB + x - spp]) & 255;
+    const r16v = (o) => (le ? raw[o] | (raw[o + 1] << 8) : (raw[o] << 8) | raw[o + 1]), w16v = (o, v) => { if (le) { raw[o] = v & 255; raw[o + 1] = v >> 8; } else { raw[o] = v >> 8; raw[o + 1] = v & 255; } };
+    if (pred === 2 && bps === 16) for (let y = 0; y < H; y++) for (let x = spp; x < W * spp; x++) w16v(y * rowB + x * 2, (r16v(y * rowB + x * 2) + r16v(y * rowB + (x - spp) * 2)) & 65535);
+    if (bps === 16 && (photo === 2 || photo === 1 || photo === 0)) { // all 16 bits kept
+      const extraA = tags[338] && spp > (photo === 2 ? 3 : 1), deep = new Uint16Array(W * H * 4);
+      for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { const i = (y * W + x) * 4, s = y * rowB + x * spp * 2; if (photo === 2) { deep[i] = r16v(s); deep[i + 1] = r16v(s + 2); deep[i + 2] = r16v(s + 4); deep[i + 3] = extraA ? r16v(s + 6) : 65535; } else { const g = r16v(s), gg = photo === 0 ? 65535 - g : g; deep[i] = deep[i + 1] = deep[i + 2] = gg; deep[i + 3] = spp > 1 && extraA ? r16v(s + 2) : 65535; } }
+      return { img: down16(deep, W, H), deep, info: { format: 'TIFF', bits: bps * spp, note: '16 bits per colour (kept)' } };
+    }
     const img = newImg(W, H), d = img.data, cmap = tags[320], extraA = tags[338] && spp > 3;
     for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
       const i = (y * W + x) * 4, ro = y * rowB;
@@ -608,11 +653,12 @@
     return { img, info: { format: 'TIFF', bits: bps * spp, colours: photo === 3 ? 1 << bps : undefined } };
   }
   const b16 = (r, o, le) => (le ? r[o + 1] : r[o]); // the top byte of a 16-bit value
-  function writeTIFF(img) {
-    const W = img.width, H = img.height, d = img.data, a = hasClear(img), spp = a ? 4 : 3, data = new Uint8Array(W * H * spp);
-    for (let p = 0; p < W * H; p++) for (let k = 0; k < spp; k++) data[p * spp + k] = d[p * 4 + k];
+  function writeTIFF(img, opts = {}) {
+    const W = img.width, H = img.height, d = img.data, b16 = opts.bits === 48 || opts.bits === 64, a = b16 ? opts.bits === 64 : opts.bits === 24 ? false : hasClear(img), spp = a ? 4 : 3, bw = b16 ? 2 : 1, data = new Uint8Array(W * H * spp * bw);
+    if (b16) { const D = opts.deep && opts.deep.length === W * H * 4 ? opts.deep : up16(img); for (let p = 0; p < W * H; p++) for (let k = 0; k < spp; k++) { const v = D[p * 4 + k]; data[(p * spp + k) * 2] = v & 255; data[(p * spp + k) * 2 + 1] = v >> 8; } }
+    else for (let p = 0; p < W * H; p++) for (let k = 0; k < spp; k++) data[p * spp + k] = d[p * 4 + k];
     const o = Out(); o.ascii('II').u16le(42).u32le(8);
-    const tags = [[256, 4, [W]], [257, 4, [H]], [258, 3, Array(spp).fill(8)], [259, 3, [1]], [262, 3, [2]], [273, 4, [0]], [277, 3, [spp]], [278, 4, [H]], [279, 4, [data.length]], [282, 5, [72, 1]], [283, 5, [72, 1]], [284, 3, [1]], [296, 3, [2]]];
+    const tags = [[256, 4, [W]], [257, 4, [H]], [258, 3, Array(spp).fill(b16 ? 16 : 8)], [259, 3, [1]], [262, 3, [2]], [273, 4, [0]], [277, 3, [spp]], [278, 4, [H]], [279, 4, [data.length]], [282, 5, [72, 1]], [283, 5, [72, 1]], [284, 3, [1]], [296, 3, [2]]];
     if (a) tags.push([338, 3, [2]]);
     const ifdLen = 2 + tags.length * 12 + 4; let extra = 8 + ifdLen; const blobs = [];
     o.u16le(tags.length);
@@ -678,6 +724,7 @@
     if (str(bytes, 0, 2) === 'BM') { const r = readBMP(bytes); if (r) return r; }
     if (e === 'tga' || e === 'targa' || e === 'icb' || e === 'vda' || e === 'vst') { const r = readTGA(bytes); if (r) return r; }
     if (e === 'pcx' || e === 'pcc') { const r = readPCX(bytes); if (r) return r; }
+    if (bytes[0] === 0x89 && bytes[24] === 16) { try { const r = await readPNG16(bytes); if (r) return r; } catch (err) { /* the browser reads it (8 bits) */ } }
     for (const f of READERS) { try { const r = f(bytes, name); if (r) return r; } catch (err) { /* not this one */ } }
     // the browser's own formats
     const type = e === 'svg' ? 'image/svg+xml' : '';
@@ -691,12 +738,12 @@
   // Each format: what it is called, its extension, which colour depths it can hold, and the writer.
   // depth: the choices offered when saving (bits); 'fixed' formats have a fixed screen (fit: [w, h], palette rules).
   const FORMATS = {
-    png: { name: 'PNG', ext: 'png', group: 'Everyday', depths: [1, 2, 4, 8, 24, 32], what: 'Sharp, lossless, see-through. The best all-rounder.', write: (img, o) => writePNG(img, o) },
+    png: { name: 'PNG', ext: 'png', group: 'Everyday', depths: [1, 2, 4, 8, 24, 32, 48, 64], what: 'Sharp, lossless, see-through. The best all-rounder (and 16 bits per colour).', write: (img, o) => writePNG(img, o) },
     jpg: { name: 'JPEG', ext: 'jpg', group: 'Everyday', depths: [24], quality: true, what: 'Small files for photos. No see-through (white behind).', write: (img, o) => blobOf(flatten(img, o.back), 'image/jpeg', o.quality ?? 0.9) },
     webp: { name: 'WebP', ext: 'webp', group: 'Everyday', depths: [32], quality: true, what: 'Small files for the web, with see-through.', write: (img, o) => blobOf(img, 'image/webp', o.quality ?? 0.9) },
     gif: { name: 'GIF', ext: 'gif', group: 'Everyday', depths: [1, 2, 4, 8], what: 'Up to 256 colours, with see-through. Old and everywhere.', write: (img) => writeGIF(img) },
     bmp: { name: 'BMP (Windows bitmap)', ext: 'bmp', group: 'Everyday', depths: [1, 4, 8, 16, 24, 32], what: 'Windows bitmap, any depth from 1 to 32 bits.', write: (img, o) => writeBMP(img, o) },
-    tif: { name: 'TIFF', ext: 'tif', group: 'Everyday', depths: [24, 32], what: 'For printing and archives (lossless).', write: (img) => writeTIFF(img) },
+    tif: { name: 'TIFF', ext: 'tif', group: 'Everyday', depths: [24, 32, 48, 64], what: 'For printing and archives (lossless; 16 bits per colour too).', write: (img, o) => writeTIFF(img, o) },
     ico: { name: 'ICO (icon)', ext: 'ico', group: 'Everyday', depths: [32], what: 'A Windows or website icon, with every size from 16 to 256.', write: (img, o) => writeICO(img, o) },
     pdf: { name: 'PDF', ext: 'pdf', group: 'Everyday', depths: [24], quality: true, what: 'One page with the picture, for printing or sending.', write: (img, o) => writePDF(img, o) },
     tga: { name: 'TGA (Targa)', ext: 'tga', group: 'Classic', depths: [8, 16, 24, 32], what: 'Truevision Targa, from the 1980s; still used in games.', write: (img, o) => writeTGA(img, o) },
@@ -717,5 +764,5 @@
   // what files can be opened (for the Open box)
   const ACCEPT = 'image/*,.png,.jpg,.jpeg,.gif,.webp,.avif,.bmp,.ico,.cur,.svg,.tif,.tiff,.tga,.pcx,.pcc,.iff,.ilbm,.lbm,.pbm,.pgm,.ppm,.pnm,.pi1,.pi2,.pi3,.pc1,.pc2,.pc3,.neo,.koa,.kla,.scr,.mac,.pntg';
 
-  IC.formats = { read, write, FORMATS, ACCEPT, indexed, countColours, hasClear, canvasOf, zip, crc32: crcDone, ST_MODES, C64, ZX, EGA, flatten, ext };
+  IC.formats = { down16, up16, read, write, FORMATS, ACCEPT, indexed, countColours, hasClear, canvasOf, zip, crc32: crcDone, ST_MODES, C64, ZX, EGA, flatten, ext };
 })();
