@@ -135,33 +135,50 @@
 
   // ------------------------------------------------------------------ object masks (Gemini): sharper than CLIPSeg
   // Gemini answers with a box (0–1000) and a small PNG mask for each thing it finds; they are laid into one map 0–1.
-  async function segment(img, words, model) {
+  async function segment(img, words, model) { const r = await segmentMany(img, [words], model); return r[words]; }
+  // one call, several things: { label: map }. Each answer goes to the asked-for label it names (or the only one asked)
+  async function segmentMany(img, labels, model) {
     const k = cfg.keys.gemini.trim(); if (!k) throw new Error('No Gemini key yet.');
-    const W = img.width, H = img.height, b64 = jpeg(img, 1024);
-    const prompt = `Give the segmentation masks for: ${words}. Output a JSON list of masks where each entry contains the 2D bounding box in the key "box_2d", the segmentation mask in key "mask", and the text label in the key "label".`;
+    const W = img.width, H = img.height, b64 = jpeg(img, 1024), maps = {}; labels.forEach((l) => { maps[l] = new Float32Array(W * H); });
+    const prompt = `Give the segmentation masks for: ${labels.map((l) => `"${l}"`).join(', ')}. Output a JSON list of masks where each entry contains the 2D bounding box in the key "box_2d", the segmentation mask in key "mask", and the text label in the key "label"${labels.length > 1 ? ', which must be exactly one of the names given' : ''}. Several entries may share a label. Leave out anything not in the picture.`;
     const j = await call(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(k)}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ contents: [{ parts: [{ inline_data: { mime_type: 'image/jpeg', data: b64 } }, { text: prompt }] }], generationConfig: { temperature: 0.2 } }) }, 'gemini');
     const text = ((j.candidates || [])[0]?.content?.parts || []).map((x) => x.text || '').join(''), m = text.match(/\[[\s\S]*\]/); if (!m) throw new Error('Gemini did not answer with masks.');
-    const items = JSON.parse(m[0]), map = new Float32Array(W * H);
+    const items = JSON.parse(m[0]), norm = (s) => String(s || '').toLowerCase().replace(/[^a-z ]/g, '').trim();
     for (const it of items) {
       const [ya, xa, yb, xb] = it.box_2d || []; if (!it.mask || !(xb > xa) || !(yb > ya)) continue;
+      const nl = norm(it.label), lab = labels.length === 1 ? labels[0] : labels.find((l) => norm(l) === nl) || labels.find((l) => nl && (norm(l).includes(nl) || nl.includes(norm(l)))); if (!lab) continue; const map = maps[lab];
       const bx0 = Math.round((xa / 1000) * W), by0 = Math.round((ya / 1000) * H), bw = Math.max(1, Math.round(((xb - xa) / 1000) * W)), bh = Math.max(1, Math.round(((yb - ya) / 1000) * H));
       const mk = await new Promise((res) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => res(null); i.src = String(it.mask).startsWith('data:') ? it.mask : 'data:image/png;base64,' + it.mask; }); if (!mk) continue;
       const c = document.createElement('canvas'); c.width = bw; c.height = bh; const x = c.getContext('2d'); x.drawImage(mk, 0, 0, bw, bh); const d = x.getImageData(0, 0, bw, bh).data;
       for (let y = 0; y < bh; y++) for (let xx = 0; xx < bw; xx++) { const X = bx0 + xx, Y = by0 + y; if (X < 0 || Y < 0 || X >= W || Y >= H) continue; const v = d[(y * bw + xx) * 4] / 255; if (v > map[Y * W + X]) map[Y * W + X] = v; }
     }
-    return map;
+    return maps;
+  }
+
+  // ------------------------------------------------------------------ where things are (any service that can look): boxes and points inside
+  // For services without outlines (OpenAI, Claude): each thing as boxes (0 to 1000, [ymin, xmin, ymax, xmax]) with a few points
+  // well inside it. The built-in outliner (SlimSAM) then traces the real edges on this computer.
+  async function locate(img, labels, p, model) {
+    const k = cfg.keys[p].trim(); if (!k) throw new Error(`No ${NAMES[p]} key yet.`);
+    const b64 = jpeg(img, 1024), prompt = `For each of these: ${labels.map((l) => `"${l}"`).join(', ')}, find every area of the picture that shows it. Answer with JSON only: {"found":[{"label":"<exactly one of the names given>","box_2d":[ymin,xmin,ymax,xmax],"points":[[y,x],[y,x],[y,x]]}]} with all numbers from 0 to 1000 across the picture. The points must lie well inside that thing (not on its edge), spread over it. Several entries may share a label (two people, two patches of sky). Leave out anything not in the picture.`;
+    let text = '';
+    if (p === 'anthropic') { const j = await call('https://api.anthropic.com/v1/messages', { method: 'POST', headers: anthHeaders(k, true), body: JSON.stringify({ model, max_tokens: 2000, messages: [{ role: 'user', content: [{ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: b64 } }, { type: 'text', text: prompt }] }] }) }, p); text = (j.content || []).map((c) => c.text || '').join(''); }
+    else { const j = await call('https://api.openai.com/v1/chat/completions', { method: 'POST', headers: { 'content-type': 'application/json', Authorization: `Bearer ${k}` }, body: JSON.stringify({ model, response_format: { type: 'json_object' }, messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: `data:image/jpeg;base64,${b64}` } }, { type: 'text', text: prompt }] }] }) }, p); text = j.choices?.[0]?.message?.content || ''; }
+    const m = text.match(/\{[\s\S]*\}/); if (!m) throw new Error(`${NAMES[p]} did not answer in the expected form.`);
+    const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z ]/g, '').trim();
+    return (JSON.parse(m[0]).found || []).map((f) => { const nl = norm(f.label); return { ...f, label: labels.find((l) => norm(l) === nl) || labels.find((l) => nl && (norm(l).includes(nl) || nl.includes(norm(l)))) }; }).filter((f) => f.label && Array.isArray(f.box_2d) && f.box_2d.length === 4);
   }
 
   // ------------------------------------------------------------------ one aligned face (512 × 512) redrawn by the cloud
   const face = (crop, p, model) => edit(crop, p, model, 'Restore this old, blurred or damaged face photo so it looks sharp and natural, like a modern photo of the same person. Keep the identity, expression, pose, hair, age and framing exactly the same. Do not change the background or the crop.');
 
   // which services can do a job, given the keys; which of their models to use (the person's choice, or a good default)
-  const engines = (job) => ({ fill: ['openai', 'gemini'], colour: ['gemini', 'openai'], masks: ['gemini'], face: ['gemini', 'openai'] }[job] || []).filter(has);
+  const engines = (job) => ({ fill: ['openai', 'gemini'], colour: ['gemini', 'openai'], masks: ['gemini'], locate: ['openai', 'anthropic'], face: ['gemini', 'openai'] }[job] || []).filter(has);
   // the newest model that fits (by the version numbers in its name), so retired models (gemini-2.5-flash) are never chosen
   const ver = (id) => (String(id).match(/\d+(?:\.\d+)?/g) || []).map(Number);
   const newest = (ms) => ms.slice().sort((a, b) => { const x = ver(a.id), y = ver(b.id); for (let i = 0; i < Math.max(x.length, y.length); i++) { const d = (y[i] || 0) - (x[i] || 0); if (d) return d; } return a.id.length - b.id.length; })[0];
   const drawModel = async (p) => { const want = cfg.models['draw:' + p], ms = (await models(p)).filter((x) => x.draw); if (want && ms.some((x) => x.id === want)) return want; const pick = newest(ms.filter((x) => /^gpt-image/.test(x.id) && !/mini/.test(x.id))) || newest(ms.filter((x) => /flash-image/.test(x.id) && !/preview/.test(x.id))) || newest(ms.filter((x) => /flash-image|gpt-image/.test(x.id))) || ms[0]; if (!pick) throw new Error(`${NAMES[p]}: this key has no model that can draw pictures.`); return pick.id; };
   const seeModel = async (p) => { const want = cfg.models['see:' + p], ms = (await models(p)).filter((x) => x.see && !x.draw); if (want && ms.some((x) => x.id === want)) return want; const plain = (x) => !/lite|image|tts|live|audio|thinking|preview|exp/.test(x.id); const pick = newest(ms.filter((x) => /^gemini-[\d.]+-flash$/.test(x.id))) || newest(ms.filter((x) => /flash/.test(x.id) && plain(x))) || newest(ms.filter(plain)) || ms[0]; if (!pick) throw new Error(`${NAMES[p]}: this key has no model that can look at pictures.`); return pick.id; };
 
-  IC.cloud = { cfg, save, has, NAMES, models, describe, regenerate, edit, fill, layBack, colourise, segment, face, engines, drawModel, seeModel };
+  IC.cloud = { cfg, save, has, NAMES, models, describe, regenerate, edit, fill, layBack, colourise, segment, segmentMany, locate, face, engines, drawModel, seeModel };
 })();

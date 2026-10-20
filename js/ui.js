@@ -1255,6 +1255,37 @@
   const showTab = (name) => { document.querySelectorAll('.tab').forEach((x) => x.setAttribute('aria-selected', String(x.dataset.tab === name))); ['pics', 'hist', 'maps', 'debug'].forEach((k) => { $('tab-' + k).hidden = k !== name; }); if (name === 'debug') renderLog(); if (name === 'maps') renderMaps(); };
   // ------------------------------------------------------------------ maps (left panel, Maps tab; one shown at a time over the picture)
   let thumbFor = null, thumbSmall = null;
+  // ------------------------------------------------------------------ the cloud maps the photo once; every built-in tool then uses its layers
+  // Each layer is saved as this picture's corrected map (p.mapFix), so Where, the maps, Process a photo and the face tools all use it, offline.
+  const CLOUD_LAYERS = [['sky', 'the sky', 'sky'], ['skin', "people's skin (faces, necks, arms, hands)", 'skin'], ['green', 'grass, trees and plants', 'green'], ['subject', 'the main subject (the people or thing the photo is of)', 'subject'], ['hair', 'hair', 'cl:hair', 'Hair'], ['clothing', 'clothing', 'cl:clothing', 'Clothing'], ['damage', 'tears, scratches, stains and missing parts of the old print', 'cl:damage', 'Damage to the print']];
+  CLOUD_LAYERS.forEach((l) => { if (l[3]) IC.maps.addLayer(l[2], l[3], `${l[3]}, as the cloud AI outlined it (Mapped by the cloud, in the Maps tab).`); });
+  async function cloudMapPhoto(engine) {
+    const p = pic(), img = now(), CL = IC.cloud, t0 = performance.now(), W = img.width, H = img.height, got = {};
+    const labels = CLOUD_LAYERS.map((l) => l[1]);
+    if (engine === 'gemini') {
+      busyNow('Gemini is outlining the sky, skin, greenery, subject, hair, clothing and damage… (10 to 40 seconds)');
+      const r = await CL.segmentMany(img, labels, await CL.seeModel('gemini')); CLOUD_LAYERS.forEach((l) => { got[l[0]] = r[l[1]]; });
+    } else {
+      busyNow(`${CL.NAMES[engine]} is finding where each layer is… (10 to 40 seconds)`);
+      const found = await CL.locate(img, labels, engine, await CL.seeModel(engine)); CLOUD_LAYERS.forEach((l) => { got[l[0]] = new Float32Array(W * H); });
+      let n = 0;
+      for (const f of found) {
+        busyNow(`Tracing the edges on this computer (${++n} of ${found.length}; the first time downloads the outliner)…`);
+        const key = CLOUD_LAYERS.find((l) => l[1] === f.label)[0], [ya, xa, yb, xb] = f.box_2d.map(Number), map = got[key];
+        const pts = (f.points || []).filter((q) => q && q.length === 2).map(([y, x]) => [x / 1000, y / 1000, 1]); if (!pts.length) pts.push([(xa + xb) / 2000, (ya + yb) / 2000, 1]);
+        const gx = (xb - xa) * 0.04, gy = (yb - ya) * 0.04, X0 = Math.max(0, Math.floor(((xa - gx) / 1000) * W)), X1 = Math.min(W, Math.ceil(((xb + gx) / 1000) * W)), Y0 = Math.max(0, Math.floor(((ya - gy) / 1000) * H)), Y1 = Math.min(H, Math.ceil(((yb + gy) / 1000) * H));
+        let r = null; try { r = key === 'damage' ? null : await CRAFTAI.pick(X.canvasOf(img), pts); } catch (e) { logFail('Outlining failed', e); }
+        for (let y = Y0; y < Y1; y++) for (let x = X0; x < X1; x++) { const v = r ? (r.a[Math.min(r.H - 1, Math.floor(((y + 0.5) * r.H) / H)) * r.W + Math.min(r.W - 1, Math.floor(((x + 0.5) * r.W) / W))] > 127 ? 1 : 0) : 1; if (v > map[y * W + x]) map[y * W + x] = v; }
+      }
+    }
+    if (!got.subject.some((v) => v > 0.5)) delete got.subject; else got.background = got.subject.map((v) => 1 - v);
+    p.mapFix = p.mapFix || {}; const done = [];
+    for (const l of CLOUD_LAYERS) { const m = got[l[0]]; if (!m) continue; const share = m.reduce((a, v) => a + (v > 0.5 ? 1 : 0), 0) / m.length; if (share <= 0) { if (p.mapFix[l[2]]) delete p.mapFix[l[2]]; continue; } p.mapFix[l[2]] = { W, H, data: m, by: engine }; done.push(`${l[3] || { sky: 'Sky', skin: 'Skin', green: 'Greenery', subject: 'Main subject' }[l[0]]} ${(share * 100).toFixed(share < 0.01 ? 1 : 0)}%`); }
+    if (got.background) { p.mapFix.background = { W, H, data: got.background, by: engine }; }
+    p.cloudMapped = { by: engine, when: Date.now(), secs: (performance.now() - t0) / 1000, layers: done };
+    busy(null); ICLOG.info(`Cloud map (${engine}): ${done.join(', ')} in ${p.cloudMapped.secs.toFixed(0)} s`); renderMaps(); renderInfo && renderInfo();
+    toast(done.length ? `Mapped: ${done.join(', ')}. Every tool now uses these layers; correct any of them in its map.` : 'The cloud found none of the layers in this picture.');
+  }
   function renderMaps() {
     const L = $('maplist'); if (!L || $('tab-maps').hidden) return;
     const img = now(); if (!img) { L.innerHTML = '<p class="hint">Open a picture first.</p>'; return; }
@@ -1264,6 +1295,11 @@
     fb.innerHTML = `<input class="input" name="q" placeholder="Find… (the motorbike, a tear, flowers)" style="flex:1;min-width:0" aria-label="Find something by name">${gem ? '<select class="input" name="eng" style="width:auto" title="Built-in: on this computer. Gemini: sharper outlines (the picture is sent to Google)."><option value="builtin">Built-in</option><option value="gemini">Gemini</option></select>' : ''}<button class="btn outline" type="submit">Find</button>`;
     fb.onsubmit = (e) => { e.preventDefault(); const id = IC.maps.addFind(fb.q.value, gem && fb.eng ? fb.eng.value : 'builtin'); if (id) openMap(id, 'heat'); };
     L.append(fb);
+    const cm = cloudOK() ? ['gemini', 'openai', 'anthropic'].filter((k) => IC.cloud.has(k)) : [];
+    if (cm.length) { const box = document.createElement('div'); box.className = 'row'; box.style.cssText = 'gap:6px;margin:0 0 8px;flex-wrap:wrap'; const done = pic().cloudMapped;
+      box.innerHTML = `<button class="btn outline" type="button" data-cmap style="flex:1" title="The cloud AI outlines the sky, skin, greenery, main subject, hair, clothing and damage once. They are kept as this picture's maps, so every built-in tool uses them, offline. The picture is sent once.">${done ? 'Map it again with the cloud' : 'Let the cloud map this photo'}</button>${cm.length > 1 ? `<select class="input" data-cmeng style="width:auto" aria-label="Which cloud service maps it">${cm.map((k) => `<option value="${k}">${esc(IC.cloud.NAMES[k].split(' ')[0])}${k === 'gemini' ? ' (outlines)' : ' (+ built-in outliner)'}</option>`).join('')}</select>` : ''}${done ? `<small class="hint" style="flex-basis:100%">Mapped by ${esc(IC.cloud.NAMES[done.by].split(' ')[0])}: ${esc(done.layers.join(', '))}.</small>` : ''}`;
+      box.querySelector('[data-cmap]').onclick = async () => { const sel = box.querySelector('[data-cmeng]'), eng = sel ? sel.value : cm[0]; try { await cloudMapPhoto(eng); } catch (e) { busy(null); logFail('Cloud mapping failed', e); toast(e.message); } };
+      L.append(box); }
     if (IC.maps.colourBlind(img)) L.insertAdjacentHTML('beforeend', '<p class="hint">This picture’s colours all lean one way (sepia, toned or a strong cast), so the colour-based Skin, Greenery and Sky maps mark the wrong things. Use <b>Scene (AI)</b> and <b>Skin (learned from the faces)</b> instead.</p>');
     IC.maps.LIST.forEach((m) => {
       const g = m.group || 'Measured'; if (g !== group) { group = g; L.insertAdjacentHTML('beforeend', `<h4>${esc(g)}</h4>`); }
