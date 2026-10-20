@@ -141,6 +141,30 @@
   // corners of a box); where all four are within a level or two of it, the area is a smooth gradient that was rounded
   // into bands, and the pixel takes their average. Edges and texture differ by more and stay. Two sizes, so wide and
   // narrow bands both go. With 16-bit steps the averages keep their in-between levels.
+  // Colourise: lightness (CIE Lab, D65, sRGB gamma, as OpenCV's float conversion) of the picture → a grey 512 × 512 copy
+  // for DDColor → its colour (a, b) enlarged smoothly back to the picture's size, joined with the picture's own lightness.
+  // So only the colour is guessed: every detail stays the photo's own.
+  const srgbToLin = (v) => (v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4)), linToSrgb = (v) => (v <= 0.0031308 ? v * 12.92 : 1.055 * Math.pow(v, 1 / 2.4) - 0.055);
+  const fLab = (t) => (t > 0.008856 ? Math.cbrt(t) : 7.787 * t + 16 / 116), fInv = (t) => (t > 0.206893 ? t * t * t : (t - 16 / 116) / 7.787);
+  function toLab(r, g, b) { const R = srgbToLin(r), G = srgbToLin(g), B = srgbToLin(b), X = (0.412453 * R + 0.35758 * G + 0.180423 * B) / 0.950456, Y = 0.212671 * R + 0.71516 * G + 0.072169 * B, Z = (0.019334 * R + 0.119193 * G + 0.950227 * B) / 1.088754; const fy = fLab(Y); return [Y > 0.008856 ? 116 * fy - 16 : 903.3 * Y, 500 * (fLab(X) - fy), 200 * (fy - fLab(Z))]; }
+  function fromLab(L, a, b) { const fy = (L + 16) / 116, X = fInv(fy + a / 500) * 0.950456, Y = fInv(fy), Z = fInv(fy - b / 200) * 1.088754; const R = 3.240479 * X - 1.53715 * Y - 0.498535 * Z, G = -0.969256 * X + 1.875992 * Y + 0.041556 * Z, B = 0.055648 * X - 0.204043 * Y + 1.057311 * Z; return [R, G, B].map((v) => Math.max(0, Math.min(1, linToSrgb(Math.max(0, v))))); }
+  async function colourise(img, { amount = 100, warm = 0 } = {}) {
+    const W = img.width, H = img.height, d = img.data, L = new Float32Array(W * H);
+    for (let p = 0; p < W * H; p++) L[p] = toLab(d[p * 4] / 255, d[p * 4 + 1] / 255, d[p * 4 + 2] / 255)[0];
+    // the grey 512 × 512 copy: lightness averaged over each output pixel's area, then back to grey RGB
+    const N = 512, g = new Float32Array(3 * N * N);
+    for (let v = 0; v < N; v++) for (let u = 0; u < N; u++) {
+      const x0 = Math.floor((u * W) / N), x1 = Math.max(x0 + 1, Math.floor(((u + 1) * W) / N)), y0 = Math.floor((v * H) / N), y1 = Math.max(y0 + 1, Math.floor(((v + 1) * H) / N)); let t = 0, k = 0;
+      for (let y = y0; y < Math.min(H, y1); y++) for (let x = x0; x < Math.min(W, x1); x++) { t += L[y * W + x]; k++; }
+      const grey = fromLab(t / Math.max(1, k), 0, 0)[0], i = v * N + u; g[i] = g[N * N + i] = g[2 * N * N + i] = grey;
+    }
+    const ab = await CRAFTAI.colourise(g), out = new ImageData(W, H), o = out.data, k = amount / 100;
+    for (let y = 0; y < H; y++) { const sy = Math.min(N - 1, Math.max(0, ((y + 0.5) * N) / H - 0.5)), y0 = Math.floor(sy), y1 = Math.min(N - 1, y0 + 1), ty = sy - y0;
+      for (let x = 0; x < W; x++) { const sx = Math.min(N - 1, Math.max(0, ((x + 0.5) * N) / W - 0.5)), x0 = Math.floor(sx), x1 = Math.min(N - 1, x0 + 1), tx = sx - x0;
+        const at = (A) => (A[y0 * N + x0] * (1 - tx) + A[y0 * N + x1] * tx) * (1 - ty) + (A[y1 * N + x0] * (1 - tx) + A[y1 * N + x1] * tx) * ty;
+        const p = y * W + x, rgb = fromLab(L[p], at(ab.a) * k + warm * 0.15, at(ab.b) * k + warm * 0.3); for (let c = 0; c < 3; c++) o[p * 4 + c] = Math.round(rgb[c] * 255); o[p * 4 + 3] = d[p * 4 + 3]; } }
+    return out;
+  }
   function deband(img, { threshold = 3, radius = 16 } = {}) {
     const W = img.width, H = img.height, s = img.data; let cur = new Float32Array(s.length); for (let i = 0; i < s.length; i++) cur[i] = s[i];
     for (const R of [radius, Math.max(2, radius >> 2)]) {
@@ -622,5 +646,5 @@
     return o;
   }
 
-  IC.filters = { mmpx, deband, chromaRebuild, guidedBy, cas, dehaze, hazeLevel, isToned, shadowRecover, guided, autoColour, clarity, pyramidBlend, aliasCheck, antialias, light, colour, autoLevels, autoFix, whiteBalance, greyscale, sepia, invert, threshold, posterize, blur, sharpen, denoise, median, despeckle, deblock, undither, pixelate, resize, scale2x, scale3x, rotate: rotateAny, rotate90: rotate, flip, crop, trimBox, canvasSize, makeClear, flatten, copy, canvasOf };
+  IC.filters = { colourise, mmpx, deband, chromaRebuild, guidedBy, cas, dehaze, hazeLevel, isToned, shadowRecover, guided, autoColour, clarity, pyramidBlend, aliasCheck, antialias, light, colour, autoLevels, autoFix, whiteBalance, greyscale, sepia, invert, threshold, posterize, blur, sharpen, denoise, median, despeckle, deblock, undither, pixelate, resize, scale2x, scale3x, rotate: rotateAny, rotate90: rotate, flip, crop, trimBox, canvasSize, makeClear, flatten, copy, canvasOf };
 })();

@@ -25,9 +25,10 @@
     find: { id: 'Xenova/clipseg-rd64-refined', name: 'Find things by name', what: 'Finds sky, grass, trees, people, clothes, buildings and anything you name in a picture, by what they are rather than by their colour, so it works on sepia and faded prints too. (About 15 seconds a picture on the processor.)', mb: { gpu: 139, cpu: 139 }, licence: 'Apache-2.0' },
     inpaint: { raw: 'https://huggingface.co/andraniksargsyan/migan/resolve/main/migan_pipeline_v2.onnx', name: 'Repair (fill in damage)', what: 'Fills tears, scratches, holes and stamps from what is around them (MI-GAN, Picsart). It invents what is missing, so use it where the original is lost.', mb: { gpu: 28, cpu: 28 }, licence: 'MIT' },
     codeformer: { raw: 'https://huggingface.co/bluefoxcreation/Codeformer-ONNX/resolve/main/codeformer.onnx', name: 'Restore faces (CodeFormer)', what: 'Redraws small, blurred or damaged faces from a model of faces, with a slider for how closely it keeps to the original. Large: about 377 MB the first time. Non-commercial use only (S-Lab License 1.0).', mb: { gpu: 377, cpu: 377 }, licence: 'S-Lab 1.0 (non-commercial)' },
+    colourise: { raw: 'https://huggingface.co/edgetools/ddcolor/resolve/main/ddcolor-tiny-fp16.onnx', name: 'Colourise (DDColor)', what: 'Gives a black-and-white or faded photo likely colours (DDColor-tiny, Apache-2.0). Only the colour is guessed; the brightness and every detail stay the photo’s own. About 135 MB the first time.', mb: { gpu: 135, cpu: 135 }, licence: 'Apache-2.0', cpuOnly: true }, // one of its MatMul steps fails on the graphics-card runtime: the processor (about 10 s)
     pick: { id: 'Xenova/slimsam-77-uniform', name: 'Pick an object', what: 'Click an object in a picture and it is outlined for you, to keep or take out.', mb: { gpu: 21, cpu: 14 }, licence: 'Apache-2.0' },
   };
-  const DEFAULTS = { on: true, gpu: null, use: { cutout: true, best: false, sharp: true, photo: true, jpeg: true, esrgan: true, esrgan2: true, esrgan3: true, find: true, inpaint: true, codeformer: true, pick: true } };
+  const DEFAULTS = { on: true, gpu: null, use: { cutout: true, best: false, sharp: true, photo: true, jpeg: true, esrgan: true, esrgan2: true, esrgan3: true, find: true, inpaint: true, codeformer: true, colourise: true, pick: true } };
   let settings = DEFAULTS;
   try { settings = { ...DEFAULTS, ...JSON.parse(localStorage.getItem(KEY) || '{}') }; settings.use = { ...DEFAULTS.use, ...(settings.use || {}) }; } catch (e) { /* ignore */ }
   const save = () => { try { localStorage.setItem(KEY, JSON.stringify(settings)); } catch (e) { /* ignore */ } };
@@ -96,7 +97,7 @@
   const progress = (k, p) => listeners.forEach((f) => f(k, p));
   function onProgress(f) { listeners.add(f); return () => listeners.delete(f); }
   const cpuOnly = new Set();   // models that failed on the graphics card: they use the processor from then on
-  const deviceFor = (k) => (cpuOnly.has(k) ? 'wasm' : device());
+  const deviceFor = (k) => (cpuOnly.has(k) || MODELS[k].cpuOnly ? 'wasm' : device());
   // one model at a time: they share one runtime, which must not be entered twice
   let queue = Promise.resolve();
   const inTurn = (fn) => { const p = queue.then(fn, fn); queue = p.catch(() => {}); return p; };
@@ -282,6 +283,12 @@
     const y = o.data, out = new ImageData(512, 512); for (let p = 0; p < N; p++) { for (let c = 0; c < 3; c++) out.data[p * 4 + c] = Math.round(Math.max(0, Math.min(255, (y[c * N + p] + 1) * 127.5))); out.data[p * 4 + 3] = 255; }
     return out;
   }
+  // DDColor: a 512 × 512 grey picture (RGB 0–1, rebuilt from lightness alone) in; the colour (Lab a and b) out
+  async function colourise(grey512) {
+    const T = await lib(), N = 512 * 512;
+    const o = await run('colourise', (ses) => ses.run({ [ses.inputNames[0]]: new T.ort.Tensor('float32', grey512, [1, 3, 512, 512]) }).then((r) => r[ses.outputNames[0]]));
+    return { a: o.data.slice(0, N), b: o.data.slice(N, 2 * N) };
+  }
   function pick(src, pts) {
     return remember('pick:' + keyOf(src) + JSON.stringify(pts), (async () => {
       const T = await lib(), c = await canvasOf(src, 1024), image = await rawOf(T, c);
@@ -358,5 +365,5 @@
     };
   }
 
-  window.CRAFTAI = { codeformer, inpaint, find, sizeOf, probe: () => probed, found: () => found, settings: () => settings, enabled, ready, cutout, pick, upscale, onProgress, downloaded, forget, openSettings, MODELS };
+  window.CRAFTAI = { colourise, codeformer, inpaint, find, sizeOf, probe: () => probed, found: () => found, settings: () => settings, enabled, ready, cutout, pick, upscale, onProgress, downloaded, forget, openSettings, MODELS };
 })();

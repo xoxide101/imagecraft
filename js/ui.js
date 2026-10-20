@@ -479,6 +479,11 @@
         const secs = (performance.now() - t0) / 1000; if (per || faces.length) noteSpeed('codeformer', (secs * 1000) / faces.length); if (tool) { tool.faces = faces.length; tool.secs = secs; }
         return out;
       } },
+    colourise: { title: 'Colourise (AI, a guess)', icon: IK.colour, live: false, s: { amount: 100, warm: 0 },
+      fields: [note('Gives a black-and-white, sepia or badly faded photo likely colours (DDColor). <b>Only the colour is a guess</b>: the brightness and every detail stay the photo’s own. The model knows what skin, sky, grass, trees and clothes usually look like, but not what colour a particular dress or car really was.'),
+        range('amount', 'Colour strength (%)', 0, 150), range('warm', 'Cooler ↔ warmer', -50, 50), { t: 'out' }, note('The first use downloads about 135 MB (once). It works best on the whole photo before other colour changes. Press Preview.')],
+      report: () => (tool && tool.secs ? `<p class="hint">Took ${tool.secs.toFixed(1)} s.</p>` : ''),
+      run: async (img, s, say) => { say && say(speed.colourise ? `Colourising: about ${fmtTime(speed.colourise / 1000)}` : 'Getting the colour model ready (the first time downloads about 135 MB)…'); const t0 = performance.now(); const o = await X.colourise(img, s); const ms = performance.now() - t0; noteSpeed('colourise', ms); if (tool) tool.secs = ms / 1000; return o; } },
     redeye: { title: 'Red eye', icon: IK.cutout, live: false, s: { strength: 100, level: 50 },
       fields: [note('The flash lit the back of the eye. The face finder finds each iris, and only there, where red is far above green and blue, the red is taken down to them: the pupil becomes dark again and the iris keeps its own colour.'),
         range('level', 'Sensitivity', 0, 100), range('strength', 'Strength %', 0, 100), { t: 'out' }, note('The first use downloads the face finder (about 4 MB). Press Preview.')],
@@ -767,7 +772,7 @@
   // ------------------------------------------------------------------ running a tool
   let tool = null, token = 0, timer = null;
   // Where: any tool that keeps the picture's size can work only where a map says (a mask: white = apply, black = leave)
-  const NO_MASK = new Set(['resize', 'crop', 'canvas', 'straighten', 'looks', 'text', 'trace', 'upscale', 'remaster', 'modern', 'depth', 'noisemap', 'stack', 'split', 'falsecolour', 'assess', 'repair', 'redeye', 'shadowlift', 'facerestore']);
+  const NO_MASK = new Set(['resize', 'crop', 'canvas', 'straighten', 'looks', 'text', 'trace', 'upscale', 'remaster', 'modern', 'depth', 'noisemap', 'stack', 'split', 'falsecolour', 'assess', 'repair', 'redeye', 'shadowlift', 'facerestore', 'colourise']);
   const maskable = (def) => !NO_MASK.has(def.id) && !def.viewOnly;
   const MASK_FIELDS = [
     { t: 'html', html: () => '<h3 style="margin:10px 0 0">Where</h3>' },
@@ -1331,6 +1336,7 @@
         ['See-through', [{ col: [B('Make a colour see-through', IK.clearC, T('clear')), B('Fill see-through parts', IK.canvas, T('flatten')), B('Remove background', IK.cutout, T('cutout'))] }]],
       ] },
       { id: 'clean', label: 'Clean up', hue: '#1e9e8a', groups: [
+        ['Colour', [B('Colourise', IK.colour, T('colourise'), { big: true, title: 'AI gives a black-and-white or faded photo likely colours (only the colour is guessed)' })]],
         ['Repair', [B('Repair damage', IK.dust, T('repair'), { big: true, title: 'Find specks, scratches, tears and stamps (or paint over damage) and fill them in from around them' })]],
         ['Old photo', [B('Restore old photo', IK.modern, () => openTool('modern', { kind: 'photo', bigger: 1 }), { big: true, title: 'Dust, noise, blur, colour cast and fading fixed in one go, measured from the picture' }), B('Split subject and background', IK.cutout, T('split'), { big: true, title: 'The main subject and the background as two pictures (layers), each restored its own way' }), B('Ask AI what it needs', IK.modern, T('assess'), { big: true, title: 'A vision model in Ollama on this computer looks at the picture, says what it is and what is wrong, and ticks the tools to fix it' })]],
         ['Restore', [B('Remove noise', IK.denoise, T('nlm'), { big: true, title: 'Smart noise removal (non-local means): grain and colour blotches' }), B('Deblur', IK.sharpen, T('deblur'), { big: true, title: 'Undo soft focus, out of focus or camera shake (Wiener deconvolution)' }), B('Faded detail', IK.light, T('clahe'), { big: true, title: 'Adaptive contrast for faded photos (CLAHE)' }), { col: [B('Where the noise is', IK.grid, T('noisemap')), B('Rebuild colour detail', IK.colour, T('chroma'), { title: 'Colour blocks and smears (JPEG, old scans) made to follow the real brightness detail' })] }]],

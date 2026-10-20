@@ -104,6 +104,10 @@ Heavy work says how far it has got and roughly how long is left, worked out from
 - **Red eye** (Detail › Faces): the face finder finds each iris, and only there, where red is far above green and blue, the red is taken down. On a test with painted red pupils, none were left red.
 - **Lift a shadow** (Adjust › Light): paint over a hard shadow, such as a flash shadow on a wall. What is painted, plus a ring round it, is split into dark and light (Otsu's method), so sloppy painting either way doesn't matter. Only the dark part is brightened, by the light-to-dark ratio colour by colour, with the edge following the picture. On a test wall the shadow came back to within one level of the lit wall.
 
+### Colourise (AI, a guess)
+
+**Clean up › Colour › Colourise** gives a black-and-white, sepia or badly faded photo likely colours with DDColor-tiny (Apache-2.0). Only the colour is guessed: the photo's own lightness is kept at full size, so every detail stays the photo's own. The model knows what skin, sky, grass, trees and clothes usually look like, not what colour a particular dress was. On the sepia test group it gave green grass and trees, coloured flowers and clothes, and natural skin. It takes about 10 seconds a photo on the processor (one step of the model fails on the graphics-card runtime, so it runs on the processor). About 135 MB the first time. Repair damage first: torn or stained areas get invented colours.
+
 ### Restore faces (AI, redrawn; non-commercial)
 
 **Detail › Faces › Restore faces** redraws small, blurred, grainy or damaged faces with CodeFormer. Each face is straightened onto the model's 512 × 512 layout (eyes, nose tip and mouth corners from the face finder, by a similarity transform), restored there, and laid back with a soft edge, so the rest of the picture is untouched. **Keep to the original** sets how closely it follows the real face; lower is cleaner but more invented. On the test group photo, all six faces went from soft blurs to clear faces; on a toddler, the expression around the eyes changed at 70%, so check closely and raise the slider when likeness matters most. It is a large download (about 377 MB, once). The first run is timed and later runs are estimated. CodeFormer is under the S-Lab License 1.0: **non-commercial use only**. ImageCraft downloads it from huggingface.co when asked and does not include it.
@@ -192,6 +196,7 @@ Open-source libraries it uses are listed with their licences in Credits.
 - [CLIPSeg](https://huggingface.co/CIDAS/clipseg-rd64-refined) (Apache-2.0), run through Transformers.js, finds things by name.
 - [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN) general v3 (BSD-3-Clause, © 2021 Xintao Wang) is included as lib/craft-esrgan-v3.js, converted by lib/esrgan-build.
 - [MMPX](https://casual-effects.com/research/McGuire2021PixelArt/) pixel-art magnification, ported to JavaScript from the MIT reference code (© 2020 Morgan McGuire & Mara Gagiu).
+- [DDColor](https://github.com/piddnad/DDColor) (Apache-2.0), the tiny model as exported for the browser at huggingface.co/edgetools/ddcolor, colourises.
 - [CodeFormer](https://github.com/sczhou/CodeFormer) (S-Lab License 1.0, non-commercial), downloaded on request as an ONNX file from huggingface.co/bluefoxcreation/Codeformer-ONNX.
 - [MI-GAN](https://github.com/Picsart-AI-Research/MI-GAN) (MIT) fills in damage; the ONNX pipeline file is from huggingface.co/andraniksargsyan/migan.
 - [MediaPipe Tasks Vision](https://github.com/google-ai-edge/mediapipe) and its Face Landmarker model (Apache-2.0), bundled as `lib/craft-face-libs.js` (built from `lib/face-build`).
