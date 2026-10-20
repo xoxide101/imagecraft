@@ -448,6 +448,23 @@
     }
     return o;
   }
+  // Background mixed into a colour, anywhere (thin light veins in a leaf, the white inside a ®): a pixel lying on the line
+  // between the background colour and the strongest colour near it is that much background, so it becomes that much
+  // see-through and gets the colour back. A real lighter shade (a gradient) has its own hue, off that line: it stays.
+  function colourOut(img, bg, { reach = 3, resid = 20 } = {}) {
+    const W = img.width, H = img.height, d = img.data, o = copy(img), od = o.data;
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const q = (y * W + x) * 4; if (d[q + 3] < 16) continue;
+      let F = -1, fd = 0; for (let j = -reach; j <= reach; j++) for (let i = -reach; i <= reach; i++) { const xx = x + i, yy = y + j; if (xx < 0 || yy < 0 || xx >= W || yy >= H) continue; const r = (yy * W + xx) * 4; if (d[r + 3] < 240) continue; const e = (d[r] - bg[0]) ** 2 + (d[r + 1] - bg[1]) ** 2 + (d[r + 2] - bg[2]) ** 2; if (e > fd) { fd = e; F = r; } }
+      if (F < 0 || fd < 40 * 40) continue;
+      const v0 = d[F] - bg[0], v1 = d[F + 1] - bg[1], v2 = d[F + 2] - bg[2], c0 = d[q] - bg[0], c1 = d[q + 1] - bg[1], c2 = d[q + 2] - bg[2];
+      const a = Math.max(0, Math.min(1, (c0 * v0 + c1 * v1 + c2 * v2) / fd)); if (a > 0.96) continue;
+      const rr = Math.hypot(c0 - a * v0, c1 - a * v1, c2 - a * v2); if (rr > resid) continue; // its own hue: a real shade
+      if (a < 0.05) { od[q + 3] = 0; continue; }
+      od[q] = Math.round(bg[0] + c0 / a); od[q + 1] = Math.round(bg[1] + c1 / a); od[q + 2] = Math.round(bg[2] + c2 / a); od[q + 3] = Math.round(d[q + 3] * a);
+    }
+    return o;
+  }
   function makeClear(img, { rgb, tolerance = 30, soft = 0 } = {}) {
     const o = copy(img), d = o.data, t = tolerance * 3, sf = soft * 3;
     for (let i = 0; i < d.length; i += 4) { const e = Math.abs(d[i] - rgb[0]) + Math.abs(d[i + 1] - rgb[1]) + Math.abs(d[i + 2] - rgb[2]); if (e <= t) d[i + 3] = 0; else if (sf && e <= t + sf) d[i + 3] = Math.min(d[i + 3], ((e - t) / sf) * 255); }
@@ -742,5 +759,5 @@
     return o;
   }
 
-  IC.filters = { bleedColour, cornerBg, defringe, dotsOff, paperClean, toneFrom, colourFrom, colourise, mmpx, deband, chromaRebuild, guidedBy, cas, dehaze, hazeLevel, isToned, shadowRecover, guided, autoColour, clarity, pyramidBlend, aliasCheck, antialias, light, colour, autoLevels, autoFix, whiteBalance, greyscale, sepia, invert, threshold, posterize, blur, sharpen, denoise, median, despeckle, deblock, undither, pixelate, resize, scale2x, scale3x, rotate: rotateAny, rotate90: rotate, flip, crop, trimBox, canvasSize, makeClear, flatten, copy, canvasOf };
+  IC.filters = { colourOut, bleedColour, cornerBg, defringe, dotsOff, paperClean, toneFrom, colourFrom, colourise, mmpx, deband, chromaRebuild, guidedBy, cas, dehaze, hazeLevel, isToned, shadowRecover, guided, autoColour, clarity, pyramidBlend, aliasCheck, antialias, light, colour, autoLevels, autoFix, whiteBalance, greyscale, sepia, invert, threshold, posterize, blur, sharpen, denoise, median, despeckle, deblock, undither, pixelate, resize, scale2x, scale3x, rotate: rotateAny, rotate90: rotate, flip, crop, trimBox, canvasSize, makeClear, flatten, copy, canvasOf };
 })();
