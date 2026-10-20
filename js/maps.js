@@ -155,7 +155,10 @@
 
   // maps are remembered for the picture they were made from (the same ImageData object)
   const memo = new WeakMap();
+  // a map the person corrected (painted, or outlined by clicking) wins over the measured or AI one
+  let override = null; const setOverride = (fn) => { override = fn; }, forget = (img) => memo.delete(img);
   function make(id, img) {
+    const o = override && override(id, img); if (o) return o;
     let m = memo.get(img); if (!m) { m = {}; memo.set(img, m); }
     if (!known(id, img)) return byId[id].make(img); // the AI has not looked yet: an empty map, not remembered
     if (!m[id]) m[id] = byId[id].make(img);
@@ -286,5 +289,5 @@
     const out = new ImageData(new Uint8ClampedArray(s), W, H), d = out.data; for (let p = 0; p < n; p++) if (hole[p] > 0.5) for (let c = 0; c < 3; c++) d[p * 4 + c] = Math.round(F[p * 3 + c]);
     return out;
   }
-  IC.maps = { telea, damage, grow, fillGap, addFind, known, share, castRatio, colourBlind, stretch, falseColour, LIST, make, heat, grey, mask, apply, box, combined, OPS, prepare };
+  IC.maps = { setOverride, forget, telea, damage, grow, fillGap, addFind, known, share, castRatio, colourBlind, stretch, falseColour, LIST, make, heat, grey, mask, apply, box, combined, OPS, prepare };
 })();

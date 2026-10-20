@@ -70,6 +70,24 @@
   const done = new WeakMap(); // the found faces, once known (for the maps, which are worked out at once)
   const known = (img) => done.get(img) || null;
   async function ensure(img) { const f = await detect(img); done.set(img, f); return f; }
+  // a face the finder missed, pointed at: close-ups round the point at several sizes (and with the contrast brought up),
+  // each enlarged to 640 px; the face found nearest the point (and not already known) is added to the picture's faces
+  async function addAt(img, x, y) {
+    const lm = await landmarker(), faces = await ensure(img), W = img.width, H = img.height, src = [canvasOf(img)];
+    try { src.push(canvasOf(IC.restore.clahe(IC.filters.autoLevels(img, { clip: 0.5, perChannel: false }), { clip: 3, amount: 100 }))); } catch (e) { /* only the original */ }
+    let best = null;
+    for (const f of [0.08, 0.14, 0.24, 0.4, 0.7]) for (const c0 of src) {
+      const s = Math.max(48, Math.round(Math.max(W, H) * f)), x0 = Math.round(x - s / 2), y0 = Math.round(y - s / 2), k = 640 / s;
+      const c = document.createElement('canvas'); c.width = c.height = 640; const cx = c.getContext('2d'); cx.fillStyle = '#808080'; cx.fillRect(0, 0, 640, 640); cx.imageSmoothingQuality = 'high'; cx.drawImage(c0, x0, y0, s, s, 0, 0, 640, 640);
+      for (const pts of look(lm, c)) { const P = pts.map(([px, py]) => [x0 + px / k, y0 + py / k]), bx = boxOf(P); if (x < bx[0] - (bx[2] - bx[0]) * 0.3 || x > bx[2] + (bx[2] - bx[0]) * 0.3 || y < bx[1] - (bx[3] - bx[1]) * 0.3 || y > bx[3] + (bx[3] - bx[1]) * 0.3) continue; const d = Math.hypot((bx[0] + bx[2]) / 2 - x, (bx[1] + bx[3]) / 2 - y); if (!best || d < best.d) best = { d, box: bx, points: P }; }
+      await new Promise((r) => setTimeout(r, 0));
+    }
+    if (!best) return null;
+    if (faces.some((q) => iou(q.box, best.box) > 0.3)) return 'known';
+    faces.push({ box: best.box, points: best.points, seen: 1, pointed: true }); done.set(img, faces);
+    if (IC.maps && IC.maps.forget) IC.maps.forget(img);
+    return best;
+  }
 
   // connection lists (pairs) → closed loops of point numbers (a list can hold several loops: lips outer and inner)
   function loops(conns) {
@@ -156,5 +174,5 @@
     for (let p = 0; p < W * H; p++) { const m = wsum[p]; if (!m) continue; const w = Math.min(1, m) * strength; for (let c = 0; c < 3; c++) d[p * 4 + c] = Math.round(d[p * 4 + c] + (acc[p * 3 + c] / m - d[p * 4 + c]) * w); }
     return o;
   }
-  IC.faces = { restore, detect, ensure, known, partMask, greyCard, PARTS: [['face', 'Faces'], ['skin', 'Face skin'], ['eyes', 'Eyes'], ['irises', 'Irises'], ['eyewhites', 'Eye whites'], ['lips', 'Lips'], ['mouth', 'Mouth and teeth'], ['brows', 'Eyebrows']] };
+  IC.faces = { addAt, restore, detect, ensure, known, partMask, greyCard, PARTS: [['face', 'Faces'], ['skin', 'Face skin'], ['eyes', 'Eyes'], ['irises', 'Irises'], ['eyewhites', 'Eye whites'], ['lips', 'Lips'], ['mouth', 'Mouth and teeth'], ['brows', 'Eyebrows']] };
 })();

@@ -65,6 +65,10 @@ Say what you are doing: **Repair**, **Colour correction**, **Make bigger** (2× 
 
 Four tabs, folded away with **–**: **Original** (the file as opened: format, bits, size, colours, and its measurements on request), **Current** (the picture now: size, colours, 8 or 16 bits per colour, steps, saved or not), **Saved** (the steps from the original to what was last saved, and the file it went to) and **Working** (what has been done since, not in a file yet, and any tool that is open but not applied).
 
+### Helping the AI see: correcting maps, pointing at faces
+
+Any map can be corrected by hand: view it (Maps tab), press **Correct it**, then **Paint in** or **Paint out** with the brush (the left button adds, the right button takes away), or **Click: AI outlines it** to add a whole object with one click. Your version of the map belongs to that picture and is used everywhere a map is used: every tool's Where, Face refine and the face tools, Repair. **Back to measured** drops it. On the face maps there is also **Point at a missed face**: click the middle of a face the finder missed, and it searches close-ups round that point (at several sizes, and with the contrast brought up) and adds the face it finds, so the face maps and face tools include it.
+
 ### Deep colour (16 bits per colour)
 
 Every picture is expanded to full colour when it opens, so a palette never limits what the tools can do. Beyond that, each History step keeps **16 bits per colour** (65,536 levels instead of 256), so a chain of edits doesn't round away detail or band smooth skies. The status bar shows **16-bit** when a step has it.

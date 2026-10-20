@@ -214,12 +214,12 @@
   }
   // the repair brush: paint marks damage (red over the picture), the right button or Alt takes it away
   let repairPaint = null;
-  function paintAt(px, py, erase) {
+  function paintAt(px, py, erase, more) {
     const t = tool, b = t.base, W = b.width, H = b.height; if (!repairPaint || repairPaint.length !== W * H) repairPaint = new Uint8Array(W * H);
-    if (t.def.id === 'shadowlift') { const r = Math.max(1, t.s.brush / 2); for (let y = Math.max(0, Math.floor(py - r)); y <= Math.min(H - 1, Math.ceil(py + r)); y++) for (let x = Math.max(0, Math.floor(px - r)); x <= Math.min(W - 1, Math.ceil(px + r)); x++) if ((x - px) ** 2 + (y - py) ** 2 <= r * r) repairPaint[y * W + x] = erase ? 0 : 1; t.preview = markOver(b, repairPaint); t.stale = true; show(); return; }
+    if (t.def.id === 'shadowlift') { const r = Math.max(1, t.s.brush / 2); for (let y = Math.max(0, Math.floor(py - r)); y <= Math.min(H - 1, Math.ceil(py + r)); y++) for (let x = Math.max(0, Math.floor(px - r)); x <= Math.min(W - 1, Math.ceil(px + r)); x++) if ((x - px) ** 2 + (y - py) ** 2 <= r * r) repairPaint[y * W + x] = erase ? 0 : 1; if (!more) { t.preview = markOver(b, repairPaint); t.stale = true; show(); } return; }
     const r = Math.max(1, t.s.brush / 2), x0 = Math.max(0, Math.floor(px - r)), x1 = Math.min(W - 1, Math.ceil(px + r)), y0 = Math.max(0, Math.floor(py - r)), y1 = Math.min(H - 1, Math.ceil(py + r));
     for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) if ((x - px) ** 2 + (y - py) ** 2 <= r * r) repairPaint[y * W + x] = erase ? 0 : 1;
-    t.preview = markOver(b, repairDamage(b, t.s)); t.stale = true; show();
+    if (!more) { t.preview = markOver(b, repairDamage(b, t.s)); t.stale = true; show(); }
   }
   async function pickDamage(px, py, erase) {
     const t = tool, b = t.base, W = b.width, H = b.height; busyNow('Outlining it (the first time downloads the picker)…');
@@ -233,7 +233,8 @@
   }
   const scratchMemo = new WeakMap();
   const ensureScratches = async (img, s) => { if (s.scratches && !scratchMemo.has(img)) { busyNow('Looking for scratches (the first time downloads the finder, about 75 MB)…'); scratchMemo.set(img, await CRAFTAI.scratches(img)); } };
-  const repairDamage = (img, s) => { let m = IC.maps.damage(img, s); const sc = s.scratches && scratchMemo.get(img); if (sc) { const th = 0.65 - (s.level / 100) * 0.5; m = m.map((v, i) => (sc[i] >= th ? 1 : v)); } if (repairPaint && repairPaint.length === m.length) m = m.map((v, i) => Math.max(v, repairPaint[i])); return IC.maps.grow(m, img.width, img.height, s.grow); };
+  let damageCache = null; // the found damage for one picture and setting, so painting stays quick
+  const repairDamage = (img, s) => { const key = JSON.stringify([s.specks, s.flecks, s.stamp, s.level]); if (!damageCache || damageCache.img !== img || damageCache.key !== key) damageCache = { img, key, m: IC.maps.damage(img, s) }; let m = Float32Array.from(damageCache.m); const sc = s.scratches && scratchMemo.get(img); if (sc) { const th = 0.65 - (s.level / 100) * 0.5; m = m.map((v, i) => (sc[i] >= th ? 1 : v)); } if (repairPaint && repairPaint.length === m.length) m = m.map((v, i) => Math.max(v, repairPaint[i])); return IC.maps.grow(m, img.width, img.height, s.grow); };
   const markOver = (img, m) => { const o = new ImageData(new Uint8ClampedArray(img.data), img.width, img.height), d = o.data; for (let p = 0; p < m.length; p++) if (m[p] > 0.5) { d[p * 4] = Math.round(d[p * 4] * 0.35 + 255 * 0.65); d[p * 4 + 1] = Math.round(d[p * 4 + 1] * 0.35); d[p * 4 + 2] = Math.round(d[p * 4 + 2] * 0.35 + 40); } return o; };
   // the picture compared against: before the open tool, or else the original
   const compareBase = () => (tool && tool.preview ? tool.base : pic() ? pic().steps[0].img : null);
@@ -269,12 +270,14 @@
   const atPic = (e) => { const r = $('desk').getBoundingClientRect(); return [(e.clientX - r.left - view.x) / view.zoom, (e.clientY - r.top - view.y) / view.zoom]; };
   let drag = null;
   $('desk').addEventListener('pointerdown', (e) => {
-    if (!shown() || e.target.closest('.welcome') || e.target.closest('.cropbox')) return;
+    // bars and boxes over the picture (the map bar, the busy note) take their own clicks: pressing them must not start moving the picture
+    if (!shown() || e.target.closest('.welcome') || e.target.closest('.cropbox') || e.target.closest('.mapbar') || e.target.closest('.busy')) return;
     if (e.target === $('split')) { drag = { kind: 'split' }; $('desk').setPointerCapture(e.pointerId); return; }
     const [px, py] = atPic(e), img = shown();
     if (e.button === 0 && tool && tool.def.pick && px >= 0 && py >= 0 && px < img.width && py < img.height) { const i = ((py | 0) * img.width + (px | 0)) * 4, d = (tool.base || img).data; tool.def.pick(tool.s, [d[i], d[i + 1], d[i + 2]], px / img.width, py / img.height); renderProps(); schedule(0); return; }
+    if ((e.button === 0 || e.button === 2) && mapView && mapEdit && !tool && px >= 0 && py >= 0 && px < img.width && py < img.height) { const er = e.button === 2 || e.altKey; if (mapEdit.mode === 'click' || mapEdit.mode === 'face') { mapClick(px, py, er); return; } drag = { kind: 'mappaint', erase: er || mapEdit.mode === 'remove', last: [px, py] }; mapPaint(px, py, drag.erase); $('desk').setPointerCapture(e.pointerId); return; }
     if ((e.button === 0 || e.button === 2) && tool && tool.def.paint && tool.s.mark === 'pick' && px >= 0 && py >= 0 && px < img.width && py < img.height) { pickDamage(px, py, e.button === 2 || e.altKey); return; }
-    if ((e.button === 0 || e.button === 2) && tool && tool.def.paint && px >= 0 && py >= 0 && px < img.width && py < img.height) { drag = { kind: 'paint', erase: e.button === 2 || e.altKey }; paintAt(px, py, drag.erase); $('desk').setPointerCapture(e.pointerId); return; }
+    if ((e.button === 0 || e.button === 2) && tool && tool.def.paint && px >= 0 && py >= 0 && px < img.width && py < img.height) { drag = { kind: 'paint', erase: e.button === 2 || e.altKey, last: [px, py] }; paintAt(px, py, drag.erase); $('desk').setPointerCapture(e.pointerId); return; }
     if (e.button === 0 && tool && tool.def.id === 'crop' && px >= 0 && py >= 0 && px < img.width && py < img.height) { drag = { kind: 'newcrop', x0: px, y0: py }; $('desk').setPointerCapture(e.pointerId); return; }
     if (e.button === 0 || e.button === 1) { e.preventDefault(); drag = { kind: 'pan', sx: e.clientX, sy: e.clientY, vx: view.x, vy: view.y }; $('desk').classList.add('panning'); $('desk').setPointerCapture(e.pointerId); }
   });
@@ -283,12 +286,16 @@
     if (img && !drag) { const [px, py] = atPic(e); hover = px >= 0 && py >= 0 && px < img.width && py < img.height ? [px | 0, py | 0] : null; hoverAt = hover ? [e.clientX, e.clientY] : null; if (!hover && $('loupe')) $('loupe').hidden = true; statusHover(); }
     if (!drag) return;
     if (drag.kind === 'pan') { view.x = drag.vx + e.clientX - drag.sx; view.y = drag.vy + e.clientY - drag.sy; view.fit = false; layout(); }
-    else if (drag.kind === 'paint') { const [px, py] = atPic(e); paintAt(px, py, drag.erase); }
+    else if (drag.kind === 'paint' || drag.kind === 'mappaint') {
+      const [px, py] = atPic(e), [lx, ly] = drag.last || [px, py], step = Math.max(1, ((drag.kind === 'paint' ? tool.s.brush : mapEdit.brush) || 10) / 4), n = Math.max(1, Math.ceil(Math.hypot(px - lx, py - ly) / step));
+      for (let k = 1; k <= n; k++) { const x = lx + ((px - lx) * k) / n, y = ly + ((py - ly) * k) / n; if (drag.kind === 'paint') paintAt(x, y, drag.erase, k < n); else mapPaint(x, y, drag.erase, k < n); }
+      drag.last = [px, py];
+    }
     else if (drag.kind === 'split') { const r = $('stage').getBoundingClientRect(); view.split = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)); layout(); }
     else if (drag.kind === 'newcrop') { const [px, py] = atPic(e), s = tool.s; s.x = Math.max(0, Math.min(drag.x0, px)); s.y = Math.max(0, Math.min(drag.y0, py)); s.w = Math.min(img.width, Math.max(drag.x0, px)) - s.x; s.h = Math.min(img.height, Math.max(drag.y0, py)) - s.y; cropRatio(s, 'se'); placeCrop(); syncCropFields(); }
   });
-  $('desk').addEventListener('contextmenu', (e) => { if (tool && tool.def.paint) e.preventDefault(); });
-  $('desk').addEventListener('pointerup', () => { if (drag && drag.kind === 'paint') renderProps(); if (drag && drag.kind === 'newcrop') renderProps(); drag = null; $('desk').classList.remove('panning'); });
+  $('desk').addEventListener('contextmenu', (e) => { if ((tool && tool.def.paint) || (mapView && mapEdit)) e.preventDefault(); });
+  $('desk').addEventListener('pointerup', () => { if (drag && drag.kind === 'mappaint') { renderMaps(); renderMapBar(); } if (drag && drag.kind === 'paint') renderProps(); if (drag && drag.kind === 'newcrop') renderProps(); drag = null; $('desk').classList.remove('panning'); });
   $('desk').addEventListener('pointerleave', () => { hover = null; hoverAt = null; if ($('loupe')) $('loupe').hidden = true; }); // the last colour stays in the status bar, to click and copy
   $('desk').addEventListener('auxclick', (e) => { if (e.button === 1) e.preventDefault(); });
 
@@ -1257,16 +1264,52 @@
       busy(null); show(); renderMapBar(); renderMaps();
     }, 20);
   }
-  function closeMap() { mapView = null; $('mapbar').hidden = true; show(); renderMaps(); }
+  function closeMap() { mapEdit = null; mapView = null; $('mapbar').hidden = true; show(); renderMaps(); }
+  // ------------------------------------------------------------------ correcting a map (helping the AI see)
+  // p.mapFix[id] = { W, H, data }: the person's own version of a map for this picture, painted or outlined by clicking.
+  // Every tool's Where, the maps and the face tools use it in place of the measured or AI map (scaled if the size changed).
+  IC.maps.setOverride((id, img) => {
+    const p = pics.find((q) => q.steps.some((st) => st.img === img)) || pic(); const f = p && p.mapFix && p.mapFix[id]; if (!f) return null;
+    if (f.W === img.width && f.H === img.height) return f.data;
+    const o = new Float32Array(img.width * img.height); for (let y = 0; y < img.height; y++) { const sy = Math.min(f.H - 1, Math.floor(((y + 0.5) * f.H) / img.height)); for (let x = 0; x < img.width; x++) o[y * img.width + x] = f.data[sy * f.W + Math.min(f.W - 1, Math.floor(((x + 0.5) * f.W) / img.width))]; } return o;
+  });
+  let mapEdit = null; // { mode: 'add' | 'remove' | 'click' | 'face', brush }
+  function mapFixOf(id) { const p = pic(), img = now(); p.mapFix = p.mapFix || {}; if (!p.mapFix[id]) p.mapFix[id] = { W: img.width, H: img.height, data: Float32Array.from(IC.maps.make(id, img)) }; return p.mapFix[id]; }
+  function redrawMap() { const img = now(), map = IC.maps.make(mapView.id, img); mapView.img = mapView.mode === 'grey' ? IC.maps.grey(map, img.width, img.height) : IC.maps.heat(map, img); show(); }
+  function mapPaint(px, py, erase, more) {
+    const f = mapFixOf(mapView.id), r = Math.max(1, mapEdit.brush / 2);
+    for (let y = Math.max(0, Math.floor(py - r - 2)); y <= Math.min(f.H - 1, Math.ceil(py + r + 2)); y++) for (let x = Math.max(0, Math.floor(px - r - 2)); x <= Math.min(f.W - 1, Math.ceil(px + r + 2)); x++) {
+      const d = Math.hypot(x - px, y - py), w = Math.max(0, Math.min(1, r + 1.5 - d)); if (w <= 0) continue; const i = y * f.W + x; f.data[i] = erase ? Math.min(f.data[i], 1 - w) : Math.max(f.data[i], w);
+    }
+    if (!more) redrawMap();
+  }
+  async function mapClick(px, py, erase) {
+    const img = now(), id = mapView.id;
+    if (mapEdit.mode === 'face') {
+      busyNow('Looking closely for a face there…');
+      try { const r = await IC.faces.addAt(img, px, py); busy(null); toast(r === 'known' ? 'That face was already found.' : r ? 'Face found and added: the face maps and face tools now include it.' : 'No face found there: try clicking nearer its middle, or mark it with the brush.'); if (r && r !== 'known') { const p = pic(); if (p.mapFix) Object.keys(p.mapFix).filter((k) => k.startsWith('f_')).forEach((k) => delete p.mapFix[k]); renderMaps(); } redrawMap(); } catch (e) { busy(null); logFail('Face search failed', e); toast(e.message); }
+      return;
+    }
+    busyNow('Outlining it (the first time downloads the picker)…');
+    try {
+      const r = await CRAFTAI.pick(X.canvasOf(img), [[px / img.width, py / img.height, 1]]), f = mapFixOf(id);
+      for (let y = 0; y < f.H; y++) for (let x = 0; x < f.W; x++) if (r.a[Math.min(r.H - 1, Math.floor(((y + 0.5) * r.H) / f.H)) * r.W + Math.min(r.W - 1, Math.floor(((x + 0.5) * r.W) / f.W))] > 127) f.data[y * f.W + x] = erase ? 0 : 1;
+      busy(null); redrawMap();
+    } catch (e) { busy(null); logFail('Outlining failed', e); toast('Could not outline it: ' + e.message); }
+  }
   function renderMapBar() {
     const bar = $('mapbar'); if (!mapView) { bar.hidden = true; return; }
     const m = IC.maps.LIST.find((x) => x.id === mapView.id);
     const blind = ['skin', 'green', 'sky'].includes(m.id) && IC.maps.colourBlind(now());
     bar.innerHTML = `<b>Map: ${esc(m.name)}</b>${blind ? '<span class="hint" title="This map judges by colour, and this picture’s colours all lean one way (sepia, toned or a strong cast), so it marks the wrong things. The Scene (AI) maps and Skin (learned from the faces) recognise things by what they are.">⚠ Colours too even to judge by: use Scene (AI)</span>' : ''}<div class="seg"><button class="btn" data-m="heat" aria-pressed="${mapView.mode === 'heat'}">Heat</button><button class="btn" data-m="grey" aria-pressed="${mapView.mode === 'grey'}">Grey (mask)</button></div><button class="btn outline" data-a="open">Open as a picture</button><button class="btn outline" data-a="clear">Make see-through by it</button><button class="btn primary" data-a="back">Back to the picture</button>`;
+    const fixed = pic() && pic().mapFix && pic().mapFix[m.id], isFace = /^f_|skinface/.test(m.id);
+    bar.insertAdjacentHTML('beforeend', mapEdit ? `<span class="seg">${[['add', 'Paint in'], ['remove', 'Paint out'], ['click', 'Click: AI outlines it'], ...(isFace ? [['face', 'Point at a missed face']] : [])].map(([k, l]) => `<button class="btn" data-fix="${k}" aria-pressed="${mapEdit.mode === k}">${l}</button>`).join('')}</span>${mapEdit.mode === 'add' || mapEdit.mode === 'remove' ? `<label class="hint">Brush <input type="range" min="2" max="160" value="${mapEdit.brush}" data-brush style="width:90px;vertical-align:middle"></label>` : ''}<span class="hint">${mapEdit.mode === 'face' ? 'Click the middle of a face it missed.' : 'Left button adds, right button takes away.'}</span><button class="btn outline" data-fix="reset" ${fixed ? '' : 'disabled'}>Back to measured</button><button class="btn primary" data-fix="done">Done</button>` : `<button class="btn outline" data-fix="on" title="Paint in or out, or click to have the AI outline something: your version of this map is used by every tool">${fixed ? 'Corrected ✓ · correct more' : 'Correct it'}</button>`);
+    const br = bar.querySelector('[data-brush]'); if (br) br.oninput = () => { mapEdit.brush = +br.value; };
     bar.hidden = false;
     bar.onclick = (e) => {
       const b = e.target.closest('button'); if (!b) return;
       if (b.dataset.m) { openMap(mapView.id, b.dataset.m); return; }
+      if (b.dataset.fix) { if (b.dataset.fix === 'on') mapEdit = { mode: 'add', brush: 24 }; else if (b.dataset.fix === 'done') mapEdit = null; else if (b.dataset.fix === 'reset') { const p = pic(); if (p.mapFix) delete p.mapFix[mapView.id]; redrawMap(); } else mapEdit.mode = b.dataset.fix; renderMapBar(); renderMaps(); return; }
       const img = now(), map = IC.maps.make(mapView.id, img);
       if (b.dataset.a === 'back') closeMap();
       else if (b.dataset.a === 'open') { const g = IC.maps.grey(map, img.width, img.height); closeMap(); addPic(`${baseName(pic().name)} – ${m.name}.png`, g, { format: 'Map', bits: 8 }); toast(`${m.name} opened as a picture of its own.`); }
