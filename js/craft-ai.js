@@ -45,7 +45,7 @@
         if (a && !a.isFallbackAdapter) {
           const i = a.info || {};
           r.webgpu = true; r.gpu = [i.vendor, i.architecture, i.description].filter(Boolean).join(' ') || 'a graphics card';
-          r.f16 = a.features.has('shader-f16'); r.bigBuffers = (a.limits.maxBufferSize || 0) >= 1024 ** 3;
+          r.f16 = a.features.has('shader-f16'); r.bigBuffers = (a.limits.maxBufferSize || 0) >= 1024 ** 3; r.maxStorage = a.limits.maxStorageBufferBindingSize || 0; r.maxBuffer = a.limits.maxBufferSize || 0;
         }
       }
     } catch (e) { /* no WebGPU */ }
@@ -57,7 +57,54 @@
     return r;
   }
   const probed = probe();
-  const device = () => (settings.gpu && found && found.webgpu ? 'webgpu' : 'wasm');
+  // ------------------------------------------------------------------ local quality: how much computing each AI step spends
+  // The same models at every level; higher levels run more passes (the picture flipped, then averaged back: steadier
+  // detail), bigger tiles with more overlap, and look at scratches at a larger size. Auto picks the highest level that
+  // keeps an AI step on this picture within the time budget, from the measured speed of this computer.
+  const LEVELS = {
+    fast: { name: 'Fast', tile: 128, ov: 16, tta: 1, faceTta: 1, fillTta: 1, scr: 768, what: 'one pass, small tiles: quickest' },
+    balanced: { name: 'Balanced', tile: 160, ov: 24, tta: 1, faceTta: 1, fillTta: 1, scr: 1024, what: 'one pass (as before)' },
+    best: { name: 'Best', tile: 256, ov: 32, tta: 2, faceTta: 2, fillTta: 2, scr: 1536, what: 'two passes averaged, bigger tiles, scratches looked at larger' },
+    max: { name: 'Max', tile: 320, ov: 48, tta: 4, faceTta: 2, fillTta: 2, scr: 2048, what: 'four passes for upscaling and scratches, two for faces and repair, the biggest tiles' },
+  };
+  const FLIPS = [[0, 0], [1, 0], [0, 1], [1, 1]];
+  // relative cost of each upscaler to the built-in compact one (rough; refined by what this computer has measured)
+  const COST = { esrgan3: 1, esrgan: 9, esrgan2: 9, sharp: 12, photo: 12, jpeg: 10 };
+  if (!settings.quality) settings.quality = 'auto'; if (!settings.budget) settings.budget = 120;
+  let lastLevel = 'balanced'; const noteLevel = (L) => { lastLevel = L.key; };
+  const tileCap = () => (found && found.maxStorage ? Math.max(128, Math.floor(Math.sqrt(found.maxStorage / (64 * 4 * 3)) / 32) * 32) : 320);
+  const devNow = () => (device() === 'webgpu' ? 'gpu' : 'cpu');
+  // seconds for an upscaler on P input pixels at a level, on this computer (null if not measured yet)
+  function estimate(kind, P, key, dev = devNow()) {
+    const b = settings.bench && settings.bench[dev]; if (!b) return null; const L = LEVELS[key];
+    return (b * (COST[kind] || 1) * (P / 1e6) * L.tta * ((L.tile + 2 * L.ov) / L.tile) ** 2) / 1000;
+  }
+  function autoKey(P) {
+    if (!settings.bench || !settings.bench[devNow()]) return 'balanced';
+    for (const k of ['max', 'best', 'balanced']) { const t = estimate('esrgan3', P || 1e6, k); if (t != null && t <= settings.budget) return k; }
+    return 'fast';
+  }
+  const levelKey = (P) => (settings.quality === 'auto' ? autoKey(P) : LEVELS[settings.quality] ? settings.quality : 'balanced');
+  const levelFor = (P) => { const k = levelKey(P); return { key: k, ...LEVELS[k] }; };
+  // the measurement: the built-in compact upscaler (no download) on a 96 × 96 square, on the graphics card and on the processor
+  let forceDev = null;
+  async function bench(say) {
+    const f = await probed, c = document.createElement('canvas'); c.width = c.height = 96; const x = c.getContext('2d');
+    for (let i = 0; i < 400; i++) { x.fillStyle = `hsl(${(i * 37) % 360},${30 + (i % 50)}%,${20 + (i % 60)}%)`; x.fillRect((i * 13) % 96, (i * 29) % 96, 3 + (i % 9), 3 + (i % 7)); }
+    const out = { at: Date.now(), cores: f.cores, memory: f.memory, gpuName: f.gpu, threaded: !!self.crossOriginIsolated };
+    const keep = settings.quality; settings.quality = 'balanced';
+    try {
+      for (const dev of f.webgpu ? ['gpu', 'cpu'] : ['cpu']) {
+        forceDev = dev === 'gpu' ? 'webgpu' : 'wasm'; say && say(`Measuring the ${dev === 'gpu' ? 'graphics card' : 'processor'}…`);
+        await upscale(c, 'esrgan3'); const t0 = performance.now(); await upscale(c, 'esrgan3'); await upscale(c, 'esrgan3'); const ms = (performance.now() - t0) / 2;
+        out[dev] = Math.round((ms / (96 * 96)) * 1e6); // milliseconds per megapixel of input
+      }
+    } finally { forceDev = null; settings.quality = keep; }
+    settings.bench = out; save(); return out;
+  }
+  const quality = () => ({ setting: settings.quality, budget: settings.budget, bench: settings.bench || null, levels: LEVELS, last: lastLevel, levelKey });
+  const setQuality = (q, budget) => { if (q) settings.quality = q; if (budget) settings.budget = budget; save(); };
+  const device = () => (forceDev || (settings.gpu && found && found.webgpu ? 'webgpu' : 'wasm'));
   // about how many MB a helper downloads on this computer
   const sizeOf = (k) => (k === 'cutout' && cutoutId() === MODELS.cutout.cpuId ? 5 : MODELS[k].mb[device() === 'webgpu' ? 'gpu' : 'cpu']);
   const cutoutId = () => (found && found.level !== 'basic' ? MODELS.cutout.id : MODELS.cutout.cpuId);
@@ -107,7 +154,7 @@
   // every run is reported (onActivity): which model, on what, how long, whether it downloaded first
   let actHook = null; const onActivity = (fn) => { actHook = fn; };
   async function run1(k, fn) {
-    const key = k + ':' + (k === 'cutout' ? cutoutId() : deviceFor(k)), e = { kind: 'ai', at: Date.now(), model: MODELS[k].name, device: deviceFor(k) === 'webgpu' ? 'graphics card' : 'processor', first: !loaded[key], state: 'running' }; if (actHook) actHook(e);
+    const key = k + ':' + (k === 'cutout' ? cutoutId() : deviceFor(k)), e = { kind: 'ai', at: Date.now(), level: LEVELS[lastLevel] ? LEVELS[lastLevel].name : '', model: MODELS[k].name, device: deviceFor(k) === 'webgpu' ? 'graphics card' : 'processor', first: !loaded[key], state: 'running' }; if (actHook) actHook(e);
     const end = (state, err) => { e.state = state; e.secs = (Date.now() - e.at) / 1000; if (err) e.error = String(err.message || err); if (actHook) actHook(e); };
     try { const r = await fn(await ready(k)); end('done'); return r; }
     catch (err) {
@@ -217,15 +264,8 @@
     // Tiles overlap by OV pixels and are faded into each other (weights ramp down over the overlap), so no seam shows.
     // The model pads each tile to a multiple of its window, so its output can be a little bigger than the tile: only
     // the tile's own part (exactly S times its size, from the top left) is used.
-    const TILE = 160, OV = 24, tiles = [];
-    for (let y = 0; y < H; y += TILE) for (let x = 0; x < W; x += TILE) tiles.push([x, y]);
-    const OW = W * S, OH = H * S, acc = new Float32Array(OW * OH * 3), wsum = new Float32Array(OW * OH);
-    let n = 0;
-    for (const [x, y] of tiles) {
-      const x0 = Math.max(0, x - OV), y0 = Math.max(0, y - OV), x1 = Math.min(W, x + TILE + OV), y1 = Math.min(H, y + TILE + OV);
-      const c = document.createElement('canvas'); c.width = x1 - x0; c.height = y1 - y0; const cx = c.getContext('2d');
-      cx.fillStyle = '#fff'; cx.fillRect(0, 0, c.width, c.height); cx.drawImage(im, -x0, -y0);
-      let res;
+    const L = levelFor(W * H), TILE = Math.min(L.tile, tileCap()), OV = L.ov, tiles = []; noteLevel(L);
+    const runTile = async (c, cx) => {
       if (m.raw || m.embedded) {
         // Real-ESRGAN: [1, 3, h, w] RGB 0–1 in, [1, 3, S·h, S·w] out
         const cw = c.width, chh = c.height, px = cx.getImageData(0, 0, cw, chh).data, inp = new Float32Array(3 * cw * chh);
@@ -233,8 +273,28 @@
         const o = await run(kind, (ses) => ses.run({ [ses.inputNames[0]]: new T.ort.Tensor('float32', inp, [1, 3, chh, cw]), ...(ses.inputNames.includes('strength') ? { strength: new T.ort.Tensor('float32', new Float32Array([opts.strength ?? 0.5]), [1]) } : {}) }).then((x) => x[ses.outputNames[0]]));
         const ow = o.dims[3], oh = o.dims[2], od = o.data, hwc = new Uint8ClampedArray(ow * oh * 3), plane = ow * oh;
         for (let i = 0; i < plane; i++) { hwc[i * 3] = od[i] * 255; hwc[i * 3 + 1] = od[plane + i] * 255; hwc[i * 3 + 2] = od[2 * plane + i] * 255; }
-        res = { data: hwc, width: ow, height: oh, channels: 3 };
-      } else { const raw = await rawOf(T, c), r = await run(kind, (pipe) => pipe(raw)); res = Array.isArray(r) ? r[0] : r; }
+        return { data: hwc, width: ow, height: oh, channels: 3 };
+      } else { const raw = await rawOf(T, c), r = await run(kind, (pipe) => pipe(raw)); return Array.isArray(r) ? r[0] : r; }
+    };
+    for (let y = 0; y < H; y += TILE) for (let x = 0; x < W; x += TILE) tiles.push([x, y]);
+    const OW = W * S, OH = H * S, acc = new Float32Array(OW * OH * 3), wsum = new Float32Array(OW * OH);
+    let n = 0;
+    for (const [x, y] of tiles) {
+      const x0 = Math.max(0, x - OV), y0 = Math.max(0, y - OV), x1 = Math.min(W, x + TILE + OV), y1 = Math.min(H, y + TILE + OV);
+      const c = document.createElement('canvas'); c.width = x1 - x0; c.height = y1 - y0; const cx = c.getContext('2d');
+      cx.fillStyle = '#fff'; cx.fillRect(0, 0, c.width, c.height); cx.drawImage(im, -x0, -y0);
+      const tw0 = (x1 - x0) * S, th0 = (y1 - y0) * S;
+      let res = await runTile(c, cx);
+      if (L.tta > 1) { // the same tile flipped, run again, flipped back and averaged: steadier detail, fewer made-up textures
+        const n0 = Math.min(tw0, res.width), m0 = Math.min(th0, res.height), ch0 = res.channels, sum = new Float32Array(n0 * m0 * ch0);
+        for (let v = 0; v < m0; v++) for (let u = 0; u < n0; u++) for (let q = 0; q < ch0; q++) sum[(v * n0 + u) * ch0 + q] = res.data[(v * res.width + u) * ch0 + q];
+        for (const [fh, fv] of FLIPS.slice(1, L.tta)) {
+          const c2 = document.createElement('canvas'); c2.width = c.width; c2.height = c.height; const x2 = c2.getContext('2d'); x2.setTransform(fh ? -1 : 1, 0, 0, fv ? -1 : 1, fh ? c.width : 0, fv ? c.height : 0); x2.drawImage(c, 0, 0); x2.setTransform(1, 0, 0, 1, 0, 0);
+          const r2 = await runTile(c2, x2);
+          for (let v = 0; v < m0; v++) for (let u = 0; u < n0; u++) { const su = fh ? n0 - 1 - u : u, sv = fv ? m0 - 1 - v : v; for (let q = 0; q < ch0; q++) sum[(v * n0 + u) * ch0 + q] += r2.data[(sv * r2.width + su) * r2.channels + q]; }
+        }
+        const avg = new Uint8ClampedArray(n0 * m0 * ch0); for (let k2 = 0; k2 < avg.length; k2++) avg[k2] = sum[k2] / L.tta; res = { data: avg, width: n0, height: m0, channels: ch0 };
+      }
       const ch = res.channels, rw = res.width;
       const tw = Math.min((x1 - x0) * S, res.width), th = Math.min((y1 - y0) * S, res.height);
       // how much each output pixel of this tile counts: full in the middle, fading to the tile's edges inside the
@@ -272,7 +332,10 @@
   }
   // Fill in damage (MI-GAN): the picture (8-bit, channels first) and a mask (255 = keep, 0 = fill) in; the picture
   // back with the gaps drawn from their surroundings (the model's own pipeline file crops, resizes and blends)
-  async function inpaint(img, hole) {
+  async function inpaint(img, hole) { const L = levelFor(img.width * img.height); noteLevel(L); const a = await inpaint1(img, hole); if (L.fillTta < 2) return a; const b = mirror(await inpaint1(mirror(img), mirrorMap(hole, img.width, img.height))); for (let i = 0; i < a.data.length; i++) if ((i & 3) !== 3) a.data[i] = (a.data[i] + b.data[i] + 1) >> 1; return a; }
+  const mirror = (im) => { const W = im.width, H = im.height, o = new ImageData(W, H); for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { const s = (y * W + x) * 4, d = (y * W + W - 1 - x) * 4; o.data[d] = im.data[s]; o.data[d + 1] = im.data[s + 1]; o.data[d + 2] = im.data[s + 2]; o.data[d + 3] = im.data[s + 3]; } return o; };
+  const mirrorMap = (m, W, H) => { const o = new Float32Array(W * H); for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) o[y * W + W - 1 - x] = m[y * W + x]; return o; };
+  async function inpaint1(img, hole) {
     const T = await lib(), W = img.width, H = img.height, N = W * H, s = img.data, im = new Uint8Array(3 * N), mk = new Uint8Array(N);
     for (let p = 0; p < N; p++) { for (let c = 0; c < 3; c++) im[c * N + p] = s[p * 4 + c]; mk[p] = hole[p] > 0.5 ? 0 : 255; }
     const o = await run('inpaint', (ses) => ses.run({ [ses.inputNames[0]]: new T.ort.Tensor('uint8', im, [1, 3, H, W]), [ses.inputNames[1]]: new T.ort.Tensor('uint8', mk, [1, 1, H, W]) }).then((x) => x[ses.outputNames[0]]));
@@ -282,7 +345,8 @@
     return out;
   }
   // CodeFormer: an aligned 512 × 512 face (RGB scaled to −1…1) and w (0 = most redrawing, 1 = closest to the input)
-  async function codeformer(face, w) {
+  async function codeformer(face, w) { const L = levelFor(512 * 512 * 8); noteLevel(L); const a = await codeformer1(face, w); if (L.faceTta < 2) return a; const b = mirror(await codeformer1(mirror(face), w)); for (let i = 0; i < a.data.length; i++) if ((i & 3) !== 3) a.data[i] = (a.data[i] + b.data[i] + 1) >> 1; return a; }
+  async function codeformer1(face, w) {
     const T = await lib(), N = 512 * 512, d = face.data, x = new Float32Array(3 * N);
     for (let p = 0; p < N; p++) for (let c = 0; c < 3; c++) x[c * N + p] = d[p * 4 + c] / 127.5 - 1;
     const o = await run('codeformer', (ses) => ses.run({ x: new T.ort.Tensor('float32', x, [1, 3, 512, 512]), w: new T.ort.Tensor('float64', new Float64Array([w]), []) }).then((r) => r.y));
@@ -296,7 +360,8 @@
     return { a: o.data.slice(0, N), b: o.data.slice(N, 2 * N) };
   }
   // GFPGAN 1.4: an aligned 512 × 512 face (RGB scaled to −1…1) in, the restored face out
-  async function gfpgan(face) {
+  async function gfpgan(face) { const L = levelFor(512 * 512 * 8); noteLevel(L); const a = await gfpgan1(face); if (L.faceTta < 2) return a; const b = mirror(await gfpgan1(mirror(face))); for (let i = 0; i < a.data.length; i++) if ((i & 3) !== 3) a.data[i] = (a.data[i] + b.data[i] + 1) >> 1; return a; }
+  async function gfpgan1(face) {
     const T = await lib(), N = 512 * 512, d = face.data, x = new Float32Array(3 * N);
     for (let p = 0; p < N; p++) for (let c = 0; c < 3; c++) x[c * N + p] = d[p * 4 + c] / 127.5 - 1;
     const o = await run('gfpgan', (ses) => ses.run({ [ses.inputNames[0]]: new T.ort.Tensor('float32', x, [1, 3, 512, 512]) }).then((r) => r[ses.outputNames[0]]));
@@ -306,7 +371,14 @@
   // Find scratches (Bringing Old Photos Back to Life): grey in ((v/255 − 0.5)/0.5, sides a multiple of 16), the
   // chance of a scratch out; looked at no bigger than 1024 px across (as the original's own working size), then
   // enlarged smoothly to the picture's size
-  async function scratches(img, max = 1024) {
+  async function scratches(img, max) {
+    const L = levelFor(img.width * img.height); noteLevel(L); if (!max) max = L.scr;
+    if (L.tta > 1) { const W = img.width, H = img.height, flip = (im, fh, fv) => { const o = new ImageData(W, H); for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { const s = (y * W + x) * 4, d = ((fv ? H - 1 - y : y) * W + (fh ? W - 1 - x : x)) * 4; for (let q = 0; q < 4; q++) o.data[d + q] = im.data[s + q]; } return o; }, sum = await scratches1(img, max);
+      for (const [fh, fv] of FLIPS.slice(1, L.tta)) { const m = await scratches1(flip(img, fh, fv), max); for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) sum[y * W + x] += m[(fv ? H - 1 - y : y) * W + (fh ? W - 1 - x : x)]; }
+      for (let i = 0; i < sum.length; i++) sum[i] /= L.tta; return sum; }
+    return scratches1(img, max);
+  }
+  async function scratches1(img, max) {
     const T = await lib(), W = img.width, H = img.height, k = Math.min(1, max / Math.max(W, H)), w = Math.max(16, Math.round((W * k) / 16) * 16), h = Math.max(16, Math.round((H * k) / 16) * 16);
     const c = document.createElement('canvas'); c.width = w; c.height = h; const x = c.getContext('2d'); x.imageSmoothingQuality = 'high'; const src = document.createElement('canvas'); src.width = W; src.height = H; src.getContext('2d').putImageData(img, 0, 0); x.drawImage(src, 0, 0, w, h);
     const d = x.getImageData(0, 0, w, h).data, inp = new Float32Array(w * h); for (let p = 0; p < w * h; p++) inp[p] = (0.299 * d[p * 4] + 0.587 * d[p * 4 + 1] + 0.114 * d[p * 4 + 2]) / 127.5 - 1;
@@ -392,5 +464,5 @@
     };
   }
 
-  window.CRAFTAI = { onActivity, scratches, gfpgan, colourise, codeformer, inpaint, find, sizeOf, probe: () => probed, found: () => found, settings: () => settings, enabled, ready, cutout, pick, upscale, onProgress, downloaded, forget, openSettings, MODELS };
+  window.CRAFTAI = { quality, setQuality, bench, estimate, onActivity, scratches, gfpgan, colourise, codeformer, inpaint, find, sizeOf, probe: () => probed, found: () => found, settings: () => settings, enabled, ready, cutout, pick, upscale, onProgress, downloaded, forget, openSettings, MODELS };
 })();

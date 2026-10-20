@@ -277,6 +277,8 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 .where-seg .btn { flex: 1 1 0; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cv-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; }
 .cv-grid img { max-width: 100%; max-height: 300px; cursor: default; }
+.q-tbl tr.q-pick td { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.q-tbl small { display: block; }
 .steps-tbl { width: 100%; border-collapse: collapse; } .steps-tbl td { padding: 4px 6px; border-top: 1px solid var(--line); vertical-align: middle; } .steps-tbl select { width: auto; }
 .where-seg .btn { padding: 0 4px; font-size: 10.5px; line-height: 19px; border-radius: 0; }
 .where-seg .btn:first-child { border-radius: 999px 0 0 999px; } .where-seg .btn:last-child { border-radius: 0 999px 999px 0; }

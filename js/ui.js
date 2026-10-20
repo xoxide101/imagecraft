@@ -123,7 +123,7 @@
   function drawLocalLog() {
     const f = window.CRAFTAI && CRAFTAI.found();
     $('locallog').innerHTML = `<div class="dialog wide" role="dialog" aria-modal="true" aria-labelledby="ll-title"><h2 id="ll-title">Local activity</h2><p class="hint">Everything that ran on this computer this session, newest first: the built-in AI models (on the ${f && f.webgpu ? 'graphics card' : 'processor'}) and every step that changed a picture, with before and after. Nothing here was sent anywhere. Cloud calls are under the cloud button.</p>
-      <div class="cl-list">${localLog.length ? localLog.map((e) => e.kind === 'ai' ? `<div class="ai-card cl-${e.state === 'running' ? 'sending' : e.state}"><h3>AI model · ${esc(e.model)} <span class="hint">${new Date(e.at).toLocaleTimeString()} · on the ${esc(e.device)} · ${e.state === 'running' ? 'running…' : `${e.secs.toFixed(1)} s · ${e.state === 'done' ? 'OK' : 'FAILED'}`}${e.first ? ' · downloaded or loaded first' : ''}</span></h3>${e.error ? `<p class="cl-err">${esc(e.error)}</p>` : ''}</div>`
+      <div class="cl-list">${localLog.length ? localLog.map((e) => e.kind === 'ai' ? `<div class="ai-card cl-${e.state === 'running' ? 'sending' : e.state}"><h3>AI model · ${esc(e.model)} <span class="hint">${new Date(e.at).toLocaleTimeString()}${e.level ? ` · ${esc(e.level)}` : ''} · on the ${esc(e.device)} · ${e.state === 'running' ? 'running…' : `${e.secs.toFixed(1)} s · ${e.state === 'done' ? 'OK' : 'FAILED'}`}${e.first ? ' · downloaded or loaded first' : ''}</span></h3>${e.error ? `<p class="cl-err">${esc(e.error)}</p>` : ''}</div>`
         : `<div class="ai-card"><h3>Step · ${esc(e.label)} <span class="hint">${new Date(e.at).toLocaleTimeString()}${e.secs != null ? ` · ${e.secs.toFixed(1)} s` : ''} · ${esc(e.size)}</span></h3><div class="cl-pics">${e.before ? `<figure class="cl-pic"><img src="${e.before}" alt=""><figcaption>before</figcaption></figure>` : ''}<figure class="cl-pic"><img src="${e.after}" alt=""><figcaption>after</figcaption></figure></div></div>`).join('') : '<p class="hint"><b>Nothing has run yet.</b></p>'}</div>
       <div class="dialog-actions"><button class="btn primary" type="button" data-act="close">Close</button></div></div>`;
   }
@@ -944,10 +944,21 @@
   async function aiChip() {
     const el = $('st-ai'); if (!el) return; const f = window.CRAFTAI && CRAFTAI.found(), cl = ['anthropic', 'gemini', 'openai'].filter((k) => IC.cloud.has(k)).map((k) => IC.cloud.NAMES[k].split(' ')[0]);
     if (ollamaSeen === null) { ollamaSeen = 'asking'; IC.ollama.models().then((m) => { ollamaSeen = { ok: true, n: m.length }; aiChip(); }, (e) => { ollamaSeen = { blocked: !!e.blocked }; aiChip(); }); }
-    const parts = [f ? (f.webgpu ? 'graphics card' : 'processor') : 'built-in', ollamaSeen && ollamaSeen.ok ? 'Ollama ✓' : ollamaSeen && ollamaSeen.blocked ? 'Ollama ✗' : 'Ollama …', cl.length ? `Cloud: ${cl.join(', ')}` : 'no cloud keys'];
+    const Q = window.CRAFTAI && CRAFTAI.quality(), img0 = now(), lk = Q ? Q.levelKey(img0 ? img0.width * img0.height : 1e6) : '', parts = [(f ? (f.webgpu ? 'graphics card' : 'processor') : 'built-in') + (Q ? ` · ${Q.setting === 'auto' ? 'Auto: ' : ''}${Q.levels[lk].name}` : ''), ollamaSeen && ollamaSeen.ok ? 'Ollama ✓' : ollamaSeen && ollamaSeen.blocked ? 'Ollama ✗' : 'Ollama …', cl.length ? `Cloud: ${cl.join(', ')}` : 'no cloud keys'];
     el.textContent = `AI: ${parts.join(' · ')}`;
   }
   let aiTab = 'local';
+  // AI settings › Local AI › Local quality: the levels, this computer's measured speed, and the time each level would take
+  function qualityCard() {
+    const Q = CRAFTAI.quality(), b = Q.bench, img = now(), P = img ? img.width * img.height : 1e6, f = CRAFTAI.found() || {}, lv = Object.entries(Q.levels), autoK = Q.levelKey(P);
+    const t = (s) => (s == null ? '—' : fmtTime(s)), dev = f.webgpu && CRAFTAI.settings().gpu ? 'gpu' : 'cpu';
+    return `<div class="ai-card" id="qcard"><h3>Local quality</h3><p class="hint">How much computing the built-in AI spends on each step. The same models at every level: higher levels run extra passes (the picture mirrored, then averaged back: steadier detail, fewer made-up textures), bigger tiles, and look for scratches at a larger size. The cloud is not affected.</p>
+      <div class="seg" role="group" aria-label="Local quality">${[['auto', 'Auto'], ...lv.map(([k, L]) => [k, L.name])].map(([k, l]) => `<button type="button" class="btn" data-q="${k}" aria-pressed="${Q.setting === k}">${l}</button>`).join('')}</div>
+      <label class="field" style="margin-top:8px"><span>Auto aims to keep each AI step under</span><select class="input" data-qb style="width:auto">${[[30, '30 seconds'], [60, '1 minute'], [120, '2 minutes'], [300, '5 minutes'], [600, '10 minutes']].map(([v, l]) => `<option value="${v}" ${Q.budget === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+      <p class="hint">${b ? `Measured ${new Date(b.at).toLocaleDateString()}: ${b.gpu ? `graphics card${b.gpuName ? ` (${esc(b.gpuName)})` : ''} <b>${(b.gpu / 1000).toFixed(1)} s</b> per megapixel` : 'no graphics card the browser can use'}; processor (${b.cores} cores${b.threaded ? '' : ', the browser lets ImageCraft use one when opened as a file'}) <b>${(b.cpu / 1000).toFixed(1)} s</b> per megapixel (the built-in compact upscaler).${b.gpu && b.cpu ? ` The graphics card is <b>${Math.max(1, Math.round(b.cpu / b.gpu))}×</b> faster.` : ''}` : '<b>Not measured yet.</b> Measure this computer so Auto can choose (about 10 to 30 seconds; nothing is downloaded).'}</p>
+      <div class="btns"><button class="btn outline" type="button" data-act="bench">${b ? 'Measure again' : 'Measure this computer'}</button></div>
+      ${b ? `<table class="steps-tbl q-tbl"><thead><tr><td><b>Level</b></td><td><b>2× bigger, compact</b></td><td><b>4× bigger, Real-ESRGAN</b></td><td><b>What it does</b></td></tr></thead><tbody>${lv.map(([k, L]) => `<tr${k === (Q.setting === 'auto' ? autoK : Q.setting) ? ' class="q-pick"' : ''}><td>${L.name}${k === autoK ? ' <span class="where">Auto</span>' : ''}</td><td>${t(CRAFTAI.estimate('esrgan3', P, k, dev))}${f.webgpu && b.cpu ? `<small class="hint"> · processor ${t(CRAFTAI.estimate('esrgan3', P, k, 'cpu'))}</small>` : ''}</td><td>${t(CRAFTAI.estimate('esrgan', P, k, dev))}</td><td class="hint">${esc(L.what)}</td></tr>`).join('')}</tbody></table><p class="hint">Times for ${img ? `this picture (${fmtN(img.width)} × ${fmtN(img.height)})` : 'a 1-megapixel picture'} on the ${dev === 'gpu' ? 'graphics card' : 'processor'}, after the model is downloaded; rough, to compare. Faces and repair take about ${Q.levels.best.faceTta}× as long at Best and Max.</p>` : ''}</div>`;
+  }
   async function openAI(tab) {
     if (tab) aiTab = tab; let back = $('aisettings'); if (!back) { back = document.createElement('div'); back.className = 'backdrop'; back.id = 'aisettings'; document.body.append(back); }
     const f = (await CRAFTAI.probe()) || {}, O = IC.ollama, CL = IC.cloud;
@@ -957,6 +968,7 @@
     const body = back.querySelector('#ais-body');
     if (aiTab === 'local') {
       body.innerHTML = `<div class="ai-card"><h3>Built-in AI (runs inside ImageCraft)</h3><p class="hint">Upscaling, cut-outs, repair, scratches, colourising, faces, finding things by name. Each model downloads once when first used, then works offline; nothing is sent anywhere. This computer: ${f.webgpu ? `graphics card <b>${esc(f.gpu || '')}</b>` : 'no graphics card the browser can use (the processor is used, slower)'}.</p><div class="btns"><button class="btn outline" type="button" data-act="models">Models: download, switch on or off…</button></div></div>
+        ${qualityCard()}
         <div class="ai-card"><h3>Ollama (AI models you run yourself)</h3><p class="hint" id="ais-oll">Looking for Ollama at ${esc(O.cfg.url)}…</p>
           <label class="check"><input type="checkbox" data-oc ${O.cfg.cloud ? 'checked' : ''}> Also offer Ollama’s cloud models in Ask AI (the picture is sent to Ollama’s servers)</label>
           <label class="field"><span>Address</span><input class="input" data-ou value="${esc(O.cfg.url)}"></label></div>`;
@@ -970,12 +982,14 @@
     back.hidden = false;
     back.onclick = (e) => {
       const tb = e.target.closest('[data-tab]'); if (tb) { openAI(tb.dataset.tab); return; }
+      const qb = e.target.closest('[data-q]'); if (qb) { CRAFTAI.setQuality(qb.dataset.q); openAI('local'); aiChip(); return; }
       const a = e.target.closest('[data-act]'); if (!a) return;
       if (a.dataset.act === 'close') { back.hidden = true; aiChip(); if (tool && /assess|regen/.test(tool.def.id)) { if (tool.oll) tool.oll = { status: 'checking' }; renderProps(); } }
       if (a.dataset.act === 'models') { back.hidden = true; CRAFTAI.openSettings(); }
+      if (a.dataset.act === 'bench') { a.disabled = true; a.textContent = 'Measuring…'; CRAFTAI.bench((m) => { a.textContent = m; }).then(() => { openAI('local'); aiChip(); toast('Measured. Auto now picks the level for each picture.'); }, (err) => { logFail('Measuring failed', err); a.disabled = false; a.textContent = 'Measure this computer'; toast(err.message); }); }
       if (a.dataset.act === 'allswitch') { stepPrefs = {}; saveStepPrefs(); openAI('steps'); }
     };
-    back.onchange = (e) => { if (e.target.matches('[data-sp]')) { stepPrefs[e.target.dataset.sp] = e.target.value; saveStepPrefs(); if (tool && tool.def.id === 'process') renderProps(); return; } if (e.target.matches('[data-oc]')) { O.cfg.cloud = e.target.checked; O.save(); } if (e.target.matches('[data-ou]')) { O.cfg.url = e.target.value.trim().replace(/\/+$/, '') || 'http://127.0.0.1:11434'; O.save(); ollamaSeen = null; openAI('local'); } };
+    back.onchange = (e) => { if (e.target.matches('[data-qb]')) { CRAFTAI.setQuality(null, +e.target.value); openAI('local'); return; } if (e.target.matches('[data-sp]')) { stepPrefs[e.target.dataset.sp] = e.target.value; saveStepPrefs(); if (tool && tool.def.id === 'process') renderProps(); return; } if (e.target.matches('[data-oc]')) { O.cfg.cloud = e.target.checked; O.save(); } if (e.target.matches('[data-ou]')) { O.cfg.url = e.target.value.trim().replace(/\/+$/, '') || 'http://127.0.0.1:11434'; O.save(); ollamaSeen = null; openAI('local'); } };
   }
   const lastDescription = new WeakMap(); // picture → its last Ask AI description (Regenerate starts from it)
   function cloudKeysPanel(into) {
