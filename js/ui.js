@@ -250,6 +250,28 @@
   const scratchMemo = new WeakMap();
   const ensureScratches = async (img, s) => { if (s.scratches && !scratchMemo.has(img)) { busyNow('Looking for scratches (the first time downloads the finder, about 75 MB)…'); scratchMemo.set(img, await CRAFTAI.scratches(img)); } };
   let damageCache = null; // the found damage for one picture and setting, so painting stays quick
+  // the damage split by layer. Each part's mask also covers the other layers' pixels near it, so the fill can only
+  // take from its own kind (hair from hair, never the backdrop). null when no layers are known (one fill, as before).
+  async function repairRegions(img, hole, say) {
+    const W = img.width, H = img.height, ids = ['subject', 'cl:hair', 's_hair'];
+    try { if (!IC.maps.known('subject', img)) { say && say('Finding the main subject, to repair it by layer…'); await IC.maps.prepare(['subject'], img); } } catch (e) { ICLOG.warn('Repair by layer: the subject could not be found', e); }
+    const get = (id) => { try { return IC.maps.known(id, img) ? IC.maps.make(id, img) : null; } catch (e) { return null; } };
+    const sub = get('subject'), hair = get('cl:hair') || get('s_hair'); if (!sub && !hair) return null;
+    const lab = new Uint8Array(W * H); for (let i = 0; i < lab.length; i++) lab[i] = hair && hair[i] > 0.5 ? 1 : sub && sub[i] > 0.5 ? 2 : 3; // 1 hair, 2 subject, 3 background
+    const names = { 1: 'hair', 2: 'the main subject', 3: 'the background' }, out = [];
+    for (const k of [1, 2, 3]) {
+      const hk = new Float32Array(W * H); let n = 0; for (let i = 0; i < hk.length; i++) if (hole[i] > 0.5 && lab[i] === k) { hk[i] = 1; n++; } if (!n) continue;
+      const rad = Math.max(8, Math.min(Math.round(Math.max(W, H) / 4), Math.round(2 * Math.sqrt(n)))), near = IC.maps.grow(hk, W, H, rad), mask = new Float32Array(W * H); /* the other layers are kept out of the fill's reach, as far as the damage is big */ for (let i = 0; i < mask.length; i++) mask[i] = hole[i] > 0.5 || (near[i] && lab[i] !== k) ? 1 : 0; // damage is never a source, wherever it is
+      out.push({ name: names[k], hole: hk, mask });
+    }
+    return out.length > 1 || (out.length === 1 && out[0].name !== 'the background') ? out : null;
+  }
+  // one fill, by the chosen way (AI on this computer, from the edges, or the cloud)
+  async function fillHole(img, hole, s, say, part) {
+    if (s.how.startsWith('cloud-')) { const pv = s.how.slice(6); IC.cloud.task('Repair fill' + (part ? ` (${part})` : '')); if (!cloudOK()) throw new Error('Cloud AI is switched off (status bar).'); const ld = lastDescription.get(pic()); return IC.cloud.tryEach(IC.cloud.orderFrom('fill', pv), async (p2) => { say && say(`Sending the marked area${part ? ` (${part})` : ''} to ${IC.cloud.NAMES[p2]}… (10 to 60 seconds)`); return IC.cloud.fill(img, IC.maps.grow(hole, img.width, img.height, 2), p2, await IC.cloud.drawModel(p2), [ld ? ld.subject : '', part ? `The marked area is part of ${part}: rebuild it as ${part}.` : ''].filter(Boolean).join(' ')); }); }
+    if (s.how === 'ai') { say && say(`Filling in the damage${part ? ` (${part})` : ''} (AI; the first time downloads it)…`); return CRAFTAI.inpaint(img, IC.maps.grow(hole, img.width, img.height, 2)); }
+    return IC.maps.telea(img, hole, 3, 0.5);
+  }
   const repairDamage = (img, s) => { const key = JSON.stringify([s.specks, s.flecks, s.stamp, s.level]); if (!damageCache || damageCache.img !== img || damageCache.key !== key) damageCache = { img, key, m: IC.maps.damage(img, s) }; let m = Float32Array.from(damageCache.m); const sc = s.scratches && scratchMemo.get(img); if (sc) { const th = 0.65 - (s.level / 100) * 0.5; m = m.map((v, i) => (sc[i] >= th ? 1 : v)); } if (repairPaint && repairPaint.length === m.length) m = m.map((v, i) => Math.max(v, repairPaint[i])); return IC.maps.grow(m, img.width, img.height, s.grow); };
   const markOver = (img, m) => { const o = new ImageData(new Uint8ClampedArray(img.data), img.width, img.height), d = o.data; for (let p = 0; p < m.length; p++) if (m[p] > 0.5) { d[p * 4] = Math.round(d[p * 4] * 0.35 + 255 * 0.65); d[p * 4 + 1] = Math.round(d[p * 4 + 1] * 0.35); d[p * 4 + 2] = Math.round(d[p * 4 + 2] * 0.35 + 40); } return o; };
   // the picture compared against: before the open tool, or else the original
@@ -485,11 +507,12 @@
       fields: [note('A JPEG keeps the brightness in full but the colour at half size, in 8 × 8 blocks; old prints and scans smear colour more than brightness too. Colour edges almost always sit on brightness edges, so the colour is made to follow the brightness detail that is really there. Nothing is invented and the brightness is not touched.'),
         range('size', 'Block size to smooth over', 2, 16), range('strength', 'Strength %', 0, 100), note('4 is best for most JPEGs (tested: colour error 2.2 dB lower on a heavily compressed one). Raise it when False colour shows big colour blocks.')],
       run: (img, s) => X.chromaRebuild(img, s) },
-    repair: { title: 'Repair damage', icon: IK.dust, live: false, paint: true, s: { scratches: true, specks: true, flecks: false, stamp: false, level: 50, grow: 2, how: 'ai', mark: 'paint', brush: 14 },
+    repair: { title: 'Repair damage', icon: IK.dust, live: false, paint: true, s: { scratches: true, specks: true, flecks: false, stamp: false, level: 50, grow: 2, how: 'ai', mark: 'paint', brush: 14, layered: true },
       fields: [note('Marks the damage, then fills it in from what is around it. Specks are found by themselves; <b>mark tears, flaking and stains yourself</b>: paint over them with the left mouse button, or click one and the AI outlines it. The right button takes marks away; the middle button moves the picture. Red shows what will be filled.'),
         seg('mark', 'Mark by', [['paint', 'Painting'], ['pick', 'Clicking (AI outlines it)']]),
         chk('scratches', 'Scratches, cracks and dust (AI: the old-photo scratch finder, about 75 MB once)'), chk('specks', 'Specks and dust (found by themselves)'), chk('flecks', 'White or black flecks and thin scratches (can catch thin white things such as poles: check the red)'), chk('stamp', 'Date stamp (orange numbers near the bottom)'),
         range('level', 'Sensitivity', 0, 100), range('grow', 'Take a little more round each mark (pixels)', 0, 8), range('brush', 'Brush size (pixels)', 2, 80, 1, (s) => s.mark === 'paint'),
+        chk('layered', 'Fill by layer: hair only from hair, the person from the person, the background from the background (uses the Main subject and Hair maps; corrected ones count)'),
         { t: 'custom', render: (into, t) => { const opts = [['ai', 'AI on this computer (MI-GAN): small and medium damage'], ['smooth', 'Fill from the edges (Telea): specks, scratches, thin cracks'], ...(cloudOK() ? IC.cloud.engines('fill').map((p) => ['cloud-' + p, `Cloud: ${IC.cloud.NAMES[p]} (large tears and missing parts; the marked area is sent)`]) : [])]; if (!opts.some((o) => o[0] === t.s.how)) t.s.how = 'ai'; const d = document.createElement('div'); d.className = 'field'; d.innerHTML = `<span>Fill with</span>${opts.map(([k, l]) => `<label class="check"><input type="radio" name="rp-how" value="${k}" ${t.s.how === k ? 'checked' : ''}> ${esc(l)}</label>`).join('')}`; d.onchange = (e) => { t.s.how = e.target.value; t.stale = true; renderProps(); }; into.append(d); } },
         { t: 'btns', buttons: [{ label: 'Show what will be filled', run: () => { const t = tool; if (!t) return; ensureScratches(t.base, t.s).then(() => { busy(null); if (tool !== t) return; t.preview = markOver(t.base, repairDamage(t.base, t.s)); t.stale = true; show(); }, (e) => { busy(null); logFail('The scratch finder failed', e); toast(e.message); }); } }, { label: 'Clear the painting', run: () => { repairPaint = null; if (tool) { tool.preview = null; show(); } } }] },
         { t: 'out' }, note('The AI draws what is missing from what is around it; check faces closely. The first use downloads it (about 28 MB). Press Preview.')],
@@ -498,9 +521,10 @@
         await ensureScratches(img, s); const hole = repairDamage(img, s); let n = 0; for (let i = 0; i < hole.length; i++) n += hole[i] > 0.5; if (tool) tool.holePct = (100 * n) / hole.length;
         if (!n) throw new Error('Nothing is marked: paint over the damage or click it, or tick a kind of damage.');
         let out;
-        if (s.how.startsWith('cloud-')) { const pv = s.how.slice(6); IC.cloud.task('Repair fill'); if (!cloudOK()) throw new Error('Cloud AI is switched off (status bar).'); say && say(`Sending the marked area to ${IC.cloud.NAMES[pv]}… (10 to 60 seconds)`); const ld = lastDescription.get(pic()); out = await IC.cloud.tryEach(IC.cloud.orderFrom('fill', pv), async (p2) => { say && say(`Sending the marked area to ${IC.cloud.NAMES[p2]}… (10 to 60 seconds)`); return IC.cloud.fill(img, IC.maps.grow(hole, img.width, img.height, 2), p2, await IC.cloud.drawModel(p2), ld ? ld.subject : ''); }); }
-        else if (s.how === 'ai') { say && say('Filling in the damage (AI; the first time downloads it)…'); out = await CRAFTAI.inpaint(img, IC.maps.grow(hole, img.width, img.height, 2)); } // the model keeps a thin ring at a hole's edge, so it gets the hole 2 pixels wider
-        else out = IC.maps.telea(img, hole, 3, 0.5); // fast marching (Telea): 38 dB on thin cracks against 36 for a plain smooth fill and 30 for the AI
+        // by layer: the damage split into hair, the rest of the subject and the background, each filled only from its own kind
+        if (s.layered) { const R = await repairRegions(img, hole, say); if (R) { say && say(`Filling by layer: ${R.map((r) => r.name).join(', ')}…`); out = new ImageData(new Uint8ClampedArray(img.data), img.width, img.height);
+          for (const r of R) { const one = await fillHole(img, r.mask, s, say, r.name); for (let i = 0; i < r.hole.length; i++) if (r.hole[i] > 0.5) { const q = i * 4; out.data[q] = one.data[q]; out.data[q + 1] = one.data[q + 1]; out.data[q + 2] = one.data[q + 2]; } } } }
+        if (!out) out = await fillHole(img, hole, s, say, '');
         // only the marked parts change (feathered by a pixel), so the rest stays exactly the original
         const soft = IC.maps.box(hole, img.width, img.height, 1), o = new ImageData(new Uint8ClampedArray(img.data), img.width, img.height), d = o.data, a = out.data;
         for (let p = 0; p < soft.length; p++) { const k = Math.max(hole[p], soft[p]); if (k > 0) for (let c = 0; c < 3; c++) d[p * 4 + c] = Math.round(d[p * 4 + c] + (a[p * 4 + c] - d[p * 4 + c]) * k); }
@@ -849,10 +873,27 @@
   const stepList = () => [...Object.keys(CLOUD_TOOLS), ...Object.keys(IC.cloud.JOBS)].filter((id) => TOOLS[id]).map((id) => [id, TOOLS[id].title]);
   // a step done both ways: pick this computer's, the cloud's, or a blend of the two (null = stop)
   // Both: ask each time, or blend by itself at the mix chosen in AI settings › Steps (the last mix picked is remembered)
-  let bothPref = { ask: true, mix: 50 }; try { bothPref = { ...bothPref, ...JSON.parse(localStorage.getItem('imagecraft-both') || '{}') }; } catch (e) { /* blocked storage */ }
+  let bothPref = { ask: true, mix: 50, byLayer: true, layers: { faces: 20, hair: 40, subject: 40, background: 70, damage: 90 } }; try { bothPref = { ...bothPref, ...JSON.parse(localStorage.getItem('imagecraft-both') || '{}') }; } catch (e) { /* blocked storage */ }
+  // the layers of a picture as far as they are known (the cloud's or your corrected maps, or measured ones), each 0–1
+  function layerMaps(img) {
+    const W = img.width, H = img.height, got = (ids) => { for (const id of ids) { try { if (IC.maps.known(id, img)) { const m = IC.maps.make(id, img); if (m && m.some((v) => v > 0.5)) return m; } } catch (e) { /* not available */ } } return null; };
+    const L = { subject: got(['subject']), background: got(['background']), hair: got(['cl:hair', 's_hair']), damage: null, faces: null };
+    if (!L.background && L.subject) L.background = L.subject.map((v) => 1 - v);
+    const fs = IC.faces.known(img); if (fs && fs.length) { const m = IC.faces.partMask(img, fs, 'face'); if (m.some((v) => v > 0.5)) L.faces = m; }
+    const cd = got(['cl:damage']), dm = IC.maps.damage(img, { specks: true, flecks: true }); L.damage = cd ? cd.map((v, i) => Math.max(v, dm[i])) : dm.some((v) => v > 0.5) ? dm : null;
+    return L;
+  }
+  // how much of the cloud's version to use at each pixel: the general mix, then each known layer's own (later ones win:
+  // background, subject, hair, faces, damage), softened so no seam shows between layers
+  function mixMap(img) {
+    const W = img.width, H = img.height, P = bothPref, L = layerMaps(img), m = new Float32Array(W * H).fill(P.mix / 100), used = [];
+    for (const k of ['background', 'subject', 'hair', 'faces', 'damage']) { const M = L[k]; if (!M) continue; used.push(k); const t = P.layers[k] / 100; for (let i = 0; i < m.length; i++) if (M[i] > 0) m[i] += (t - m[i]) * Math.min(1, M[i]); }
+    const r = Math.max(2, Math.round(Math.max(W, H) / 150)); return { m: IC.maps.box(m, W, H, r), used };
+  }
   const saveBoth = () => { try { localStorage.setItem('imagecraft-both', JSON.stringify(bothPref)); } catch (e) { /* blocked storage */ } };
+  const mixBy = (A, B, M) => { const o = new ImageData(A.width, A.height), d = o.data; for (let p = 0; p < M.length; p++) { const t = M[p], i = p * 4; d[i] = A.data[i] + (B.data[i] - A.data[i]) * t; d[i + 1] = A.data[i + 1] + (B.data[i + 1] - A.data[i + 1]) * t; d[i + 2] = A.data[i + 2] + (B.data[i + 2] - A.data[i + 2]) * t; d[i + 3] = A.data[i + 3]; } return o; };
   function chooseVersion(title, before, L, C) {
-    if (!bothPref.ask) { const CC = C.width === L.width && C.height === L.height ? C : X.resize(C, { width: L.width, height: L.height }), o = new ImageData(L.width, L.height), t = bothPref.mix / 100; for (let i = 0; i < o.data.length; i++) o.data[i] = L.data[i] + (CC.data[i] - L.data[i]) * t; return Promise.resolve({ img: o, how: `blend ${bothPref.mix}% cloud` }); }
+    if (!bothPref.ask) { const CC = C.width === L.width && C.height === L.height ? C : X.resize(C, { width: L.width, height: L.height }); if (bothPref.byLayer) { const M = mixMap(L); return Promise.resolve({ img: mixBy(L, CC, M.m), how: M.used.length ? `blend by layer: ${M.used.join(', ')}` : `blend ${bothPref.mix}% cloud` }); } const o = new ImageData(L.width, L.height), t = bothPref.mix / 100; for (let i = 0; i < o.data.length; i++) o.data[i] = L.data[i] + (CC.data[i] - L.data[i]) * t; return Promise.resolve({ img: o, how: `blend ${bothPref.mix}% cloud` }); }
     return new Promise((resolve) => {
       const back = document.createElement('div'); back.className = 'backdrop'; document.body.append(back);
       const k = Math.min(1, 520 / Math.max(L.width, L.height)), W = Math.round(L.width * k), H = Math.round(L.height * k), sm = (im) => X.resize(im, { width: W, height: H });
@@ -860,12 +901,14 @@
       const url = (im) => { const c = document.createElement('canvas'); c.width = im.width; c.height = im.height; c.getContext('2d').putImageData(im, 0, 0); return c.toDataURL('image/jpeg', 0.9); };
       const mix = (a, b, t) => { const o = new ImageData(a.width, a.height), d = o.data; for (let i = 0; i < d.length; i++) d[i] = a.data[i] + (b.data[i] - a.data[i]) * t; return o; };
       back.innerHTML = `<div class="dialog wide" role="dialog" aria-modal="true" aria-labelledby="cv-title"><h2 id="cv-title">${esc(title)}: done both ways</h2><p class="hint">Choose which to keep, or blend the two. The step goes into History; Undo takes it back.</p>
-        <div class="cv-grid"><figure class="cl-pic"><img src="${url(sB)}" alt=""><figcaption>Before</figcaption></figure><figure class="cl-pic"><img src="${url(sL)}" alt=""><figcaption>This computer</figcaption></figure><figure class="cl-pic"><img src="${url(sC)}" alt=""><figcaption>Cloud</figcaption></figure><figure class="cl-pic"><img data-blend src="${url(mix(sL, sC, bothPref.mix / 100))}" alt=""><figcaption>Blend: <span data-bv>${bothPref.mix}</span>% cloud</figcaption></figure></div>
+        <div class="cv-grid"><figure class="cl-pic"><img src="${url(sB)}" alt=""><figcaption>Before</figcaption></figure><figure class="cl-pic"><img src="${url(sL)}" alt=""><figcaption>This computer</figcaption></figure><figure class="cl-pic"><img src="${url(sC)}" alt=""><figcaption>Cloud</figcaption></figure>${bothPref.byLayer ? '<figure class="cl-pic"><img data-blayer alt=""><figcaption data-bused>Blend by layer</figcaption></figure>' : ''}<figure class="cl-pic"><img data-blend src="${url(mix(sL, sC, bothPref.mix / 100))}" alt=""><figcaption>Blend: <span data-bv>${bothPref.mix}</span>% cloud</figcaption></figure></div>
         <label class="field"><span>Blend (0 = this computer, 100 = cloud)</span><input type="range" min="0" max="100" value="${bothPref.mix}" data-bs></label><label class="check"><input type="checkbox" data-bauto> From now on, blend by itself at this mix (change it in AI settings › Steps)</label>
-        <div class="dialog-actions"><button class="btn outline" type="button" data-c="stop">Stop here</button><button class="btn outline" type="button" data-c="local">Keep this computer's</button><button class="btn outline" type="button" data-c="cloud">Keep the cloud's</button><button class="btn primary" type="button" data-c="blend">Keep the blend</button></div></div>`;
+        <div class="dialog-actions"><button class="btn outline" type="button" data-c="stop">Stop here</button><button class="btn outline" type="button" data-c="local">Keep this computer's</button><button class="btn outline" type="button" data-c="cloud">Keep the cloud's</button><button class="btn ${bothPref.byLayer ? 'outline' : 'primary'}" type="button" data-c="blend">Keep the blend</button>${bothPref.byLayer ? '<button class="btn primary" type="button" data-c="layer">Keep the blend by layer</button>' : ''}</div></div>`;
+      let LM = null; if (bothPref.byLayer) { LM = mixMap(L); const k2 = sL.width / L.width, sm2 = new Float32Array(sL.width * sL.height); for (let y = 0; y < sL.height; y++) for (let x = 0; x < sL.width; x++) sm2[y * sL.width + x] = LM.m[Math.min(L.height - 1, Math.floor(y / k2)) * L.width + Math.min(L.width - 1, Math.floor(x / k2))]; back.querySelector('[data-blayer]').src = url(mixBy(sL, sC, sm2)); back.querySelector('[data-bused]').textContent = LM.used.length ? `By layer: ${LM.used.join(', ')}` : 'By layer (no layers known yet: the plain mix)'; }
       const bs = back.querySelector('[data-bs]'); bs.oninput = () => { back.querySelector('[data-bv]').textContent = bs.value; back.querySelector('[data-blend]').src = url(mix(sL, sC, bs.value / 100)); };
       back.onclick = (e) => { const b = e.target.closest('[data-c]'); if (!b) return; back.remove(); const c = b.dataset.c, CC = C.width === L.width && C.height === L.height ? C : X.resize(C, { width: L.width, height: L.height });
         if (c === 'blend') { bothPref.mix = +bs.value; if (back.querySelector('[data-bauto]').checked) bothPref.ask = false; saveBoth(); }
+        if (c === 'layer') { resolve({ img: mixBy(L, CC, LM.m), how: LM.used.length ? `blend by layer: ${LM.used.join(', ')}` : `blend ${bothPref.mix}% cloud` }); return; }
         resolve(c === 'stop' ? null : c === 'local' ? { img: L, how: 'this computer' } : c === 'cloud' ? { img: CC, how: 'cloud' } : { img: mix(L, CC, bs.value / 100), how: `blend ${bs.value}% cloud` }); };
     });
   }
@@ -983,7 +1026,9 @@
       body.innerHTML = `<p class="hint">Where each step runs when Process a photo plans it (and its starting choice). <b>Follow the switch</b> uses the status bar: Local AI = this computer, Cloud AI = cloud, Both = both ways, then you choose or blend. Any step can still be changed in the plan itself. Steps not listed have no cloud version and always run on this computer.</p>
         <table class="steps-tbl"><tbody>${stepList().map(([id, t]) => `<tr><td>${esc(t)}</td><td><select class="input" data-sp="${id}">${opt(id, 'switch', 'Follow the switch')}${opt(id, 'local', 'This computer')}${opt(id, 'cloud', 'Cloud')}${opt(id, 'both', 'Both: choose or blend')}</select></td><td class="hint">${CLOUD_TOOLS[id] ? 'its own cloud version' : IC.cloud.JOBS[id].keep === 'tone' ? 'cloud gives light and colour only' : 'cloud picture, your fine detail kept'}</td></tr>`).join('')}</tbody></table>
         <div class="btns"><button class="btn outline" type="button" data-act="allswitch">All: follow the switch</button></div>
-        <div class="ai-card"><h3>When a step is done both ways</h3><label class="check"><input type="radio" name="bp" data-bp="ask" ${bothPref.ask ? 'checked' : ''}> Ask each time (see both, keep one or a blend)</label><label class="check"><input type="radio" name="bp" data-bp="auto" ${bothPref.ask ? '' : 'checked'}> Blend by itself</label><label class="field"><span>Mix: <b data-bmv>${bothPref.mix}</b>% cloud (0 = this computer only, 100 = cloud only)</span><input type="range" min="0" max="100" value="${bothPref.mix}" data-bm></label><p class="hint">A blend keeps the photo's own moment (faces, ground, light as it was) with the cloud's clarity and colour; often the most true to life.</p></div>`;
+        <div class="ai-card"><h3>When a step is done both ways</h3><label class="check"><input type="radio" name="bp" data-bp="ask" ${bothPref.ask ? 'checked' : ''}> Ask each time (see both, keep one or a blend)</label><label class="check"><input type="radio" name="bp" data-bp="auto" ${bothPref.ask ? '' : 'checked'}> Blend by itself</label><label class="field"><span>Mix: <b data-bmv>${bothPref.mix}</b>% cloud (0 = this computer only, 100 = cloud only)</span><input type="range" min="0" max="100" value="${bothPref.mix}" data-bm></label><p class="hint">A blend keeps the photo's own moment (faces, ground, light as it was) with the cloud's clarity and colour; often the most true to life.</p>
+          <label class="check"><input type="checkbox" data-blay ${bothPref.byLayer ? 'checked' : ''}> <b>Mix by layer</b>: each part of the picture its own mix (the layers known for the picture: from Let the cloud map this photo, your corrected maps, or measured)</label>
+          ${bothPref.byLayer ? `<table class="steps-tbl"><tbody>${[['faces', 'Faces', 'low keeps the real person'], ['hair', 'Hair', ''], ['subject', 'Main subject', ''], ['background', 'Background', 'high: clean and clear'], ['damage', 'Damage (tears, flaking, specks)', 'high: nothing real is left there']].map(([k, l, h]) => `<tr><td>${l}</td><td><input type="range" min="0" max="100" value="${bothPref.layers[k]}" data-bl="${k}"></td><td><b data-blv="${k}">${bothPref.layers[k]}</b>% cloud</td><td class="hint">${h}</td></tr>`).join('')}</tbody></table><p class="hint">Anywhere no layer is known uses the mix above.</p>` : ''}</div>`;
     } else cloudKeysPanel(body);
     back.hidden = false;
     back.onclick = (e) => {
@@ -995,8 +1040,8 @@
       if (a.dataset.act === 'bench') { a.disabled = true; a.textContent = 'Measuring…'; CRAFTAI.bench((m) => { a.textContent = m; }).then(() => { openAI('local'); aiChip(); toast('Measured. Auto now picks the level for each picture.'); }, (err) => { logFail('Measuring failed', err); a.disabled = false; a.textContent = 'Measure this computer'; toast(err.message); }); }
       if (a.dataset.act === 'allswitch') { stepPrefs = {}; saveStepPrefs(); openAI('steps'); }
     };
-    back.oninput = (e) => { if (e.target.matches('[data-bm]')) { bothPref.mix = +e.target.value; back.querySelector('[data-bmv]').textContent = bothPref.mix; saveBoth(); } };
-    back.onchange = (e) => { if (e.target.matches('[data-bp]')) { bothPref.ask = e.target.dataset.bp === 'ask'; saveBoth(); return; } if (e.target.matches('[data-qb]')) { CRAFTAI.setQuality(null, +e.target.value); openAI('local'); return; } if (e.target.matches('[data-sp]')) { stepPrefs[e.target.dataset.sp] = e.target.value; saveStepPrefs(); if (tool && tool.def.id === 'process') renderProps(); return; } if (e.target.matches('[data-oc]')) { O.cfg.cloud = e.target.checked; O.save(); } if (e.target.matches('[data-ou]')) { O.cfg.url = e.target.value.trim().replace(/\/+$/, '') || 'http://127.0.0.1:11434'; O.save(); ollamaSeen = null; openAI('local'); } };
+    back.oninput = (e) => { if (e.target.matches('[data-bl]')) { const k = e.target.dataset.bl; bothPref.layers[k] = +e.target.value; back.querySelector(`[data-blv="${k}"]`).textContent = e.target.value; saveBoth(); return; } if (e.target.matches('[data-bm]')) { bothPref.mix = +e.target.value; back.querySelector('[data-bmv]').textContent = bothPref.mix; saveBoth(); } };
+    back.onchange = (e) => { if (e.target.matches('[data-blay]')) { bothPref.byLayer = e.target.checked; saveBoth(); openAI('steps'); return; } if (e.target.matches('[data-bp]')) { bothPref.ask = e.target.dataset.bp === 'ask'; saveBoth(); return; } if (e.target.matches('[data-qb]')) { CRAFTAI.setQuality(null, +e.target.value); openAI('local'); return; } if (e.target.matches('[data-sp]')) { stepPrefs[e.target.dataset.sp] = e.target.value; saveStepPrefs(); if (tool && tool.def.id === 'process') renderProps(); return; } if (e.target.matches('[data-oc]')) { O.cfg.cloud = e.target.checked; O.save(); } if (e.target.matches('[data-ou]')) { O.cfg.url = e.target.value.trim().replace(/\/+$/, '') || 'http://127.0.0.1:11434'; O.save(); ollamaSeen = null; openAI('local'); } };
   }
   const lastDescription = new WeakMap(); // picture → its last Ask AI description (Regenerate starts from it)
   function cloudKeysPanel(into) {
@@ -1523,18 +1568,41 @@
       box.querySelector('[data-cmap]').onclick = async () => { const sel = box.querySelector('[data-cmeng]'), eng = sel ? sel.value : cm[0]; try { await withOutliner((e2) => cloudMapPhoto(e2), eng); } catch (e) { busy(null); logFail('Cloud mapping failed', e); toast(e.message); } };
       L.append(box); }
     if (IC.maps.colourBlind(img)) L.insertAdjacentHTML('beforeend', '<p class="hint">This picture’s colours all lean one way (sepia, toned or a strong cast), so the colour-based Skin, Greenery and Sky maps mark the wrong things. Use <b>Scene (AI)</b> and <b>Skin (learned from the faces)</b> instead.</p>');
-    IC.maps.LIST.forEach((m) => {
-      const g = m.group || 'Measured'; if (g !== group) { group = g; L.insertAdjacentHTML('beforeend', `<h4>${esc(g)}</h4>`); }
-      const b = document.createElement('button'); b.type = 'button'; b.dataset.map = m.id; b.title = m.what; b.setAttribute('aria-current', String(!!mapView && mapView.id === m.id));
-      const c = document.createElement('canvas'); c.width = 112; c.height = 84; b.append(c); b.insertAdjacentHTML('beforeend', `<span><b>${esc(m.name)}</b><small>${esc(m.what)}</small></span>`);
-      b.onclick = () => openMap(m.id); L.append(b);
-    });
+    // the photo itself: as opened, and as it is now
+    const ph = document.createElement('div'); ph.className = 'layer-group photos'; ph.innerHTML = '<div class="lg-head">Photo</div>';
+    for (const [k, label, im] of [['orig', 'Original (as opened)', pic().steps[0].img], ['cur', `Current${pic().at ? ` (step ${pic().at})` : ''}`, img]]) {
+      const b = document.createElement('button'); b.type = 'button'; b.className = 'layer-row'; b.dataset.photo = k; b.setAttribute('aria-current', String(k === 'orig' ? !!mapView && mapView.id === 'photo:orig' : !mapView));
+      const c = document.createElement('canvas'); c.width = 80; c.height = 60; const x = c.getContext('2d'), kk = Math.min(80 / im.width, 60 / im.height); x.fillStyle = '#111'; x.fillRect(0, 0, 80, 60); x.drawImage(X.canvasOf(im), (80 - im.width * kk) / 2, (60 - im.height * kk) / 2, im.width * kk, im.height * kk);
+      b.append(c); b.insertAdjacentHTML('beforeend', `<span>${esc(label)}</span>`); b.title = k === 'orig' ? 'Show the photo as it was opened (nothing is changed)' : 'The photo as it is now'; b.onclick = () => (k === 'orig' ? showOriginal() : closeMap()); ph.append(b);
+    }
+    L.append(ph);
+    const p0 = pic(), fixOf = (id) => p0.mapFix && p0.mapFix[id], groups = [];
+    IC.maps.LIST.forEach((m) => { const g = m.group || 'Measured'; let G = groups.find((x) => x.name === g); if (!G) groups.push((G = { name: g, maps: [] })); G.maps.push(m); });
+    for (const G of groups) {
+      const marked = G.maps.filter((m) => fixOf(m.id)).length, open = layerOpen.has(G.name) ? layerOpen.get(G.name) : marked > 0 || /cloud|Subject/.test(G.name);
+      const d = document.createElement('details'); d.className = 'layer-group'; d.open = open; d.dataset.g = G.name;
+      d.innerHTML = `<summary class="lg-head">${esc(G.name)} <span class="lg-n">${G.maps.length}${marked ? ` · ${marked} corrected` : ''}</span></summary>`;
+      d.addEventListener('toggle', () => { layerOpen.set(G.name, d.open); try { localStorage.setItem('imagecraft-layergroups', JSON.stringify([...layerOpen])); } catch (e) { /* blocked storage */ } if (d.open) drawThumbs(); });
+      for (const m of G.maps) {
+        const f = fixOf(m.id), b = document.createElement('button'); b.type = 'button'; b.className = 'layer-row'; b.dataset.map = m.id; b.title = m.what; b.setAttribute('aria-current', String(!!mapView && mapView.id === m.id));
+        const c = document.createElement('canvas'); c.width = 80; c.height = 60; b.append(c);
+        b.insertAdjacentHTML('beforeend', `<span>${esc(m.name)}</span>${f ? `<i class="lr-badge${f.by && f.by !== 'test' ? ' cloud' : ''}" title="${f.by ? `Made by ${esc(IC.cloud.NAMES[f.by] || f.by)}` : 'Corrected by you'}: every tool uses this version">${f.by ? '☁' : '✓'}</i>` : ''}`);
+        b.onclick = () => openMap(m.id); d.append(b);
+      }
+      L.append(d);
+    }
     // small pictures of each map, made from a small copy (quick), one at a time so the page stays responsive
     if (thumbFor !== img) { thumbFor = img; const k = Math.min(1, 240 / Math.max(img.width, img.height)); thumbSmall = X.resize(img, { width: img.width * k, height: img.height * k }); }
     IC.maps.share(img, thumbSmall);
-    const small = thumbSmall, list = [...L.querySelectorAll('button[data-map]')];
-    (async () => { for (const b of list) { await wait(5); if (thumbSmall !== small || !document.body.contains(b)) return; const m = IC.maps.LIST.find((x) => x.id === b.dataset.map); const map = IC.maps.make(m.id, small), v = m.grey ? IC.maps.grey(map, small.width, small.height) : IC.maps.heat(map, small), c = b.querySelector('canvas'), x = c.getContext('2d'); x.fillStyle = '#111'; x.fillRect(0, 0, c.width, c.height); const kk = Math.min(c.width / small.width, c.height / small.height); x.drawImage(X.canvasOf(v), (c.width - small.width * kk) / 2, (c.height - small.height * kk) / 2, small.width * kk, small.height * kk); } })();
+    const small = thumbSmall; drawThumbs(); }
+  // the small pictures of the layers in the open groups, one at a time so the page stays responsive
+  function drawThumbs() {
+    const L = $('maplist'), small = thumbSmall; if (!L || !small) return; const list = [...L.querySelectorAll('details[open] button[data-map]')].filter((b) => !b.dataset.drawn);
+    (async () => { for (const b of list) { b.dataset.drawn = '1'; await wait(5); if (thumbSmall !== small || !document.body.contains(b)) return; const m = IC.maps.LIST.find((x) => x.id === b.dataset.map); const map = IC.maps.make(m.id, small), v = m.grey ? IC.maps.grey(map, small.width, small.height) : IC.maps.heat(map, small), c = b.querySelector('canvas'), x = c.getContext('2d'); x.fillStyle = '#111'; x.fillRect(0, 0, c.width, c.height); const kk = Math.min(c.width / small.width, c.height / small.height); x.drawImage(X.canvasOf(v), (c.width - small.width * kk) / 2, (c.height - small.height * kk) / 2, small.width * kk, small.height * kk); } })();
   }
+  const layerOpen = new Map(); try { JSON.parse(localStorage.getItem('imagecraft-layergroups') || '[]').forEach(([k, v]) => layerOpen.set(k, v)); } catch (e) { /* blocked storage */ }
+  // the original photo on show (nothing changes; Back to the picture, or Current, returns)
+  function showOriginal() { const img = now(); if (!img) return; if (tool) closeTool(true); mapEdit = null; mapView = { id: 'photo:orig', mode: 'photo', img: pic().steps[0].img }; show(); renderMapBar(); renderMaps(); }
   function openMap(id, mode) {
     const img = now(); if (!img) return; if (tool) closeTool(true);
     const m = IC.maps.LIST.find((x) => x.id === id); mode = mode || (m.grey ? 'grey' : 'heat');
@@ -1582,6 +1650,7 @@
   }
   function renderMapBar() {
     const bar = $('mapbar'); if (!mapView) { bar.hidden = true; return; }
+    if (mapView.id === 'photo:orig') { bar.innerHTML = '<b>Photo: the original, as opened</b><span class="hint">Nothing is changed; this is to look at.</span><button class="btn primary" type="button" data-back>Back to the current picture</button>'; bar.hidden = false; bar.onclick = (e) => { if (e.target.closest('[data-back]')) closeMap(); }; return; }
     const m = IC.maps.LIST.find((x) => x.id === mapView.id);
     const blind = ['skin', 'green', 'sky'].includes(m.id) && IC.maps.colourBlind(now());
     bar.innerHTML = `<b>Map: ${esc(m.name)}</b>${blind ? '<span class="hint" title="This map judges by colour, and this picture’s colours all lean one way (sepia, toned or a strong cast), so it marks the wrong things. The Scene (AI) maps and Skin (learned from the faces) recognise things by what they are.">⚠ Colours too even to judge by: use Scene (AI)</span>' : ''}<div class="seg"><button class="btn" data-m="heat" aria-pressed="${mapView.mode === 'heat'}">Heat</button><button class="btn" data-m="grey" aria-pressed="${mapView.mode === 'grey'}">Grey (mask)</button></div><button class="btn outline" data-a="open">Open as a picture</button><button class="btn outline" data-a="clear">Make see-through by it</button><button class="btn primary" data-a="back">Back to the picture</button>`;
@@ -1993,5 +2062,5 @@
 
   renderProps(); status();
   // for testing and the command layer: the same things the buttons do
-  window.ImageCraft = { recipeOf: () => pic() && recipeOf(pic()), runRecipe: (rec) => runRecipe(rec), snapShapes, openFiles, addPic, openTool, applyTool, closeTool, quick, openSave, openBatch, undo, redo, sample, pics: () => pics, current: () => pic(), tool: () => tool, view, prepared, TOOLS };
+  window.ImageCraft = { setRepairMarks: (m) => { repairPaint = m; }, recipeOf: () => pic() && recipeOf(pic()), runRecipe: (rec) => runRecipe(rec), snapShapes, openFiles, addPic, openTool, applyTool, closeTool, quick, openSave, openBatch, undo, redo, sample, pics: () => pics, current: () => pic(), tool: () => tool, view, prepared, TOOLS };
 })();
