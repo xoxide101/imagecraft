@@ -1606,9 +1606,9 @@
   function openMap(id, mode) {
     const img = now(); if (!img) return; if (tool) closeTool(true);
     const m = IC.maps.LIST.find((x) => x.id === id); mode = mode || (m.grey ? 'grey' : 'heat');
-    busyNow((m.needsFind || m.needsCut) && aiMode === 'cloud' && !IC.maps.known(id, img) ? 'Asking the cloud to outline it…' : m.needsCloud && !IC.maps.known(id, img) ? 'Asking Gemini to outline it…' : m.needsFaces && !IC.faces.known(img) ? 'Finding faces (the first time downloads the face finder)…' : m.needsFind && !IC.maps.known(id, img) ? 'Recognising what is in the picture (the first time downloads the finder, about 139 MB)…' : `Measuring: ${m.name}…`);
+    busyNow(m.needsDepth && !IC.maps.known(id, img) ? 'Working out how near everything is (the first time downloads the depth AI, about 27 to 50 MB)…' : (m.needsFind || m.needsCut) && aiMode === 'cloud' && !IC.maps.known(id, img) ? 'Asking the cloud to outline it…' : m.needsCloud && !IC.maps.known(id, img) ? 'Asking Gemini to outline it…' : m.needsFaces && !IC.faces.known(img) ? 'Finding faces (the first time downloads the face finder)…' : m.needsFind && !IC.maps.known(id, img) ? 'Recognising what is in the picture (the first time downloads the finder, about 139 MB)…' : `Measuring: ${m.name}…`);
     setTimeout(async () => {
-      try { await IC.maps.prepare(id, img); } catch (e) { busy(null); ICLOG.error(m.needsFind ? 'The finder failed' : 'Face finder failed', e); toast((m.needsFind ? 'The finder could not start: ' : 'The face finder could not start: ') + e.message); return; }
+      try { await IC.maps.prepare(id, img); } catch (e) { busy(null); const what = m.needsFind ? 'The finder' : m.needsDepth ? 'The depth AI' : m.needsCut ? 'The cut-out AI' : m.needsFaces ? 'The face finder' : 'The map'; ICLOG.error(`${what} failed`, e); toast(`${what} could not start: ` + e.message); return; }
       const t0 = performance.now(), map = IC.maps.make(id, img);
       mapView = { id, mode, img: mode === 'grey' ? IC.maps.grey(map, img.width, img.height) : IC.maps.heat(map, img) };
       ICLOG.info(`Map ${m.name}: ${img.width} × ${img.height} in ${Math.round(performance.now() - t0)} ms`);

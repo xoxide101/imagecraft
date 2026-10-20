@@ -135,6 +135,20 @@
   }
   LIST.push({ id: 'subject', name: 'Main subject', group: 'Subject (AI)', needsCut: true, what: 'The main subject (people, an animal, an object), found by the cut-out AI. Restore it with care.', make: (img) => subjectOf(img) });
   LIST.push({ id: 'background', name: 'Background', group: 'Subject (AI)', needsCut: true, what: 'Everything but the main subject: it can take stronger clean-up, and gives colour hints.', make: (img) => subjectOf(img).map((v) => 1 - v) });
+  // depth (Depth Anything, on this computer): 1 nearest, 0 farthest; and soft Near, Middle and Far masks from it
+  const depthMemo = new WeakMap();
+  function depthOf(img) {
+    const r = depthMemo.get(img), W = img.width, H = img.height, o = new Float32Array(W * H); if (!r) return o; const fx = r.W / W, fy = r.H / H;
+    for (let y = 0; y < H; y++) { const sy = Math.min(r.H - 1, Math.max(0, (y + 0.5) * fy - 0.5)), y0 = Math.floor(sy), y1 = Math.min(r.H - 1, y0 + 1), ty = sy - y0;
+      for (let x = 0; x < W; x++) { const sx = Math.min(r.W - 1, Math.max(0, (x + 0.5) * fx - 0.5)), x0 = Math.floor(sx), x1 = Math.min(r.W - 1, x0 + 1), tx = sx - x0, d = r.d;
+        o[y * W + x] = (d[y0 * r.W + x0] * (1 - tx) + d[y0 * r.W + x1] * tx) * (1 - ty) + (d[y1 * r.W + x0] * (1 - tx) + d[y1 * r.W + x1] * tx) * ty; } }
+    return o;
+  }
+  const band = (v, a, b) => Math.max(0, Math.min(1, (v - a) / (b - a)));
+  LIST.push({ id: 'depth', name: 'Depth (near to far)', group: 'Depth (AI)', needsDepth: true, grey: true, what: 'How near each part is: white nearest, dark farthest (the depth AI, on this computer).', make: (img) => depthOf(img) });
+  LIST.push({ id: 'near', name: 'Near', group: 'Depth (AI)', needsDepth: true, what: 'The nearest things (soft-edged): to sharpen or restore the foreground alone.', make: (img) => depthOf(img).map((v) => band(v, 0.55, 0.75)) });
+  LIST.push({ id: 'middle', name: 'Middle distance', group: 'Depth (AI)', needsDepth: true, what: 'Neither near nor far (soft-edged).', make: (img) => depthOf(img).map((v) => Math.min(band(v, 0.2, 0.38), 1 - band(v, 0.6, 0.78))) });
+  LIST.push({ id: 'far', name: 'Far', group: 'Depth (AI)', needsDepth: true, what: 'The farthest things (soft-edged): to dehaze, soften or calm the distance alone.', make: (img) => depthOf(img).map((v) => 1 - band(v, 0.18, 0.38)) });
   // anything named: "the motorbike\", "a tear in the paper", "flowers" (added from the Maps tab)
   // Gemini's object masks (cloud): found once per picture and words, kept
   const cloudMemo = new WeakMap();
@@ -202,7 +216,7 @@
     // anything a map needs first (the face finder looks at the picture once)
   async function prepare(ids, img) {
     const want = new Set();
-    for (const id of [].concat(ids)) { const m = id && byId[id]; if (!m) continue; if (override && override(id, img)) continue; if ((m.needsFind || m.needsCut) && cloudPrep && (await cloudPrep(id, img, m.needsFind ? m.needsFind[0] : 'the main subject (the people or thing the photo is of)'))) continue; if (m.needsCloud) { let c = cloudMemo.get(img); if (!c) { c = {}; cloudMemo.set(img, c); } if (!c[m.needsCloud]) c[m.needsCloud] = await IC.cloud.segment(img, m.needsCloud, await IC.cloud.seeModel('gemini')); } if (m.needsFaces) await IC.faces.ensure(img); if (m.needsFind) m.needsFind.forEach((w) => want.add(w)); if (m.needsCut && !cutMemo.has(img)) { const c = document.createElement('canvas'); c.width = img.width; c.height = img.height; c.getContext('2d').putImageData(img, 0, 0); cutMemo.set(img, await CRAFTAI.cutout(c)); } }
+    for (const id of [].concat(ids)) { const m = id && byId[id]; if (!m) continue; if (override && override(id, img)) continue; if ((m.needsFind || m.needsCut) && cloudPrep && (await cloudPrep(id, img, m.needsFind ? m.needsFind[0] : 'the main subject (the people or thing the photo is of)'))) continue; if (m.needsCloud) { let c = cloudMemo.get(img); if (!c) { c = {}; cloudMemo.set(img, c); } if (!c[m.needsCloud]) c[m.needsCloud] = await IC.cloud.segment(img, m.needsCloud, await IC.cloud.seeModel('gemini')); } if (m.needsDepth && !depthMemo.has(img)) { const c = document.createElement('canvas'); c.width = img.width; c.height = img.height; c.getContext('2d').putImageData(img, 0, 0); depthMemo.set(img, await CRAFTAI.depth(c)); } if (m.needsFaces) await IC.faces.ensure(img); if (m.needsFind) m.needsFind.forEach((w) => want.add(w)); if (m.needsCut && !cutMemo.has(img)) { const c = document.createElement('canvas'); c.width = img.width; c.height = img.height; c.getContext('2d').putImageData(img, 0, 0); cutMemo.set(img, await CRAFTAI.cutout(c)); } }
     if (!want.size) return;
     let fm = findMemo.get(img); if (!fm) { fm = new Map(); findMemo.set(img, fm); }
     // the scene words go together the first time (one look at the picture, about 15 seconds)
@@ -211,9 +225,9 @@
     const c = document.createElement('canvas'); c.width = img.width; c.height = img.height; c.getContext('2d').putImageData(img, 0, 0);
     const r = await CRAFTAI.find(c, missing); missing.forEach((w, i) => fm.set(w, { w: r.w, h: r.h, m: r.maps[i] }));
   }
-  const known = (id, img) => { const m = byId[id]; if (!m) return false; if (override && override(id, img)) return true; if (m.needsFaces && !IC.faces.known(img)) return false; if (m.needsCut && !cutMemo.has(img)) return false; if (m.needsCloud) { const c = cloudMemo.get(img); return !!(c && c[m.needsCloud]); } if (m.needsFind) { const fm = findMemo.get(img); return !!fm && m.needsFind.every((w) => fm.has(w)); } return true; };
+  const known = (id, img) => { const m = byId[id]; if (!m) return false; if (override && override(id, img)) return true; if (m.needsFaces && !IC.faces.known(img)) return false; if (m.needsCut && !cutMemo.has(img)) return false; if (m.needsDepth && !depthMemo.has(img)) return false; if (m.needsCloud) { const c = cloudMemo.get(img); return !!(c && c[m.needsCloud]); } if (m.needsFind) { const fm = findMemo.get(img); return !!fm && m.needsFind.every((w) => fm.has(w)); } return true; };
   // a smaller copy (thumbnails) shares what the AI found in the full picture
-  const share = (from, to) => { if (findMemo.has(from)) findMemo.set(to, findMemo.get(from)); if (cutMemo.has(from)) cutMemo.set(to, cutMemo.get(from)); };
+  const share = (from, to) => { if (depthMemo.has(from)) depthMemo.set(to, depthMemo.get(from)); if (findMemo.has(from)) findMemo.set(to, findMemo.get(from)); if (cutMemo.has(from)) cutMemo.set(to, cutMemo.get(from)); };
   // a gap filled smoothly from what is around it (push–pull: averaged down a pyramid, then filled back up): a guess, for colour hints only
   function fillGap(img, hole) {
     const W = img.width, H = img.height, levels = []; let w = W, h = H, C = new Float32Array(W * H * 4); const s = img.data;

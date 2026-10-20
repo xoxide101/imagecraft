@@ -28,9 +28,10 @@
     colourise: { raw: 'https://huggingface.co/edgetools/ddcolor/resolve/main/ddcolor-tiny-fp16.onnx', name: 'Colourise (DDColor)', what: 'Gives a black-and-white or faded photo likely colours (DDColor-tiny, Apache-2.0). Only the colour is guessed; the brightness and every detail stay the photo’s own. About 135 MB the first time.', mb: { gpu: 135, cpu: 135 }, licence: 'Apache-2.0', cpuOnly: true }, // one of its MatMul steps fails on the graphics-card runtime: the processor (about 10 s)
     gfpgan: { raw: 'https://huggingface.co/neurobytemind/GFPGANv1.4.onnx/resolve/main/GFPGANv1.4.onnx', name: 'Restore faces (GFPGAN 1.4)', what: 'Redraws small, blurred or damaged faces (Tencent ARC). Natural skin and colour; no closeness slider. Large: about 340 MB the first time. Trained on FFHQ faces: non-commercial use.', mb: { gpu: 340, cpu: 340 }, licence: 'Apache-2.0 (code); FFHQ-trained weights, non-commercial' },
     scratches: { raw: 'https://huggingface.co/Saimon8420/old-photo-scratch-detection-web/resolve/main/scratch_detection_fp16w.onnx', name: 'Find scratches (old photos)', what: 'Finds scratches, cracks and dust on old photos so Repair can fill them (Microsoft’s Bringing Old Photos Back to Life, MIT). About 75 MB the first time.', mb: { gpu: 75, cpu: 75 }, licence: 'MIT' },
+    depth: { id: 'onnx-community/depth-anything-v2-small', name: 'Depth (near to far)', what: 'Works out how near each part of a photo is: the Depth, Near, Middle and Far maps.', mb: { gpu: 50, cpu: 27 }, licence: 'Apache-2.0' },
     pick: { id: 'Xenova/slimsam-77-uniform', name: 'Pick an object', what: 'Click an object in a picture and it is outlined for you, to keep or take out.', mb: { gpu: 21, cpu: 14 }, licence: 'Apache-2.0' },
   };
-  const DEFAULTS = { on: true, gpu: null, use: { cutout: true, best: false, sharp: true, photo: true, jpeg: true, esrgan: true, esrgan2: true, esrgan3: true, find: true, inpaint: true, codeformer: true, gfpgan: true, scratches: true, colourise: true, pick: true } };
+  const DEFAULTS = { on: true, gpu: null, use: { depth: true, cutout: true, best: false, sharp: true, photo: true, jpeg: true, esrgan: true, esrgan2: true, esrgan3: true, find: true, inpaint: true, codeformer: true, gfpgan: true, scratches: true, colourise: true, pick: true } };
   let settings = DEFAULTS;
   try { settings = { ...DEFAULTS, ...JSON.parse(localStorage.getItem(KEY) || '{}') }; settings.use = { ...DEFAULTS.use, ...(settings.use || {}) }; } catch (e) { /* ignore */ }
   const save = () => { try { localStorage.setItem(KEY, JSON.stringify(settings)); } catch (e) { /* ignore */ } };
@@ -187,6 +188,7 @@
           r = await T.ort.InferenceSession.create(new Uint8Array(buf), { executionProviders: dv === 'webgpu' ? ['webgpu'] : ['wasm'], graphOptimizationLevel: 'all' });
           r.isRaw = true;
         }
+        else if (k === 'depth') r = await T.pipeline('depth-estimation', m.id, opts);
         else if (m.scale) r = await T.pipeline('image-to-image', m.id, opts);
         else if (k === 'best') r = await T.pipeline('background-removal', m.id, { ...opts, dtype: 'fp16' });
         else if (k === 'cutout') {
@@ -388,6 +390,16 @@
       for (let xx = 0; xx < W; xx++) { const sx = Math.min(w - 1, Math.max(0, ((xx + 0.5) * w) / W - 0.5)), x0 = Math.floor(sx), x1 = Math.min(w - 1, x0 + 1), tx = sx - x0; out[y * W + xx] = (pr[y0 * w + x0] * (1 - tx) + pr[y0 * w + x1] * tx) * (1 - ty) + (pr[y1 * w + x0] * (1 - tx) + pr[y1 * w + x1] * tx) * ty; } }
     return out;
   }
+  // Depth Anything V2 Small: how near each point is, 0 (farthest) to 1 (nearest), at most 768 px across
+  function depth(src) {
+    return remember('depth:' + keyOf(src), (async () => {
+      const T = await lib(), c = await canvasOf(src, 768), raw0 = await rawOf(T, c), r = await run('depth', (pipe) => pipe(raw0));
+      const t = r.predicted_depth, dims = t.dims, h = dims[dims.length - 2], w = dims[dims.length - 1], raw = t.data;
+      let lo = Infinity, hi = -Infinity; for (let i = 0; i < raw.length; i++) { if (raw[i] < lo) lo = raw[i]; if (raw[i] > hi) hi = raw[i]; }
+      const d = resample(raw, w, h, c.width, c.height), k = 1 / Math.max(1e-6, hi - lo); for (let i = 0; i < d.length; i++) d[i] = (d[i] - lo) * k;
+      return { W: c.width, H: c.height, d };
+    })());
+  }
   function pick(src, pts) {
     return remember('pick:' + keyOf(src) + JSON.stringify(pts), (async () => {
       const T = await lib(), c = await canvasOf(src, 1024), image = await rawOf(T, c);
@@ -464,5 +476,5 @@
     };
   }
 
-  window.CRAFTAI = { quality, setQuality, bench, estimate, onActivity, scratches, gfpgan, colourise, codeformer, inpaint, find, sizeOf, probe: () => probed, found: () => found, settings: () => settings, enabled, ready, cutout, pick, upscale, onProgress, downloaded, forget, openSettings, MODELS };
+  window.CRAFTAI = { depth, quality, setQuality, bench, estimate, onActivity, scratches, gfpgan, colourise, codeformer, inpaint, find, sizeOf, probe: () => probed, found: () => found, settings: () => settings, enabled, ready, cutout, pick, upscale, onProgress, downloaded, forget, openSettings, MODELS };
 })();
