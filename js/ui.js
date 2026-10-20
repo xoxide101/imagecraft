@@ -219,7 +219,7 @@
   // ------------------------------------------------------------------ the view: zoom, pan, compare
   const view = { zoom: 1, x: 0, y: 0, fit: true, bg: 'check', compare: false, split: 0.5, grid: false };
   let mapView = null; // { id, mode: 'heat' | 'grey', img }
-  const shown = () => (mapView && mapView.img) || (tool && tool.preview) || now();
+  const shown = () => (mapView && mapView.img) || (tool && tool.preview) || (!tool && !mapView && dock && dock.preview && dock.for === now() ? dock.preview : null) || now();
   function show() {
     const img = shown(); if (!img) return;
     const v = $('view'); if (v.width !== img.width || v.height !== img.height) { v.width = img.width; v.height = img.height; }
@@ -1151,6 +1151,7 @@
 
   // ------------------------------------------------------------------ the right-hand panel
   function renderProps() {
+    setTimeout(() => renderDock(), 0);
     if (infoTab === 'working') setTimeout(renderInfo, 0); // the Working tab shows the open tool
     const P = $('props'); P.innerHTML = '';
     if (!tool) { P.append(pictureInfo()); return; }
@@ -1199,6 +1200,40 @@
   }
   function renderOut() { const o = document.getElementById('tool-out'); if (o && tool && tool.def.report) o.innerHTML = tool.preview ? tool.def.report(tool.preview) : '<p class="hint">Working it out…</p>'; }
   // the Curves editor: the channel's histogram, the curve, its points (click adds, drag moves, double-click removes)
+  const curveChanged = (p) => p.length !== 2 || p[0][0] !== 0 || p[0][1] !== 0 || p[1][0] !== 255 || p[1][1] !== 255;
+  // ------------------------------------------------------------------ the Curves box (bottom of the right panel)
+  // Always there with a picture open: brightness, RGB, red, green and blue curves, all shown together; the picture
+  // previews as you drag; Reset puts them straight, Commit makes them a step in History.
+  const CH = [['lum', 'Brightness'], ['rgb', 'RGB'], ['r', 'Red'], ['g', 'Green'], ['b', 'Blue']];
+  const straight = () => ({ lum: [[0, 0], [255, 255]], rgb: [[0, 0], [255, 255]], r: [[0, 0], [255, 255]], g: [[0, 0], [255, 255]], b: [[0, 0], [255, 255]] });
+  var dock = { s: { channel: 'lum', pts: straight() }, for: null, preview: null, folded: false }; let dockKey = '', dockRaf = 0; // var: shown() may look before this line runs
+  try { dock.folded = localStorage.getItem('imagecraft-curvefold') === '1'; } catch (e) { /* blocked storage */ }
+  const dockChanged = () => Object.values(dock.s.pts).some(curveChanged);
+  function dockReset() { dock.s.pts = straight(); dock.preview = null; }
+  function dockRun() { cancelAnimationFrame(dockRaf); dockRaf = requestAnimationFrame(() => { const img = now(); if (!img || dock.for !== img) return; dock.preview = dockChanged() ? TOOLS.curves.run(img, dock.s) : null; show(); renderDockChips(); }); }
+  function renderDockChips() { const el = $('curvedock'); if (!el) return; el.querySelectorAll('[data-cch]').forEach((b) => { b.classList.toggle('changed', curveChanged(dock.s.pts[b.dataset.cch])); b.setAttribute('aria-pressed', String(dock.s.channel === b.dataset.cch)); }); const cm = el.querySelector('[data-cd=commit]'), rs = el.querySelector('[data-cd=reset]'); if (cm) cm.disabled = !dockChanged(); if (rs) rs.disabled = !dockChanged(); }
+  function renderDock(force) {
+    const el = $('curvedock'); if (!el) return; const img = now();
+    if (!img) { el.hidden = true; dockKey = ''; return; } el.hidden = false;
+    if (dock.for !== img) { if (dock.for) dockReset(); dock.for = img; } // another picture or step: the curves start straight
+    const busyTool = tool || mapView, key = [pics.indexOf(pic()), pic().at, !!busyTool, dock.folded, dock.s.channel].join('|');
+    if (!force && key === dockKey) return; dockKey = key;
+    el.innerHTML = `<div class="cd-head"><b>Curves</b>${dock.folded ? '' : '<button type="button" data-cd="help" title="Click to add a point, drag to move it, double-click to take it away. Brightness changes light only; RGB all three colours; Red, Green and Blue each alone. A dot marks each curve you have changed.">?</button>'}<button type="button" data-cd="fold" title="${dock.folded ? 'Show the curves' : 'Fold the curves away'}" aria-expanded="${!dock.folded}">${dock.folded ? '▸' : '▾'}</button></div>`;
+    if (dock.folded) { if (dockChanged()) el.insertAdjacentHTML('beforeend', '<p class="cd-off">Changed curves are waiting: unfold to commit or reset them.</p>'); return; }
+    if (busyTool) { el.insertAdjacentHTML('beforeend', `<p class="cd-off">${tool ? 'Close the open tool to use the Curves box.' : 'Back to the picture (close the map) to use the Curves box.'}</p>`); return; }
+    el.insertAdjacentHTML('beforeend', `<div class="cd-ch">${CH.map(([k, l]) => `<button type="button" data-cch="${k}" title="${l} curve">${l === 'Brightness' ? 'Bright' : l}</button>`).join('')}</div>`);
+    const t = { s: dock.s, base: img, allCurves: true }; el.append(curveEditor(t, () => dockRun()));
+    el.insertAdjacentHTML('beforeend', '<div class="cd-btns"><button class="btn outline" type="button" data-cd="reset" title="Put every curve back straight">Reset</button><button class="btn primary" type="button" data-cd="commit" title="Make these curves a step in History">Commit</button></div>');
+    renderDockChips();
+  }
+  $('curvedock').onclick = async (e) => {
+    const c = e.target.closest('[data-cch]'); if (c) { dock.s.channel = c.dataset.cch; renderDock(true); return; }
+    const b = e.target.closest('[data-cd]'); if (!b) return; const a = b.dataset.cd;
+    if (a === 'fold') { dock.folded = !dock.folded; try { localStorage.setItem('imagecraft-curvefold', dock.folded ? '1' : '0'); } catch (err) { /* blocked storage */ } renderDock(true); }
+    if (a === 'help') toast('Click to add a point, drag to move it, double-click to take it away. A dot marks each curve you have changed.');
+    if (a === 'reset') { dockReset(); show(); renderDock(true); }
+    if (a === 'commit' && dockChanged()) { const img = now(), s0 = JSON.parse(JSON.stringify(dock.s)), t0 = performance.now(), out = dock.preview || TOOLS.curves.run(img, s0); dockReset(); await pushDeep('Curves', out, (im) => TOOLS.curves.run(im, s0), performance.now() - t0, null, { id: 'curves', s: s0 }); busy(null); afterChange(); toast('Curves committed: a step in History.'); }
+  };
   function curveEditor(t, set) {
     const box = document.createElement('div'); box.className = 'curvebox'; const c = document.createElement('canvas'); c.width = c.height = 256 * 2; box.append(c);
     const ch = () => t.s.channel, pts = () => t.s.pts[ch()];
@@ -1209,6 +1244,7 @@
       x.fillStyle = col + '33'; for (let i = 0; i < 256; i++) x.fillRect(i * S, c.height - hist[i] * c.height * 0.9, S, hist[i] * c.height * 0.9);
       x.strokeStyle = 'rgba(128,128,128,.35)'; x.lineWidth = 1; for (let i = 1; i < 4; i++) { x.beginPath(); x.moveTo(i * 128, 0); x.lineTo(i * 128, c.height); x.moveTo(0, i * 128); x.lineTo(c.width, i * 128); x.stroke(); }
       x.beginPath(); x.moveTo(0, c.height); x.lineTo(c.width, 0); x.stroke();
+      if (t.allCurves) for (const k of ['lum', 'rgb', 'r', 'g', 'b']) { if (k === ch() || !curveChanged(t.s.pts[k])) continue; const T2 = IC.detail.curve(t.s.pts[k]); x.strokeStyle = { lum: '#aaa', rgb: '#ddd', r: '#e5484d', g: '#30a46c', b: '#3e63dd' }[k]; x.globalAlpha = 0.55; x.lineWidth = 2; x.beginPath(); for (let i = 0; i < 256; i++) { const yy = c.height - T2[i] * S; if (i) x.lineTo(i * S, yy); else x.moveTo(0, yy); } x.stroke(); x.globalAlpha = 1; }
       const T = IC.detail.curve(pts()); x.strokeStyle = ch() === 'lum' || ch() === 'rgb' ? getComputedStyle(document.body).color : col; x.lineWidth = 3; x.beginPath(); for (let i = 0; i < 256; i++) { const yy = c.height - T[i] * S; if (i) x.lineTo(i * S, yy); else x.moveTo(0, yy); } x.stroke();
       pts().forEach(([px, py]) => { x.fillStyle = '#fff'; x.strokeStyle = '#222'; x.lineWidth = 2; x.beginPath(); x.arc(px * S, c.height - py * S, 8, 0, Math.PI * 2); x.fill(); x.stroke(); });
     };
