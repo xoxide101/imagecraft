@@ -731,6 +731,10 @@
       } },
     // Remaster shapes: the picture's shapes recognised as clean outlines (traced), drawn again crisply at the new size,
     // then blended with the (enlarged) original: everywhere, or only at the edges so the original's texture stays inside
+    dots: { title: 'Remove stray dots', icon: IK.dust, live: true, s: { size: 12 }, fields: [range('size', 'Largest dot taken away (pixels)', 1, 80), note('For drawings and line art: only small marks standing alone are taken away; anything joined to a line stays whole, however thin.')], run: (img, s) => X.dotsOff(img, s) },
+    paper: { title: 'Clean the paper', icon: IK.light, live: true, s: { strength: 85, deepen: 30, keepColour: true },
+      fields: [range('strength', 'Paper made white and even (%)', 0, 100), range('deepen', 'Deepen the lines', 0, 100), chk('keepColour', 'Keep the colours (coloured pencil, ink, a coloured paper)'), note('For drawings, sketches, comics and documents: the paper’s own colour and uneven light are divided out, so it turns white and the lines stay.')],
+      run: (img, s) => X.paperClean(img, s) },
     remaster: { title: 'Remaster shapes', icon: IK.svg, live: false, s: (img) => ({ scale: img.width * img.height < 200000 ? 4 : 2, colours: 'auto', detail: 9, smooth: 1, blend: 100, where: 'edges', perfect: true }),
       fields: [seg('scale', 'New size', [[1, 'Same'], [2, '2×'], [3, '3×'], [4, '4×']]), sel('colours', 'Colours', [['auto', 'Best match'], ...[2, 3, 4, 6, 8, 12, 16, 24, 32].map((n) => [String(n), `${n} colours`])]),
         range('detail', 'Detail', 1, 10), range('smooth', 'Smoothing of the outlines', 0, 5), chk('perfect', 'Make near-circles and ellipses perfect'), seg('where', 'Blend', [['edges', 'At the edges (keeps texture)'], ['all', 'Everywhere']]), range('blend', 'Remastered (%)', 0, 100), { t: 'out' },
@@ -929,7 +933,30 @@
   }
   // where a step will run, for the Process plan: the cloud service it will use, or this computer
   function whereTag(id) { const job = { repair: 'fill', colourise: 'colour', facerestore: 'face' }[id], eng = aiMode === 'cloud' && job && IC.cloud.engines(job)[0]; return eng ? `<span class="where cloud" title="Sent to ${esc(IC.cloud.NAMES[eng])} (the switch is on Cloud AI)">Cloud: ${esc(IC.cloud.NAMES[eng].split(' ')[0])}</span>` : `<span class="where" title="${job ? (aiMode === 'cloud' ? 'No cloud key that can do this: runs on this computer' : 'The switch is not on Cloud AI: runs on this computer') : 'No cloud version of this step: runs on this computer'}">This computer</span>`; }
+  // ------------------------------------------------------------------ kinds of picture: one pipeline each
+  // Each picture has a kind (guessed when it opens; the person can change it). Tools that would harm that kind are greyed
+  // out, unless "Show all tools" is on; Process a photo and Fix everything plan for the kind.
+  const KINDS = [['photo', 'Photo'], ['painting', 'Painting'], ['drawing', 'Drawing'], ['vector', 'Vector art'], ['pixel', 'Pixel art']];
+  const KIND_NAME = Object.fromEntries(KINDS);
+  const ONLY = { // tools for some kinds only (the rest are for every kind)
+    facerestore: 'photo', facerefine: 'photo', redeye: 'photo', colourise: 'photo', deblur: 'photo', stack: 'photo', assess: 'photo painting', regen: 'photo painting',
+    nlm: 'photo painting', denoise: 'photo painting', noisemap: 'photo painting', dehaze: 'photo painting', shadows: 'photo painting', shadowlift: 'photo painting', chroma: 'photo painting',
+    equalizer: 'photo painting', gradient: 'photo painting', diffuse: 'photo painting', clarity: 'photo painting drawing', clahe: 'photo painting drawing', sepia: 'photo painting drawing',
+    repair: 'photo painting drawing', despeckle: 'photo painting drawing', descreen: 'photo painting drawing', deband: 'photo painting vector', paper: 'drawing painting',
+    remaster: 'vector pixel drawing', dots: 'drawing vector pixel',
+  };
+  let allTools = false; try { allTools = localStorage.getItem('imagecraft-alltools') === '1'; } catch (e) { /* blocked storage */ }
+  function kindOf(p) { p = p || pic(); if (!p) return 'photo'; if (!p.kind) { const g = IC.process.guessKind(p.steps[0].img); p.kind = g.kind; p.kindWhy = g.why; p.kindGuessed = true; } return p.kind; }
+  const toolFits = (id) => allTools || !ONLY[id] || ONLY[id].split(' ').includes(kindOf());
+  function setKind(k) { const p = pic(); if (!p) return; p.kind = k; p.kindGuessed = false; processState.delete(p); renderProps(); toast(`${KIND_NAME[k]}: the tools and Process now suit ${k === 'vector' || k === 'pixel' ? KIND_NAME[k].toLowerCase() : `a ${KIND_NAME[k].toLowerCase()}`}.`); }
+  function kindField() {
+    const p = pic(), k = kindOf(p), d = document.createElement('div'); d.className = 'field kind-field';
+    d.innerHTML = `<span>Kind of picture${p.kindGuessed ? ` <small class="hint">(guessed: ${esc(p.kindWhy || '')})</small>` : ''}</span><select class="input" data-kind>${KINDS.map(([v, l]) => `<option value="${v}" ${v === k ? 'selected' : ''}>${l}</option>`).join('')}</select><label class="check"><input type="checkbox" data-alltools ${allTools ? 'checked' : ''}> Show all tools (also those for other kinds)</label>`;
+    d.onchange = (e) => { if (e.target.matches('[data-kind]')) setKind(e.target.value); if (e.target.matches('[data-alltools]')) { allTools = e.target.checked; try { localStorage.setItem('imagecraft-alltools', allTools ? '1' : '0'); } catch (err) { /* blocked storage */ } } };
+    return d;
+  }
   function openTool(id, preset) {
+    if (pic() && !toolFits(id) && TOOLS[id]) { toast(`“${TOOLS[id].title}” is for ${ONLY[id].split(' ').map((k) => KIND_NAME[k].toLowerCase() + 's').join(' and ')}; this picture is set as ${KIND_NAME[kindOf()].toLowerCase()}. Change the kind in Picture, or tick Show all tools.`); return; }
     if (!pic() && !(TOOLS[id] && TOOLS[id].noPic)) { toast('Open a picture first.'); return; }
     if (id === 'repair' || id === 'shadowlift') repairPaint = null; // a fresh painting each time
     if (tool) closeTool(true);
@@ -1186,7 +1213,7 @@
   // one touch-up pass on the picture as it is now
   async function fixTouch(S) {
     closeTool(true); const img = now(), t0 = performance.now(), p = pic(); busyNow('Touch up: measuring…');
-    try { const f = await IC.process.measure(img, { say: (m) => busyNow(`Touch up: ${m}`) }), steps = IC.process.plan(f, S.goals, { factor: S.factor, speed, auto: true, touchup: true, also: S.auto }).filter((x) => !x.manual && x.on); const n = (S.report || []).filter((r) => r.steps.length).length + 1;
+    try { const f = await IC.process.measure(img, { say: (m) => busyNow(`Touch up: ${m}`) }), steps = IC.process.plan(f, S.goals, { kind: kindOf(), factor: S.factor, speed, auto: true, touchup: true, also: S.auto }).filter((x) => !x.manual && x.on); const n = (S.report || []).filter((r) => r.steps.length).length + 1;
       S.report = (S.report || []).filter((r) => r.steps.length);
       if (!steps.length) S.report.push({ pass: n, steps: [], note: 'Nothing left that measures as needing work.' });
       else { const before = p.steps.length, ok = await runSteps(steps.map((x) => ({ id: x.id, s: x.s, where: stepWhere(x) })), true); S.report.push({ pass: n, steps: steps.map((x) => ({ label: x.label, why: x.why, where: stepWhere(x) })), made: p.steps.length - before, secs: (performance.now() - t0) / 1000, stopped: !ok }); } }
@@ -1198,13 +1225,13 @@
     for (let pass = 1; pass <= max; pass++) {
       const img = now(), t0 = performance.now(); busyNow(`Pass ${pass}: measuring…`);
       let f; try { f = await IC.process.measure(img, { faces: pass === 1 && S.auto.faces, say: (m) => busyNow(`Pass ${pass}: ${m}`) }); } catch (e) { busy(null); logFail('Measuring failed', e); toast(e.message); break; }
-      const P = IC.process.plan(f, S.goals, { factor: S.factor, speed, auto: true, touchup: pass > 1, also: S.auto }), steps = P.filter((x) => !x.manual && x.on);
+      const P = IC.process.plan(f, S.goals, { kind: kindOf(), factor: S.factor, speed, auto: true, touchup: pass > 1, also: S.auto }), steps = P.filter((x) => !x.manual && x.on);
       if (pass === 1) { S.f = f; S.lines = IC.process.describe(f); }
       if (!steps.length) { S.report.push({ pass, steps: [], note: pass === 1 ? 'Nothing measured as needing work.' : 'Nothing left that measures as needing work.' }); break; }
       const before = p.steps.length, ok = await runSteps(steps.map((x) => ({ id: x.id, s: x.s, where: stepWhere(x) })), true);
       S.report.push({ pass, steps: steps.map((x) => ({ label: x.label, why: x.why, where: stepWhere(x) })), made: p.steps.length - before, secs: (performance.now() - t0) / 1000, stopped: !ok });
       if (!ok) break;
-      if (pass === max) { const f2 = await IC.process.measure(now(), {}), left = IC.process.plan(f2, S.goals, { factor: S.factor, auto: true, touchup: true, also: S.auto }).filter((x) => !x.manual && x.on); if (left.length) S.report.push({ pass: pass + 1, steps: [], note: `Still measuring as needing: ${left.map((x) => x.label).join(', ')}. Press Touch up again, or work on it by hand.` }); else S.report.push({ pass: pass + 1, steps: [], note: 'Nothing left that measures as needing work.' }); }
+      if (pass === max) { const f2 = await IC.process.measure(now(), {}), left = IC.process.plan(f2, S.goals, { kind: kindOf(), factor: S.factor, auto: true, touchup: true, also: S.auto }).filter((x) => !x.manual && x.on); if (left.length) S.report.push({ pass: pass + 1, steps: [], note: `Still measuring as needing: ${left.map((x) => x.label).join(', ')}. Press Touch up again, or work on it by hand.` }); else S.report.push({ pass: pass + 1, steps: [], note: 'Nothing left that measures as needing work.' }); }
     }
     busy(null); S.f = null; renderInfo(); openTool('process'); toast('Fix everything: done. Each step is in History; the report is in Process a photo.');
   }
@@ -1365,6 +1392,7 @@
     if (!pic()) { box.innerHTML = `<div class="props-head">ImageCraft</div><div class="sec"><p class="hint">Open a picture to start: Home › Open, drop files on the middle, or paste one.</p><p class="hint">Then pick a tool from the ribbon. Each tool shows a live preview here; Apply makes it a step you can undo.</p></div>`; return box; }
     const p = pic(), st = p.steps[p.at], img = st.img, inf = p.info;
     const cs = st.colours != null && st.colours >= 0 && st.colours <= 256 ? C.colours(img, 256) : null;
+    setTimeout(() => { const sec = box.querySelector('.sec'); if (sec && !box.querySelector('.kind-field')) { const d = document.createElement('div'); d.className = 'sec'; d.append(kindField()); sec.after(d); } }, 0);
     box.innerHTML = `<div class="props-head">Picture</div><div class="sec"><dl class="facts">
       <dt>Name</dt><dd>${esc(p.name)}</dd><dt>Size</dt><dd>${fmtN(img.width)} × ${fmtN(img.height)} pixels</dd>
       <dt>Opened as</dt><dd>${esc(inf.format || '')}${inf.bits ? ` · ${inf.bits}-bit` : ''}${inf.note ? ` · ${esc(inf.note)}` : ''}</dd>
@@ -1464,12 +1492,12 @@
     add('<p class="hint">Say what you are doing, and ImageCraft measures this photo (noise, blur, JPEG blocks, printing dots, light, colour cast, specks, and faces if you like) and lays out the steps in the order that works best: repair, clean, light and colour, your own edits, faces, make bigger, a final sharpen. Each step says why. Untick anything you do not want, open any step to adjust it, then run the ticked ones.</p>');
     const goals = [['repair', 'Repair (specks, tears, JPEG blocks, printing dots)'], ['colour', 'Colour correction (light, fading, casts)'], ['bigger', 'Make bigger'], ['edits', 'Edits (crop, straighten, curves, colour: your own touch)']];
     const g = add(`<div class="field"><span>What are you doing?</span>${goals.map(([k, l]) => `<label class="check"><input type="checkbox" data-g="${k}" ${S.goals[k] ? 'checked' : ''}> ${l}</label>`).join('')}</div>`);
-    g.onchange = (e) => { const k = e.target.dataset.g; if (k) { S.goals[k] = e.target.checked; if (S.f) S.plan = IC.process.plan(S.f, S.goals, { factor: S.factor, speed }); renderProps(); } };
-    if (S.goals.bigger) { const f2 = add(`<div class="field"><span>How much bigger</span><div class="seg">${[2, 4].map((k) => `<button type="button" class="btn" data-fac="${k}" aria-pressed="${S.factor === k}">${k}×</button>`).join('')}</div></div>`); f2.onclick = (e) => { const b = e.target.closest('[data-fac]'); if (b) { S.factor = +b.dataset.fac; if (S.f) S.plan = IC.process.plan(S.f, S.goals, { factor: S.factor, speed }); renderProps(); } }; }
+    g.onchange = (e) => { const k = e.target.dataset.g; if (k) { S.goals[k] = e.target.checked; if (S.f) S.plan = IC.process.plan(S.f, S.goals, { kind: kindOf(), factor: S.factor, speed }); renderProps(); } };
+    if (S.goals.bigger) { const f2 = add(`<div class="field"><span>How much bigger</span><div class="seg">${[2, 4].map((k) => `<button type="button" class="btn" data-fac="${k}" aria-pressed="${S.factor === k}">${k}×</button>`).join('')}</div></div>`); f2.onclick = (e) => { const b = e.target.closest('[data-fac]'); if (b) { S.factor = +b.dataset.fac; if (S.f) S.plan = IC.process.plan(S.f, S.goals, { kind: kindOf(), factor: S.factor, speed }); renderProps(); } }; }
     const fc = add(`<label class="check"><input type="checkbox" ${S.faces ? 'checked' : ''}> Look for faces too (the first time downloads the face finder, about 4 MB)</label>`); fc.querySelector('input').onchange = (e) => { S.faces = e.target.checked; };
-    S.auto = S.auto || { faces: true, colourise: true }; S.passes = S.passes || 3;
+    S.auto = S.auto || { faces: true, colourise: true }; S.passes = S.passes || 3; el.append(kindField());
     const fx = add(`<div class="ai-card fix-all"><h3>Fix everything</h3><p class="hint">One click: measures the photo, runs the whole plan (damage found automatically, nothing left for you), then touch-up passes that measure the result again and fix only what still needs it. Each step runs Local, Cloud or Both as the status bar switch and AI settings › Steps say.</p>
-      <label class="check"><input type="checkbox" data-fa="faces" ${S.auto.faces ? 'checked' : ''}> Restore faces (they are redrawn)</label><label class="check"><input type="checkbox" data-fa="colourise" ${S.auto.colourise ? 'checked' : ''}> Colourise if black and white or sepia</label>
+      ${kindOf() === 'photo' ? `<label class="check"><input type="checkbox" data-fa="faces" ${S.auto.faces ? 'checked' : ''}> Restore faces (they are redrawn)</label><label class="check"><input type="checkbox" data-fa="colourise" ${S.auto.colourise ? 'checked' : ''}> Colourise if black and white or sepia</label>` : `<p class="hint">Plan for ${KIND_NAME[kindOf()].toLowerCase()}: ${({ painting: 'repair, light and colour, keeping the brushwork', drawing: 'the paper cleaned, stray dots, crisp lines', vector: 'JPEG blocks, then the shapes rebuilt with solid colours', pixel: 'made bigger with the pixels kept' })[kindOf()]}.</p>`}
       <label class="field"><span>Passes, at most</span><select class="input" data-fp style="width:auto">${[[1, '1 (no touch-up)'], [2, '2 (one touch-up)'], [3, '3 (two touch-ups)'], [4, '4']].map(([v, l]) => `<option value="${v}" ${S.passes === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
       <div class="btns"><button class="btn primary" type="button" data-fx="all">Fix everything</button><button class="btn outline" type="button" data-fx="touch" title="Measure the picture as it is now (with any changes you made yourself) and fix only what still needs it">${S.report ? 'Touch up again' : 'Touch up'}</button></div>
       ${S.report ? `<div class="fix-report">${S.report.map((r) => `<div><b>${r.steps.length ? `Pass ${r.pass}${r.pass > 1 ? ' (touch-up)' : ''}` : 'Then'}</b>${r.steps.length ? ` · ${r.steps.length} step${r.steps.length === 1 ? '' : 's'} · ${fmtTime(r.secs)}${r.stopped ? ' · <b>stopped</b>' : ''}<ul>${r.steps.map((x) => `<li>${esc(x.label)} <span class="where${x.where !== 'local' ? ' cloud' : ''}">${x.where === 'local' ? 'Local' : x.where === 'cloud' ? 'Cloud' : 'Both'}</span><small class="hint"> ${esc(x.why)}</small></li>`).join('')}</ul>` : `<p class="hint">${esc(r.note)}</p>`}</div>`).join('')}</div>` : ''}</div>`);
@@ -1477,7 +1505,7 @@
     fx.onclick = (e) => { const b = e.target.closest('[data-fx]'); if (!b) return; if (b.dataset.fx === 'touch') { const keep = S.passes; S.passes = 1; S.touchOnly = true; fixTouch(S).finally(() => { S.passes = keep; S.touchOnly = false; }); } else fixEverything(S); };
     add('<p class="hint" style="margin-top:10px"><b>Or step by step:</b> look at the photo, then choose the steps yourself.</p>');
     const look = add('<div class="btns"><button class="btn outline" type="button">Look at the photo</button></div>').querySelector('button');
-    look.onclick = async () => { const img = t.base; busyNow('Measuring…'); try { S.f = await IC.process.measure(img, { faces: S.faces, say: busyNow }); S.lines = IC.process.describe(S.f); S.plan = IC.process.plan(S.f, S.goals, { factor: S.factor, speed }); } catch (e) { logFail('Measuring failed', e); toast(e.message); } busy(null); if (tool === t) renderProps(); };
+    look.onclick = async () => { const img = t.base; busyNow('Measuring…'); try { S.f = await IC.process.measure(img, { faces: S.faces, say: busyNow }); S.lines = IC.process.describe(S.f); S.plan = IC.process.plan(S.f, S.goals, { kind: kindOf(), factor: S.factor, speed }); } catch (e) { logFail('Measuring failed', e); toast(e.message); } busy(null); if (tool === t) renderProps(); };
     if (!S.f) return;
     add(`<div class="field"><span>What the photo needs</span><ul class="hint" style="margin:4px 0 0;padding-left:18px">${S.lines.map((l) => `<li>${esc(l)}</li>`).join('')}</ul></div>`);
     if (!S.plan.length) { add('<p class="hint">Nothing to do for these goals: tick another goal above.</p>'); return; }
@@ -1951,8 +1979,8 @@
   matchMedia('(prefers-color-scheme: dark)').addEventListener('change', paintTheme); paintTheme();
 
   // ------------------------------------------------------------------ ribbon, menus, title bar
-  const T = (id) => () => openTool(id), has = () => !pic();
-  const B = (label, icon, run, o = {}) => ({ label, icon, run, disabled: o.always ? undefined : has, ...o });
+  const T = (id) => { const f = () => openTool(id); f.toolId = id; return f; }, has = () => !pic();
+  const B = (label, icon, run, o = {}) => ({ label, icon, run, disabled: o.always ? undefined : run && run.toolId && ONLY[run.toolId] ? () => has() || !toolFits(run.toolId) : has, ...o });
   const setBg = (b) => { view.bg = b; layout(); };
   const toggleCompare = () => { view.compare = !view.compare; show(); if (tool) renderProps(); };
   const toggleL = document.createElement('button'); toggleL.className = 'crb-small ic-toggle'; toggleL.textContent = 'Pictures'; toggleL.onclick = () => document.querySelector('.work').classList.toggle('show-left');
@@ -1994,7 +2022,7 @@
         ['Repair', [B('Repair damage', IK.dust, T('repair'), { big: true, title: 'Find specks, scratches, tears and stamps (or paint over damage) and fill them in from around them' })]],
         ['Old photo', [B('Restore old photo', IK.modern, () => openTool('modern', { kind: 'photo', bigger: 1 }), { big: true, title: 'Dust, noise, blur, colour cast and fading fixed in one go, measured from the picture' }), B('Split subject and background', IK.cutout, T('split'), { big: true, title: 'The main subject and the background as two pictures (layers), each restored its own way' }), B('Ask AI what it needs', IK.modern, T('assess'), { big: true, title: 'A vision model in Ollama on this computer looks at the picture, says what it is and what is wrong, and ticks the tools to fix it' })]],
         ['Restore', [B('Remove noise', IK.denoise, T('nlm'), { big: true, title: 'Smart noise removal (non-local means): grain and colour blotches' }), B('Deblur', IK.sharpen, T('deblur'), { big: true, title: 'Undo soft focus, out of focus or camera shake (Wiener deconvolution)' }), B('Faded detail', IK.light, T('clahe'), { big: true, title: 'Adaptive contrast for faded photos (CLAHE)' }), { col: [B('Where the noise is', IK.grid, T('noisemap')), B('Rebuild colour detail', IK.colour, T('chroma'), { title: 'Colour blocks and smears (JPEG, old scans) made to follow the real brightness detail' })] }]],
-        ['Clean', [B('Smooth out noise', IK.denoise, T('denoise'), { big: true }), B('Dust and scratches', IK.dust, T('despeckle'), { big: true }), B('JPEG blocks', IK.jpeg, T('deblock'), { big: true, title: 'Remove JPEG blocks and smudges' }), B('Undither', IK.undither, T('undither'), { big: true, title: 'Blend dithering dots back into smooth colour' }), B('Banding', IK.undither, T('deband'), { big: true, title: 'Smooth out stripes in skies and shadows (banding)' }), B('Descreen', IK.undither, T('descreen'), { big: true, title: 'Printing dots (newspaper, yearbook, magazine) measured and smoothed away' })]],
+        ['Clean', [B('Smooth out noise', IK.denoise, T('denoise'), { big: true }), B('Dust and scratches', IK.dust, T('despeckle'), { big: true }), B('Clean the paper', IK.light, T('paper'), { big: true, title: 'Drawings and documents: white, even paper; the lines kept' }), B('Remove stray dots', IK.dust, T('dots'), { big: true, title: 'Drawings and line art: small marks standing alone; lines never touched' }), B('JPEG blocks', IK.jpeg, T('deblock'), { big: true, title: 'Remove JPEG blocks and smudges' }), B('Undither', IK.undither, T('undither'), { big: true, title: 'Blend dithering dots back into smooth colour' }), B('Banding', IK.undither, T('deband'), { big: true, title: 'Smooth out stripes in skies and shadows (banding)' }), B('Descreen', IK.undither, T('descreen'), { big: true, title: 'Printing dots (newspaper, yearbook, magazine) measured and smoothed away' })]],
         ['Background', [B('Remove background', IK.cutout, T('cutout'), { big: true })]],
         ['Bigger', [B('Make bigger', IK.upscale, T('upscale'), { big: true, title: 'Smooth, pixel-art or AI upscaling' }), B('Combine photos', IK.upscale, T('stack'), { big: true, title: 'Merge several shots of the same scene: less noise, and more detail than any one shot' }), B('Modernise', IK.modern, T('modern'), { big: true }), B('Remaster shapes', IK.svg, T('remaster'), { big: true, title: 'Recognise the shapes, draw them again crisply at the new size, and blend with the original' })]],
       ] },

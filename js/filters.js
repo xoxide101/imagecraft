@@ -158,6 +158,45 @@
   }
   // light and colour from another version (a cloud result), detail from the photo itself: the broad difference in
   // lightness and colour is carried over (smoothed), so no edge, texture or face is redrawn
+  // Clean the paper (drawings, sketches, documents): the paper's own colour and its uneven light are found (the
+  // brightest nearby, smoothed) and divided out, so the paper turns white and even and the lines stay; then the lines
+  // are deepened. keepColour: each colour divided by the paper's own (coloured pencil, ink); else greys.
+  // Remove stray dots (drawings, line art): only small marks standing alone, darker than the paper, that touch nothing,
+  // are taken away (filled with the paper round them); anything joined to a line stays whole, however thin.
+  function dotsOff(img, { size = 12, countOnly = false } = {}) {
+    const W = img.width, H = img.height, d = img.data, n = W * H, L = new Uint8Array(n), hist = new Uint32Array(256);
+    for (let p = 0; p < n; p++) { const v = (d[p * 4] * 77 + d[p * 4 + 1] * 150 + d[p * 4 + 2] * 29) >> 8; L[p] = v; hist[v]++; }
+    let c = 0, paper = 255; for (let v = 255; v >= 0; v--) { c += hist[v]; if (c >= n * 0.3) { paper = v; break; } }
+    const thr = paper * 0.72, lab = new Int32Array(n), stack = new Int32Array(n), maxSide = Math.ceil(2 * Math.sqrt(size)) + 2;
+    const out = countOnly ? null : new ImageData(new Uint8ClampedArray(d), W, H); let removed = 0, comps = 0;
+    for (let s0 = 0; s0 < n; s0++) {
+      if (lab[s0] || L[s0] >= thr) continue; comps++; let top = 0, area = 0, x0 = W, y0 = H, x1 = 0, y1 = 0; stack[top++] = s0; lab[s0] = comps; const px = [];
+      while (top) { const p = stack[--top], x = p % W, y = (p / W) | 0; area++; if (area <= size + 1) px.push(p); if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) { const xx = x + dx, yy = y + dy; if (xx < 0 || yy < 0 || xx >= W || yy >= H) continue; const q = yy * W + xx; if (!lab[q] && L[q] < thr) { lab[q] = comps; stack[top++] = q; } } }
+      if (area > size || x1 - x0 + 1 > maxSide || y1 - y0 + 1 > maxSide) continue;
+      removed += area; if (countOnly) continue;
+      let r = 0, g = 0, b = 0, m = 0; for (let y = Math.max(0, y0 - 2); y <= Math.min(H - 1, y1 + 2); y++) for (let x = Math.max(0, x0 - 2); x <= Math.min(W - 1, x1 + 2); x++) { const q = y * W + x; if (L[q] >= thr) { r += d[q * 4]; g += d[q * 4 + 1]; b += d[q * 4 + 2]; m++; } }
+      if (!m) continue; for (const p of px) { const o = out.data; o[p * 4] = r / m; o[p * 4 + 1] = g / m; o[p * 4 + 2] = b / m; }
+    }
+    return countOnly ? { frac: removed / n } : out;
+  }
+  function paperClean(img, { strength = 80, deepen = 30, keepColour = true } = {}) {
+    const W = img.width, H = img.height, d = img.data, k = Math.min(1, 400 / Math.max(W, H)), w = Math.max(8, Math.round(W * k)), h = Math.max(8, Math.round(H * k));
+    const sm = resize(img, { width: w, height: h }), sd = sm.data, R = Math.max(2, Math.round(Math.max(w, h) / 30)), bg = [new Float32Array(w * h), new Float32Array(w * h), new Float32Array(w * h)];
+    for (let c = 0; c < 3; c++) { // local maximum (the paper between the lines), rows then columns, then smoothed
+      const a = new Float32Array(w * h), b = bg[c]; for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { let m = 0; for (let i = Math.max(0, x - R); i <= Math.min(w - 1, x + R); i++) m = Math.max(m, sd[(y * w + i) * 4 + c]); a[y * w + x] = m; }
+      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { let m = 0; for (let j = Math.max(0, y - R); j <= Math.min(h - 1, y + R); j++) m = Math.max(m, a[j * w + x]); b[y * w + x] = m; }
+      bg[c] = boxMean(b, w, h, R);
+    }
+    const out = new ImageData(W, H), o = out.data, t = strength / 100, g = 1 + (deepen / 100) * 1.5;
+    for (let y = 0; y < H; y++) { const sy = Math.min(h - 1, Math.max(0, (y + 0.5) * k - 0.5)), y0 = Math.floor(sy), y1 = Math.min(h - 1, y0 + 1), ty = sy - y0;
+      for (let x = 0; x < W; x++) { const sx = Math.min(w - 1, Math.max(0, (x + 0.5) * k - 0.5)), x0 = Math.floor(sx), x1 = Math.min(w - 1, x0 + 1), tx = sx - x0, p = (y * W + x) * 4;
+        const at = (A) => (A[y0 * w + x0] * (1 - tx) + A[y0 * w + x1] * tx) * (1 - ty) + (A[y1 * w + x0] * (1 - tx) + A[y1 * w + x1] * tx) * ty;
+        const bl = keepColour ? null : (at(bg[0]) * 0.299 + at(bg[1]) * 0.587 + at(bg[2]) * 0.114);
+        for (let c = 0; c < 3; c++) { const B = Math.max(24, keepColour ? at(bg[c]) : bl), v0 = keepColour ? d[p + c] : d[p] * 0.299 + d[p + 1] * 0.587 + d[p + 2] * 0.114; let v = Math.min(1, v0 / B); v = Math.pow(v, g); o[p + c] = Math.round(d[p + c] + (v * 255 - d[p + c]) * t); }
+        o[p + 3] = d[p + 3]; } }
+    return out;
+  }
   function toneFrom(img, ref) {
     const W = img.width, H = img.height, n = W * H, d = img.data, c = ref.data, dL = new Float32Array(n), dA = new Float32Array(n), dB = new Float32Array(n), O = [];
     for (let p = 0; p < n; p++) { const a = toLab(d[p * 4] / 255, d[p * 4 + 1] / 255, d[p * 4 + 2] / 255), b = toLab(c[p * 4] / 255, c[p * 4 + 1] / 255, c[p * 4 + 2] / 255); O.push(a); dL[p] = b[0] - a[0]; dA[p] = b[1] - a[1]; dB[p] = b[2] - a[2]; }
@@ -663,5 +702,5 @@
     return o;
   }
 
-  IC.filters = { toneFrom, colourFrom, colourise, mmpx, deband, chromaRebuild, guidedBy, cas, dehaze, hazeLevel, isToned, shadowRecover, guided, autoColour, clarity, pyramidBlend, aliasCheck, antialias, light, colour, autoLevels, autoFix, whiteBalance, greyscale, sepia, invert, threshold, posterize, blur, sharpen, denoise, median, despeckle, deblock, undither, pixelate, resize, scale2x, scale3x, rotate: rotateAny, rotate90: rotate, flip, crop, trimBox, canvasSize, makeClear, flatten, copy, canvasOf };
+  IC.filters = { dotsOff, paperClean, toneFrom, colourFrom, colourise, mmpx, deband, chromaRebuild, guidedBy, cas, dehaze, hazeLevel, isToned, shadowRecover, guided, autoColour, clarity, pyramidBlend, aliasCheck, antialias, light, colour, autoLevels, autoFix, whiteBalance, greyscale, sepia, invert, threshold, posterize, blur, sharpen, denoise, median, despeckle, deblock, undither, pixelate, resize, scale2x, scale3x, rotate: rotateAny, rotate90: rotate, flip, crop, trimBox, canvasSize, makeClear, flatten, copy, canvasOf };
 })();

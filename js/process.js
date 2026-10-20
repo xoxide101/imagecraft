@@ -33,10 +33,25 @@
     f.toned = X.isToned(img); f.cast = M.castRatio(img); f.haze = X.hazeLevel(c);
     say && say('Specks…'); await new Promise((r) => setTimeout(r, 0));
     const sp = M.damage(c, { specks: true }); let s2 = 0; sp.forEach((v) => (s2 += v)); f.specks = s2 / sp.length;
+    f.dots = X.dotsOff(c, { countOnly: true }).frac;
     const fl = M.damage(c, { specks: false, flecks: true }); let s3 = 0; fl.forEach((v) => (s3 += v)); f.flecks = s3 / fl.length;
     f.kind = f.fewColours && f.fewColours <= 64 && n < 600000 ? 'pixel' : f.fewColours && f.fewColours < 300 ? 'drawing' : 'photo';
     if (faces) { say && say('Finding faces (the first time downloads the face finder)…'); try { const fs = await IC.faces.ensure(img); f.faces = fs.length; f.faceSize = fs.length ? Math.min(...fs.map((q) => q.box[2] - q.box[0])) : 0; } catch (e) { f.faces = null; } }
     return f;
+  }
+  // what kind of picture: pixel art (few colours, small), vector art (flat colour areas, few colours), a drawing (mostly
+  // plain paper, little colour, dark lines) or a photo. A painting is not guessed (it reads as a photo): chosen by the person.
+  function guessKind(img) {
+    const W = img.width, H = img.height, d = img.data, n = W * H, st = Math.max(1, Math.floor(n / 150000)), cols = new Set(), q5 = new Set();
+    let paper = 0, dark = 0, chroma = 0, flat = 0, k = 0;
+    for (let p = 0; p + W + 1 < n; p += st) { const i = p * 4, r = d[i], g = d[i + 1], b = d[i + 2], L = 0.299 * r + 0.587 * g + 0.114 * b, mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+      if (cols.size < 5000) cols.add((r << 16) | (g << 8) | b); q5.add(((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3)); k++; chroma += mx - mn; if (L > 200 && mx - mn < 40) paper++; if (L < 110) dark++;
+      const j = i + 4, l = i + W * 4; if (Math.abs(d[j] - r) + Math.abs(d[j + 1] - g) + Math.abs(d[j + 2] - b) < 6 && Math.abs(d[l] - r) + Math.abs(d[l + 1] - g) + Math.abs(d[l + 2] - b) < 6) flat++; }
+    const fc = cols.size, pf = paper / k, df = dark / k, cm = chroma / k / 255, ff = flat / k;
+    if (fc <= 64 && n < 600000) return { kind: 'pixel', why: `${fc} colours, small` };
+    if (pf > 0.5 && df < 0.3 && cm < 0.12) return { kind: 'drawing', why: `${Math.round(pf * 100)}% plain paper, little colour` };
+    if (ff > 0.6 && q5.size < 1500) return { kind: 'vector', why: `${Math.round(ff * 100)}% flat colour areas, ${q5.size < 300 ? 'few' : 'a limited number of'} colours` };
+    return { kind: 'photo', why: 'continuous tones' };
   }
   // what the findings say, in words (for the panel)
   function describe(f) {
@@ -52,7 +67,7 @@
     return L;
   }
   // rough time for a step on this picture (ms), from tested speeds; the AI ones from this computer's own timings when known
-  const PER_MP = { descreen: 400, deblock: 300, chroma: 400, repair: 600, nlm: 6000, deblur: 9000, autocolour: 400, balance: 200, shadows: 900, dehaze: 900, clahe: 500, light: 100, sharpen: 200, deband: 1500, resize: 600 };
+  const PER_MP = { dots: 600, paper: 300, remaster: 4000, descreen: 400, deblock: 300, chroma: 400, repair: 600, nlm: 6000, deblur: 9000, autocolour: 400, balance: 200, shadows: 900, dehaze: 900, clahe: 500, light: 100, sharpen: 200, deband: 1500, resize: 600 };
   function estimate(step, f, speed) {
     const sp = speed || {};
     if (step.id === 'upscale') { const sq = Math.ceil(f.W / 160) * Math.ceil(f.H / 160); return sq * (sp['esrgan3'] || 150) + 500; }
@@ -64,7 +79,31 @@
   // auto: nothing is left for the person (damage found automatically; no edits). touchup: a later pass of Fix everything,
   // only what still measures as needing it (stricter, so nothing is done twice for a marginal reading), and not the
   // one-time steps (colourise, faces, make bigger). also: { faces, colourise } chosen for Fix everything.
-  function plan(f, goals, { factor = 2, speed, auto = false, touchup = false, also = {} } = {}) {
+  function plan(f, goals, o = {}) {
+    const K = o.kind || (f.kind === 'pixel' ? 'pixel' : f.kind === 'drawing' ? 'vector' : 'photo');
+    if (K === 'photo') return planPhoto(f, goals, o);
+    const { factor = 2, speed, touchup = false } = o, P = [], add = (id, label, why, s = {}, on = true) => P.push({ id, label, why, s, on }), W2 = Math.round(f.W * factor), H2 = Math.round(f.H * factor);
+    if (K === 'painting') { // the photo plan, keeping the brushwork: no faces or colour guessed, no deblur, only strong noise, a light finish
+      const Q = planPhoto(f, goals, { ...o, also: {} }).filter((x) => !['facerestore', 'facerefine', 'colourise', 'deblur'].includes(x.id) && !(x.id === 'nlm' && f.noise.luma < 4));
+      Q.forEach((x) => { if (x.id === 'nlm') { x.label = 'Remove noise (gently)'; x.s = { ...x.s, strength: 50 }; } if (x.id === 'sharpen') { x.on = false; x.s = { ...x.s, cas: 15 }; } if (x.id === 'upscale') x.s = { ...x.s, denoise: 10 }; if (x.id === 'repair' && !x.manual) x.label = touchup ? 'Repair what is left' : 'Repair cracks, flaking and specks'; if (x.id === 'balance') x.why += ' (yellowed varnish or light)'; });
+      Q.forEach((st) => { if (!st.manual) st.ms = estimate(st, f, speed); }); return Q;
+    }
+    if (K === 'drawing') {
+      if (!touchup && f.screen.peaks) add('descreen', 'Descreen', `printing dots every ${f.screen.period.toFixed(1)} px (a printed drawing or comic)`);
+      if (f.blocks.luma > (touchup ? 1.7 : 1.3)) add('deblock', 'Remove JPEG blocks', `blocks ${f.blocks.luma.toFixed(1)}×`, { strength: 50 });
+      if (!touchup && (goals.repair || goals.colour)) add('paper', 'Clean the paper', 'the paper made white and even; the lines kept and deepened', { strength: 85, deepen: 30, keepColour: !f.toned });
+      if (f.dots > (touchup ? 0.0003 : 0.00005)) add('dots', 'Remove stray dots', `${(f.dots * 100).toFixed(3)}% of the picture in small marks that touch no line (lines are never touched)`, { size: 12 });
+      if (goals.bigger && !touchup) add('resize', `Make bigger ${factor}× (Splat)`, 'a drawing: edge-following, smooth lines without halos', { w: W2, h: H2, method: 'splat' });
+      if (!touchup) add('sharpen', 'Crisp lines', 'a light finish on the lines', { how: 'smart', cas: 25 }, true);
+    } else if (K === 'vector') {
+      if (f.blocks.luma > (touchup ? 1.4 : 1.1)) add('deblock', 'Remove JPEG blocks', `blocks ${f.blocks.luma.toFixed(1)}× around the flat colours`, { strength: 70 });
+      if (!touchup && (goals.repair || goals.colour || goals.bigger)) add('remaster', `Rebuild the shapes${goals.bigger ? ` ${factor}× bigger` : ''}`, 'flat colours made solid, edges redrawn clean (no new colours)', { scale: goals.bigger ? Math.min(4, factor) : 1, colours: 'auto', where: 'all', blend: 100 });
+    } else if (K === 'pixel') {
+      if (goals.bigger && !touchup) add('resize', `Make bigger ${factor}× (pixel art, MMPX)`, 'shapes and dithering kept, no new colours', { w: W2, h: H2, method: 'mmpx' });
+    }
+    P.forEach((st) => { st.ms = estimate(st, f, speed); }); return P;
+  }
+  function planPhoto(f, goals, { factor = 2, speed, auto = false, touchup = false, also = {} } = {}) {
     const k = touchup ? 1.3 : 1;
     const P = [], add = (id, label, why, s = {}, on = true, extra = {}) => P.push({ id, label, why, s, on, ...extra });
     const manual = (id, label, why, extra = {}) => P.push({ id, label, why, manual: true, on: true, ...extra });
@@ -120,5 +159,5 @@
     P.forEach((st) => { if (!st.manual) st.ms = estimate(st, f, speed); });
     return P;
   }
-  IC.process = { measure, describe, plan, estimate };
+  IC.process = { measure, describe, plan, estimate, guessKind };
 })();
