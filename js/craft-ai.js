@@ -24,9 +24,10 @@
     esrgan2: { raw: 'https://huggingface.co/SceneWorks/real-esrgan-onnx/resolve/main/real_esrgan_x2.onnx', name: 'Upscale 2× (Real-ESRGAN)', what: 'Real-ESRGAN at twice the size, for photos that only need a little more.', mb: { gpu: 67, cpu: 67 }, licence: 'BSD-3-Clause', scale: 2 },
     find: { id: 'Xenova/clipseg-rd64-refined', name: 'Find things by name', what: 'Finds sky, grass, trees, people, clothes, buildings and anything you name in a picture, by what they are rather than by their colour, so it works on sepia and faded prints too. (About 15 seconds a picture on the processor.)', mb: { gpu: 139, cpu: 139 }, licence: 'Apache-2.0' },
     inpaint: { raw: 'https://huggingface.co/andraniksargsyan/migan/resolve/main/migan_pipeline_v2.onnx', name: 'Repair (fill in damage)', what: 'Fills tears, scratches, holes and stamps from what is around them (MI-GAN, Picsart). It invents what is missing, so use it where the original is lost.', mb: { gpu: 28, cpu: 28 }, licence: 'MIT' },
+    codeformer: { raw: 'https://huggingface.co/bluefoxcreation/Codeformer-ONNX/resolve/main/codeformer.onnx', name: 'Restore faces (CodeFormer)', what: 'Redraws small, blurred or damaged faces from a model of faces, with a slider for how closely it keeps to the original. Large: about 377 MB the first time. Non-commercial use only (S-Lab License 1.0).', mb: { gpu: 377, cpu: 377 }, licence: 'S-Lab 1.0 (non-commercial)' },
     pick: { id: 'Xenova/slimsam-77-uniform', name: 'Pick an object', what: 'Click an object in a picture and it is outlined for you, to keep or take out.', mb: { gpu: 21, cpu: 14 }, licence: 'Apache-2.0' },
   };
-  const DEFAULTS = { on: true, gpu: null, use: { cutout: true, best: false, sharp: true, photo: true, jpeg: true, esrgan: true, esrgan2: true, esrgan3: true, find: true, inpaint: true, pick: true } };
+  const DEFAULTS = { on: true, gpu: null, use: { cutout: true, best: false, sharp: true, photo: true, jpeg: true, esrgan: true, esrgan2: true, esrgan3: true, find: true, inpaint: true, codeformer: true, pick: true } };
   let settings = DEFAULTS;
   try { settings = { ...DEFAULTS, ...JSON.parse(localStorage.getItem(KEY) || '{}') }; settings.use = { ...DEFAULTS.use, ...(settings.use || {}) }; } catch (e) { /* ignore */ }
   const save = () => { try { localStorage.setItem(KEY, JSON.stringify(settings)); } catch (e) { /* ignore */ } };
@@ -273,6 +274,14 @@
     for (let p = 0; p < N; p++) { for (let c = 0; c < 3; c++) od[p * 4 + c] = f(d[c * N + p]); od[p * 4 + 3] = s[p * 4 + 3]; }
     return out;
   }
+  // CodeFormer: an aligned 512 × 512 face (RGB scaled to −1…1) and w (0 = most redrawing, 1 = closest to the input)
+  async function codeformer(face, w) {
+    const T = await lib(), N = 512 * 512, d = face.data, x = new Float32Array(3 * N);
+    for (let p = 0; p < N; p++) for (let c = 0; c < 3; c++) x[c * N + p] = d[p * 4 + c] / 127.5 - 1;
+    const o = await run('codeformer', (ses) => ses.run({ x: new T.ort.Tensor('float32', x, [1, 3, 512, 512]), w: new T.ort.Tensor('float64', new Float64Array([w]), []) }).then((r) => r.y));
+    const y = o.data, out = new ImageData(512, 512); for (let p = 0; p < N; p++) { for (let c = 0; c < 3; c++) out.data[p * 4 + c] = Math.round(Math.max(0, Math.min(255, (y[c * N + p] + 1) * 127.5))); out.data[p * 4 + 3] = 255; }
+    return out;
+  }
   function pick(src, pts) {
     return remember('pick:' + keyOf(src) + JSON.stringify(pts), (async () => {
       const T = await lib(), c = await canvasOf(src, 1024), image = await rawOf(T, c);
@@ -349,5 +358,5 @@
     };
   }
 
-  window.CRAFTAI = { inpaint, find, sizeOf, probe: () => probed, found: () => found, settings: () => settings, enabled, ready, cutout, pick, upscale, onProgress, downloaded, forget, openSettings, MODELS };
+  window.CRAFTAI = { codeformer, inpaint, find, sizeOf, probe: () => probed, found: () => found, settings: () => settings, enabled, ready, cutout, pick, upscale, onProgress, downloaded, forget, openSettings, MODELS };
 })();

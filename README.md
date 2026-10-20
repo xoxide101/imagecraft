@@ -104,12 +104,16 @@ Heavy work says how far it has got and roughly how long is left, worked out from
 - **Red eye** (Detail › Faces): the face finder finds each iris, and only there, where red is far above green and blue, the red is taken down. On a test with painted red pupils, none were left red.
 - **Lift a shadow** (Adjust › Light): paint over a hard shadow, such as a flash shadow on a wall. What is painted, plus a ring round it, is split into dark and light (Otsu's method), so sloppy painting either way doesn't matter. Only the dark part is brightened, by the light-to-dark ratio colour by colour, with the edge following the picture. On a test wall the shadow came back to within one level of the lit wall.
 
+### Restore faces (AI, redrawn; non-commercial)
+
+**Detail › Faces › Restore faces** redraws small, blurred, grainy or damaged faces with CodeFormer. Each face is straightened onto the model's 512 × 512 layout (eyes, nose tip and mouth corners from the face finder, by a similarity transform), restored there, and laid back with a soft edge, so the rest of the picture is untouched. **Keep to the original** sets how closely it follows the real face; lower is cleaner but more invented. On the test group photo, all six faces went from soft blurs to clear faces; on a toddler, the expression around the eyes changed at 70%, so check closely and raise the slider when likeness matters most. It is a large download (about 377 MB, once). The first run is timed and later runs are estimated. CodeFormer is under the S-Lab License 1.0: **non-commercial use only**. ImageCraft downloads it from huggingface.co when asked and does not include it.
+
 ### Repair damage
 
 **Clean up › Repair › Repair damage** marks the damage and fills it in from what is around it.
 - **Found by themselves**: specks and dust (from the speck finder), and optionally white or black flecks and thin scratches, and an orange date stamp near the bottom. On test photos the automatic marks cover about 0.2% of the picture. An earlier, looser finder marked 20–67% (hair and faces too), so it was made strict.
 - **Marked by you**: tears, flaking and stains. **Paint** over them (left button; the right button takes marks away), or **click** one and the AI picker outlines it. Red shows what will be filled.
-- **Fill with**: **AI** (MI-GAN, MIT, about 28 MB the first time, a few seconds on a graphics card), or **Smooth fill** for specks and thin cracks. Only the marked pixels change. Over large areas the AI invents what is there, so ImageCraft warns when more than 15% is marked.
+- **Fill with**: **AI** (MI-GAN, MIT, about 28 MB the first time, a few seconds on a graphics card), or **Fill from the edges** (Telea's fast marching) for specks, scratches and thin cracks. On thin cracks drawn over a photo it came closest to the real pixels: 38.0 dB, against 36.0 for a plain smooth fill and 30.2 for the AI. Only the marked pixels change. Over large areas the AI invents what is there, so ImageCraft warns when more than 15% is marked.
 - **JPEG blocks**: photos passed round online are often heavily compressed. Modernise › Old photo and Ask AI now measure the 8 × 8 blocks (edges across the block borders against edges elsewhere: about 1 for a clean picture, 1.8–2.4 on the test photos, colour 6) and smooth them first, back to 1.1–1.3.
 
 ### Clean up and modernise
@@ -188,6 +192,7 @@ Open-source libraries it uses are listed with their licences in Credits.
 - [CLIPSeg](https://huggingface.co/CIDAS/clipseg-rd64-refined) (Apache-2.0), run through Transformers.js, finds things by name.
 - [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN) general v3 (BSD-3-Clause, © 2021 Xintao Wang) is included as lib/craft-esrgan-v3.js, converted by lib/esrgan-build.
 - [MMPX](https://casual-effects.com/research/McGuire2021PixelArt/) pixel-art magnification, ported to JavaScript from the MIT reference code (© 2020 Morgan McGuire & Mara Gagiu).
+- [CodeFormer](https://github.com/sczhou/CodeFormer) (S-Lab License 1.0, non-commercial), downloaded on request as an ONNX file from huggingface.co/bluefoxcreation/Codeformer-ONNX.
 - [MI-GAN](https://github.com/Picsart-AI-Research/MI-GAN) (MIT) fills in damage; the ONNX pipeline file is from huggingface.co/andraniksargsyan/migan.
 - [MediaPipe Tasks Vision](https://github.com/google-ai-edge/mediapipe) and its Face Landmarker model (Apache-2.0), bundled as `lib/craft-face-libs.js` (built from `lib/face-build`).
 - Smart sharpen follows AMD FidelityFX CAS (MIT); the method was re-written here from its published description, not copied.

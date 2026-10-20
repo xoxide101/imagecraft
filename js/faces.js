@@ -119,5 +119,42 @@
     px.sort((u, v) => v[0] + v[1] + v[2] - (u[0] + u[1] + u[2])); const top = px.slice(0, Math.max(6, Math.floor(px.length * 0.45)));
     return [0, 1, 2].map((c) => top.reduce((t, p) => t + p[c], 0) / top.length);
   }
-  IC.faces = { detect, ensure, known, partMask, greyCard, PARTS: [['face', 'Faces'], ['skin', 'Face skin'], ['eyes', 'Eyes'], ['irises', 'Irises'], ['eyewhites', 'Eye whites'], ['lips', 'Lips'], ['mouth', 'Mouth and teeth'], ['brows', 'Eyebrows']] };
+  // ------------------------------------------------------------------ restoring faces (CodeFormer, aligned crops)
+  // Each face is straightened onto the 512 × 512 layout the model was trained on (both eyes, the nose tip and the mouth
+  // corners moved to fixed places by a similarity transform: turn, scale, shift), restored there, and laid back over the
+  // picture through the inverse transform with a soft edge, so only the face area changes.
+  const TEMPLATE = [[192.98, 239.95], [318.90, 240.19], [256.63, 314.02], [201.26, 371.41], [313.09, 371.15]];
+  function fivePoints(f) {
+    const P = f.points, eyes = [P[468], P[473]].sort((a, b) => a[0] - b[0]), mouth = [P[61], P[291]].sort((a, b) => a[0] - b[0]);
+    return [eyes[0], eyes[1], P[1], mouth[0], mouth[1]];
+  }
+  // least-squares similarity (Umeyama, 2-D): dst ≈ s·R·src + t, as [a, b, tx, ty] with x' = a·x − b·y + tx, y' = b·x + a·y + ty
+  function similarity(src, dst) {
+    const n = src.length; let sx = 0, sy = 0, dx = 0, dy = 0; src.forEach(([x, y], i) => { sx += x; sy += y; dx += dst[i][0]; dy += dst[i][1]; }); sx /= n; sy /= n; dx /= n; dy /= n;
+    let num1 = 0, num2 = 0, den = 0; src.forEach(([x, y], i) => { const X = x - sx, Y = y - sy, U = dst[i][0] - dx, V = dst[i][1] - dy; num1 += X * U + Y * V; num2 += X * V - Y * U; den += X * X + Y * Y; });
+    const a = num1 / den, b = num2 / den; return [a, b, dx - (a * sx - b * sy), dy - (b * sx + a * sy)];
+  }
+  const sample = (img, x, y, out, o) => { const W = img.width, H = img.height, d = img.data; x = Math.max(0, Math.min(W - 1.001, x)); y = Math.max(0, Math.min(H - 1.001, y)); const x0 = x | 0, y0 = y | 0, tx = x - x0, ty = y - y0, i = (y0 * W + x0) * 4; for (let c = 0; c < 3; c++) out[o + c] = (d[i + c] * (1 - tx) + d[i + 4 + c] * tx) * (1 - ty) + (d[i + W * 4 + c] * (1 - tx) + d[i + W * 4 + 4 + c] * tx) * ty; };
+  async function restore(img, faces, { fidelity = 0.7, strength = 1, onStep } = {}) {
+    const W = img.width, H = img.height, acc = new Float32Array(W * H * 3), wsum = new Float32Array(W * H), tmp = [0, 0, 0];
+    let k = 0;
+    for (const f of faces) {
+      onStep && onStep(`Restoring face ${++k} of ${faces.length}`);
+      const [a, b, tx, ty] = similarity(fivePoints(f), TEMPLATE), det = a * a + b * b; // image → crop
+      const inv = (u, v) => { const X = u - tx, Y = v - ty; return [(a * X + b * Y) / det, (-b * X + a * Y) / det]; }; // crop → image
+      const crop = new ImageData(512, 512); for (let v = 0; v < 512; v++) for (let u = 0; u < 512; u++) { const [x, y] = inv(u + 0.5, v + 0.5); sample(img, x - 0.5, y - 0.5, crop.data, (v * 512 + u) * 4); crop.data[(v * 512 + u) * 4 + 3] = 255; }
+      const out = await CRAFTAI.codeformer(crop, fidelity);
+      // back over the picture: where each picture pixel falls in the crop, faded over the crop's outer 12%
+      const corners = [[0, 0], [512, 0], [0, 512], [512, 512]].map(([u, v]) => inv(u, v)), x0 = Math.max(0, Math.floor(Math.min(...corners.map((c) => c[0])))), x1 = Math.min(W - 1, Math.ceil(Math.max(...corners.map((c) => c[0])))), y0 = Math.max(0, Math.floor(Math.min(...corners.map((c) => c[1])))), y1 = Math.min(H - 1, Math.ceil(Math.max(...corners.map((c) => c[1]))));
+      for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+        const u = a * (x + 0.5) - b * (y + 0.5) + tx, v = b * (x + 0.5) + a * (y + 0.5) + ty; if (u < 0 || v < 0 || u >= 512 || v >= 512) continue;
+        const e = Math.min(u, v, 512 - u, 512 - v) / 62, m = e >= 1 ? 1 : e * e * (3 - 2 * e); if (m <= 0) continue;
+        sample(out, u - 0.5, v - 0.5, tmp, 0); const p = y * W + x; for (let c = 0; c < 3; c++) acc[p * 3 + c] += tmp[c] * m; wsum[p] += m;
+      }
+    }
+    const o = new ImageData(new Uint8ClampedArray(img.data), W, H), d = o.data;
+    for (let p = 0; p < W * H; p++) { const m = wsum[p]; if (!m) continue; const w = Math.min(1, m) * strength; for (let c = 0; c < 3; c++) d[p * 4 + c] = Math.round(d[p * 4 + c] + (acc[p * 3 + c] / m - d[p * 4 + c]) * w); }
+    return o;
+  }
+  IC.faces = { restore, detect, ensure, known, partMask, greyCard, PARTS: [['face', 'Faces'], ['skin', 'Face skin'], ['eyes', 'Eyes'], ['irises', 'Irises'], ['eyewhites', 'Eye whites'], ['lips', 'Lips'], ['mouth', 'Mouth and teeth'], ['brows', 'Eyebrows']] };
 })();

@@ -246,5 +246,45 @@
   }
   // a mask grown by r pixels (anything near a marked pixel is marked)
   const grow = (M, W, H, r) => (r > 0 ? box(M, W, H, r).map((v) => (v > 0.001 ? 1 : 0)) : M);
-    IC.maps = { damage, grow, fillGap, addFind, known, share, castRatio, colourBlind, stretch, falseColour, LIST, make, heat, grey, mask, apply, box, combined, OPS, prepare };
+    // Telea's fast-marching inpainting (2004): the gap is filled from its edge inwards, nearest first; each pixel takes a
+  // weighted mean of the known pixels within a few pixels, each continued by its own slope (value + gradient · offset),
+  // weighted towards the direction the fill is moving, to nearer pixels, and to pixels on the same "level" of the
+  // march. Good for thin cracks, scratches and specks; wide holes need the AI.
+  function telea(img, hole, R = 5, slope = 1) {
+    const W = img.width, H = img.height, n = W * H, s = img.data, F = new Float32Array(n * 3), T = new Float32Array(n).fill(1e6), flag = new Uint8Array(n); // 0 known, 1 band, 2 unknown
+    for (let p = 0; p < n; p++) { for (let c = 0; c < 3; c++) F[p * 3 + c] = s[p * 4 + c]; if (hole[p] > 0.5) flag[p] = 2; }
+    // the band: unknown pixels next to a known one
+    const heap = [], push = (t, p) => { heap.push([t, p]); let i = heap.length - 1; while (i > 0) { const j = (i - 1) >> 1; if (heap[j][0] <= heap[i][0]) break; [heap[i], heap[j]] = [heap[j], heap[i]]; i = j; } };
+    const pop = () => { const top = heap[0], last = heap.pop(); if (heap.length) { heap[0] = last; let i = 0; for (;;) { const l = 2 * i + 1, r = l + 1; let m = i; if (l < heap.length && heap[l][0] < heap[m][0]) m = l; if (r < heap.length && heap[r][0] < heap[m][0]) m = r; if (m === i) break; [heap[i], heap[m]] = [heap[m], heap[i]]; i = m; } } return top; };
+    for (let p = 0; p < n; p++) if (flag[p] === 0) { T[p] = 0; const x = p % W, y = (p / W) | 0; for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { const u = x + dx, v = y + dy; if (u >= 0 && v >= 0 && u < W && v < H && flag[v * W + u] === 2) { flag[p] = 1; push(0, p); break; } } }
+    for (let p = 0; p < n; p++) if (flag[p] === 1) flag[p] = 0; // known pixels stay known; the heap holds the edge
+    const solve = (a, b, c, d) => { // the march's arrival time from two neighbours (eikonal)
+      let r = 1e6; const t1 = a, t2 = b; if (Math.min(t1, t2) >= 1e6) return Math.min(c, d) + 1;
+      const s2 = 2 - (t1 - t2) * (t1 - t2); if (s2 > 0) r = (t1 + t2 + Math.sqrt(s2)) / 2; else r = Math.min(t1, t2) + 1; return r; };
+    const tAt = (x, y) => (x < 0 || y < 0 || x >= W || y >= H ? 1e6 : T[y * W + x]);
+    const gradOf = (q, c) => { const x = q % W, y = (q / W) | 0, k = (u, v) => (u >= 0 && v >= 0 && u < W && v < H && flag[v * W + u] !== 2 ? v * W + u : -1); const xr = k(x + 1, y), xl = k(x - 1, y), yd = k(x, y + 1), yu = k(x, y - 1);
+      const gx = xr >= 0 && xl >= 0 ? (F[xr * 3 + c] - F[xl * 3 + c]) / 2 : xr >= 0 ? F[xr * 3 + c] - F[q * 3 + c] : xl >= 0 ? F[q * 3 + c] - F[xl * 3 + c] : 0;
+      const gy = yd >= 0 && yu >= 0 ? (F[yd * 3 + c] - F[yu * 3 + c]) / 2 : yd >= 0 ? F[yd * 3 + c] - F[q * 3 + c] : yu >= 0 ? F[q * 3 + c] - F[yu * 3 + c] : 0; return [gx, gy]; };
+    while (heap.length) {
+      const [, p] = pop(); const x = p % W, y = (p / W) | 0; if (flag[p] === 3) continue; flag[p] = 3; // 0 known, 1 filled and waiting, 2 still to fill, 3 done
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const u = x + dx, v = y + dy; if (u < 0 || v < 0 || u >= W || v >= H) continue; const q = v * W + u; if (flag[q] !== 2) continue;
+        const t = Math.min(solve(tAt(u - 1, v), tAt(u, v - 1), tAt(u + 1, v), tAt(u, v + 1)), solve(tAt(u + 1, v), tAt(u, v - 1), 1e6, 1e6), solve(tAt(u - 1, v), tAt(u, v + 1), 1e6, 1e6), solve(tAt(u + 1, v), tAt(u, v + 1), 1e6, 1e6));
+        T[q] = Math.min(T[q], t);
+        // fill q from the known pixels round it
+        const gTx = (tAt(u + 1, v) < 1e6 && tAt(u - 1, v) < 1e6 ? (tAt(u + 1, v) - tAt(u - 1, v)) / 2 : 0), gTy = (tAt(u, v + 1) < 1e6 && tAt(u, v - 1) < 1e6 ? (tAt(u, v + 1) - tAt(u, v - 1)) / 2 : 0);
+        const acc = [0, 0, 0]; let ws = 0;
+        for (let j = -R; j <= R; j++) for (let i = -R; i <= R; i++) {
+          const a = u + i, b = v + j; if (a < 0 || b < 0 || a >= W || b >= H) continue; const k = b * W + a; if (flag[k] === 2 || (i === 0 && j === 0)) continue; const d2 = i * i + j * j; if (d2 > R * R) continue;
+          const dir = Math.max(1e-6, Math.abs((-i * gTx - j * gTy) / Math.sqrt(d2))), dst = 1 / d2, lev = 1 / (1 + Math.abs(T[q] - T[k])), w = dir * dst * lev;
+          for (let c = 0; c < 3; c++) { const [gx, gy] = gradOf(k, c); acc[c] += w * (F[k * 3 + c] + slope * (gx * -i + gy * -j)); } ws += w;
+        }
+        if (ws > 0) for (let c = 0; c < 3; c++) F[q * 3 + c] = acc[c] / ws;
+        flag[q] = 1; push(T[q], q);
+      }
+    }
+    const out = new ImageData(new Uint8ClampedArray(s), W, H), d = out.data; for (let p = 0; p < n; p++) if (hole[p] > 0.5) for (let c = 0; c < 3; c++) d[p * 4 + c] = Math.round(F[p * 3 + c]);
+    return out;
+  }
+  IC.maps = { telea, damage, grow, fillGap, addFind, known, share, castRatio, colourBlind, stretch, falseColour, LIST, make, heat, grey, mask, apply, box, combined, OPS, prepare };
 })();
