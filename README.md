@@ -46,6 +46,10 @@ Click the zoom percentage in the status bar for a menu: Fit, 25% to 800%, or typ
 
 A small table beside the mouse shows the colour under it in **HEX, RGB, CMYK, HSL and Lab**, with the nearest CSS colour name (View › Colour info turns it on or off). The status bar keeps the swatch, HEX and name of the last colour pointed at; click it to copy the HEX. Pantone's colour values are licensed by Pantone, so no Pantone table can come with ImageCraft; the Lab values match any swatch book.
 
+### Local AI / Cloud AI / Both (status bar, left of the zoom)
+
+**Local AI**: nothing leaves this computer (Ask AI uses only Ollama models on this computer, Regenerate is off, Ollama's cloud models are hidden). **Cloud AI**: Ask AI uses your cloud services and Regenerate is on. **Both** (the default): everything is offered and you choose per tool. The built-in tools (upscaling, repair, faces, colourise and the rest) always run on this computer: there is no cloud version of them.
+
 ### AI settings (the AI button in the status bar)
 
 The **AI** button at the left of the status bar shows what is available (e.g. "AI: graphics card · Ollama ✓ · Cloud: Gemini") and opens **AI settings**: **Local AI** (the built-in models: download, switch on or off; Ollama: connected or not, its picture models, the address, and whether its cloud models are offered) and **Cloud AI** (your keys). Also View › AI settings.

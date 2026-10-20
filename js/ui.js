@@ -445,7 +445,7 @@
       fields: [{ t: 'custom', render: (into, t) => regenPanel(into, t) }, { t: 'out' }],
       report: () => (tool && tool.regenInfo ? `<p class="hint">${esc(tool.regenInfo)}</p>` : ''),
       run: async (img, s, say) => {
-        if (!IC.cloud.has(s.provider)) throw new Error('Add a Gemini or OpenAI key first (View › Cloud AI keys).'); if (!s.model) throw new Error('Choose a model first.');
+        if (!cloudOK()) throw new Error('Cloud AI is switched off (status bar): choose Cloud AI or Both.'); if (!IC.cloud.has(s.provider)) throw new Error('Add a Gemini or OpenAI key first (AI settings › Cloud AI).'); if (!s.model) throw new Error('Choose a model first.');
         say && say(`Sending the picture to ${IC.cloud.NAMES[s.provider]}… (it usually takes 10 to 60 seconds)`); const t0 = performance.now();
         let o = await IC.cloud.regenerate(img, s.provider, s.model, s.text, { colour: s.colour });
         const back = `${o.width} × ${o.height}`; if (o.width !== img.width || o.height !== img.height) o = X.resize(o, { width: img.width, height: img.height }); // the same size as the original, so Blend a version can mix them
@@ -871,6 +871,10 @@
   // a copy of the picture as it is now, to try a different set of steps on (then Compare the two)
   function duplicatePic() { const p = pic(); if (!p) return toast('Open a picture first.'); const st = p.steps[p.at]; addPic(`${baseName(p.name)} (copy).png`, st.img, { ...p.info, format: `copy of ${p.info.format || 'picture'}` }, 0, st.deep); toast('A copy is open: try different steps on it, then View › Compare the two.'); }
   // ------------------------------------------------------------------ AI settings (the AI chip in the status bar)
+  // which AI the cloud-capable steps may use: 'local' (nothing leaves this computer), 'cloud' or 'both'
+  let aiMode = 'both'; try { aiMode = localStorage.getItem('imagecraft-aimode') || 'both'; } catch (e) { /* blocked storage */ }
+  const cloudOK = () => aiMode !== 'local', localOK = () => aiMode !== 'cloud'; IC.aiMode = () => aiMode;
+  function aiModeUI() { const el = $('st-aimode'); if (!el) return; el.innerHTML = [['local', 'Local AI'], ['cloud', 'Cloud AI'], ['both', 'Both']].map(([k, l]) => `<button type="button" class="btn" data-mode="${k}" aria-pressed="${aiMode === k}">${l}</button>`).join(''); aiChip(); }
   let ollamaSeen = null; // what Ollama said last time: null (not asked), { ok, n } or { blocked }
   async function aiChip() {
     const el = $('st-ai'); if (!el) return; const f = window.CRAFTAI && CRAFTAI.found(), cl = ['anthropic', 'gemini', 'openai'].filter((k) => IC.cloud.has(k)).map((k) => IC.cloud.NAMES[k].split(' ')[0]);
@@ -918,8 +922,9 @@
   const regenModels = {}; // provider → the models that can draw (asked once)
   function regenPanel(into, t) {
     const CL = IC.cloud, s = t.s, d = document.createElement('div'); into.append(d);
+    if (!cloudOK()) { d.innerHTML = '<p class="hint"><b>Cloud AI is switched off</b> (the Local AI / Cloud AI switch in the status bar). Regenerate sends the picture to Gemini or OpenAI, so it needs Cloud AI or Both.</p>'; return; }
     const provs = ['gemini', 'openai'].filter((k) => CL.has(k));
-    if (!provs.length) { d.innerHTML = '<p class="hint">Regenerate sends the picture to Gemini or OpenAI and gets back a redrawn, restored version. It needs your own key: add one in <b>View › Cloud AI keys</b>.</p>'; return; }
+    if (!provs.length) { d.innerHTML = '<p class="hint">Regenerate sends the picture to Gemini or OpenAI and gets back a redrawn, restored version. It needs your own key: add one in <b>AI settings › Cloud AI</b> (the AI button in the status bar).</p>'; return; }
     if (!provs.includes(s.provider)) s.provider = provs[0];
     const ms = regenModels[s.provider];
     if (!ms) { regenModels[s.provider] = 'loading'; CL.models(s.provider).then((m) => { regenModels[s.provider] = m.filter((x) => x.draw); if (tool === t) renderProps(); }, (e) => { regenModels[s.provider] = { err: e.message }; if (tool === t) renderProps(); }); }
@@ -936,8 +941,9 @@
   function assessPanel(into, t) {
     const O = IC.ollama, CL = IC.cloud, st = (t.oll = t.oll || { status: 'checking' }), el = document.createElement('div'); into.append(el);
     const again = () => { if (tool === t) renderProps(); };
-    const prov = O.cfg.provider && O.cfg.provider !== 'ollama' && CL.has(O.cfg.provider) ? O.cfg.provider : 'ollama', cloudKeys = ['anthropic', 'gemini', 'openai'].filter((k) => CL.has(k));
-    if (cloudKeys.length) { const d = document.createElement('div'); d.className = 'field'; d.innerHTML = `<span>Who looks at it</span><div class="seg">${[['ollama', 'Ollama'], ...cloudKeys.map((k) => [k, CL.NAMES[k].split(' ')[0]])].map(([k, l]) => `<button type="button" class="btn" data-pv="${k}" aria-pressed="${k === prov}">${l}</button>`).join('')}</div>`; d.onclick = (e) => { const b = e.target.closest('[data-pv]'); if (!b) return; O.cfg.provider = b.dataset.pv; O.save(); t.oll = { status: 'checking' }; again(); }; el.append(d); }
+    const cloudKeys = cloudOK() ? ['anthropic', 'gemini', 'openai'].filter((k) => CL.has(k)) : [];
+    let prov = O.cfg.provider && O.cfg.provider !== 'ollama' && cloudKeys.includes(O.cfg.provider) ? O.cfg.provider : 'ollama'; if (!localOK() && prov === 'ollama' && cloudKeys.length) prov = cloudKeys[0];
+    if (cloudKeys.length) { const d = document.createElement('div'); d.className = 'field'; d.innerHTML = `<span>Who looks at it</span><div class="seg">${[...(localOK() || !cloudKeys.length ? [['ollama', 'Ollama']] : []), ...cloudKeys.map((k) => [k, CL.NAMES[k].split(' ')[0]])].map(([k, l]) => `<button type="button" class="btn" data-pv="${k}" aria-pressed="${k === prov}">${l}</button>`).join('')}</div>`; d.onclick = (e) => { const b = e.target.closest('[data-pv]'); if (!b) return; O.cfg.provider = b.dataset.pv; O.save(); t.oll = { status: 'checking' }; again(); }; el.append(d); }
     if (prov !== 'ollama') {
       // a cloud service: its own list of models that can see pictures
       if (st.status === 'checking' && !st.started) { st.started = true; CL.models(prov).then((m) => { st.models = m.filter((x) => x.see).map((x) => ({ name: x.id, label: x.name, cloud: true })); st.status = st.models.length ? 'ok' : 'none'; const want = CL.cfg.models[prov]; O.cfg.model = want && st.models.some((x) => x.name === want) ? want : (st.models.find((x) => /sonnet|flash|gpt-5|gpt-4o|4\.1/.test(x.name)) || st.models[0] || {}).name || ''; again(); }, (e) => { st.status = 'error'; st.err = e.message; again(); }); }
@@ -955,7 +961,7 @@
     }
     const lab = document.createElement('label'); lab.className = 'field'; lab.innerHTML = '<span>Model</span>'; const sel = document.createElement('select'); sel.className = 'input';
     st.models.forEach((m) => sel.add(new Option(prov !== 'ollama' ? m.label || m.name : m.cloud ? `${m.name} (cloud: the picture is sent to Ollama)` : `${m.name} (${m.gb.toFixed(1)} GB)`, m.name))); sel.value = O.cfg.model; sel.onchange = () => { O.cfg.model = sel.value; if (prov !== 'ollama') { CL.cfg.models[prov] = sel.value; CL.save(); } O.save(); }; lab.append(sel); el.append(lab);
-    const cl = prov !== 'ollama' ? null : p(`<label class="check"><input type="checkbox" ${O.cfg.cloud ? 'checked' : ''}> Allow cloud models (bigger and sharper-eyed, but <b>the picture is sent to Ollama’s servers</b>; your Ollama cloud plan)</label>`); if (cl) cl.querySelector('input').onchange = (e) => { O.cfg.cloud = e.target.checked; O.save(); t.oll = { status: 'checking' }; again(); };
+    const cl = prov !== 'ollama' || !cloudOK() ? null : p(`<label class="check"><input type="checkbox" ${O.cfg.cloud ? 'checked' : ''}> Allow cloud models (bigger and sharper-eyed, but <b>the picture is sent to Ollama’s servers</b>; your Ollama cloud plan)</label>`); if (cl) cl.querySelector('input').onchange = (e) => { O.cfg.cloud = e.target.checked; O.save(); t.oll = { status: 'checking' }; again(); };
     const look = p('<div class="btns"><button class="btn primary" type="button">Look at the picture</button></div>').querySelector('button');
     look.onclick = async () => {
       const img = t.base; busyNow('Asking Ollama…');
@@ -1336,12 +1342,14 @@
   // ------------------------------------------------------------------ status bar
   let hover = null;
   const statusEl = $('status');
-  statusEl.innerHTML = `<button class="st-ai" id="st-ai" type="button" title="AI settings: the built-in models, Ollama, and your cloud keys">AI</button><button class="st-err" id="st-err" hidden title="Errors were logged: open the Debug tab"></button><span id="st-size"></span><span id="st-cols"></span><span id="st-at"></span><span class="grow"></span><span class="zoombox"><button class="btn" id="st-out" title="Zoom out" aria-label="Zoom out">−</button><input type="range" id="st-zoom" min="-100" max="100" value="0" aria-label="Zoom" data-rt-skip><button class="btn" id="st-in" title="Zoom in" aria-label="Zoom in">+</button><button class="btn" id="st-pct" title="Fit the picture (click) or 100% (double-click)">100%</button></span>`;
+  statusEl.innerHTML = `<button class="st-ai" id="st-ai" type="button" title="AI settings: the built-in models, Ollama, and your cloud keys">AI</button><button class="st-err" id="st-err" hidden title="Errors were logged: open the Debug tab"></button><span id="st-size"></span><span id="st-cols"></span><span id="st-at"></span><span class="grow"></span><span class="seg aimode" id="st-aimode" title="Which AI the steps that can use the cloud may use (the built-in tools always run on this computer)"></span><span class="zoombox"><button class="btn" id="st-out" title="Zoom out" aria-label="Zoom out">−</button><input type="range" id="st-zoom" min="-100" max="100" value="0" aria-label="Zoom" data-rt-skip><button class="btn" id="st-in" title="Zoom in" aria-label="Zoom in">+</button><button class="btn" id="st-pct" title="Fit the picture (click) or 100% (double-click)">100%</button></span>`;
   // the zoom slider: 100% in the middle, 2% at the left, 6400% at the right
   const zToS = (z) => Math.round(z >= 1 ? (Math.log(z) / Math.log(64)) * 100 : (Math.log(z) / Math.log(50)) * 100), sToZ = (s) => (s >= 0 ? Math.pow(64, s / 100) : Math.pow(50, s / 100));
   $('st-zoom').oninput = (e) => setZoom(sToZ(+e.target.value));
   $('st-err').onclick = openDebug;
   $('st-ai').onclick = () => openAI(); aiChip();
+  $('st-aimode').onclick = (e) => { const b = e.target.closest('[data-mode]'); if (!b) return; aiMode = b.dataset.mode; try { localStorage.setItem('imagecraft-aimode', aiMode); } catch (err) { /* blocked storage */ } aiModeUI(); if (tool && /assess|regen/.test(tool.def.id)) { if (tool.oll) tool.oll = { status: 'checking' }; renderProps(); } toast(aiMode === 'local' ? 'Local AI only: nothing is sent off this computer.' : aiMode === 'cloud' ? 'Cloud AI: Ask AI uses your cloud services, and Regenerate is on.' : 'Local and cloud AI: choose per tool.'); };
+  aiModeUI();
   $('st-at').onclick = () => { const h = $('st-at').dataset.hex; if (h) navigator.clipboard.writeText(h).then(() => toast(`${h} copied.`), () => toast('Could not copy.')); };
   $('st-in').onclick = () => zoomBy(1.25); $('st-out').onclick = () => zoomBy(0.8); $('st-pct').title = 'Zoom: choose a size, or type one'; $('st-pct').onclick = (e) => { e.stopPropagation(); zoomMenu(); };
   // the zoom menu (click the percentage in the status bar): fit, the usual sizes, or type one

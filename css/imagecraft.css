@@ -85,6 +85,11 @@ button, input, select, textarea { font: inherit; color: inherit; }
 
 .statusbar { display: flex; gap: 18px; align-items: center; padding: 5px 16px 8px; background: var(--panel); border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; min-height: 30px; }
 .statusbar b { color: var(--fg); }
+.statusbar .aimode { display: inline-flex; gap: 0; }
+.statusbar .aimode .btn { padding: 2px 9px; font-size: 12px; border-radius: 0; }
+.statusbar .aimode .btn:first-child { border-radius: 999px 0 0 999px; }
+.statusbar .aimode .btn:last-child { border-radius: 0 999px 999px 0; }
+.statusbar .aimode .btn[aria-pressed="true"] { background: var(--accent); color: #fff; border-color: var(--accent); }
 .st-ai { border: 1px solid var(--line); background: var(--panel-2); color: var(--fg); border-radius: 999px; padding: 2px 10px; font: inherit; cursor: pointer; white-space: nowrap; }
 .st-ai:hover { border-color: var(--accent); }
 .ai-tabs { display: flex; gap: 4px; margin: 4px 0 10px; border-bottom: 1px solid var(--line); }

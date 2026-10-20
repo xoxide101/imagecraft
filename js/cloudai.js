@@ -41,7 +41,7 @@
 
   // ------------------------------------------------------------------ describe (the Ask AI assessment, from the cloud)
   async function describe(img, p, model) {
-    const k = cfg.keys[p].trim(); if (!k) throw new Error(`No ${NAMES[p]} key yet: add it in View › Cloud AI keys.`);
+    const k = cfg.keys[p].trim(); if (!k) throw new Error(`No ${NAMES[p]} key yet: add it in AI settings › Cloud AI (the AI button in the status bar).`);
     const O = IC.ollama, schema = O.SCHEMA, prompt = O.PROMPT + ' Answer with JSON only, matching this schema: ' + JSON.stringify(schema), b64 = jpeg(img, 1280); let text = '';
     if (p === 'anthropic') {
       const j = await call('https://api.anthropic.com/v1/messages', { method: 'POST', headers: anthHeaders(k, true), body: JSON.stringify({ model, max_tokens: 1500, messages: [{ role: 'user', content: [{ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: b64 } }, { type: 'text', text: prompt }] }] }) }, p);
@@ -60,7 +60,7 @@
   // ------------------------------------------------------------------ regenerate (an image model redraws the photo)
   const REGEN = 'Restore this photograph. Keep the same people, faces, pose, framing, clothing and setting exactly; do not add, remove or move anything. Repair tears, scratches, stains and missing parts, remove dust, noise and blur, and fix fading and colour casts, so it looks like the same photo taken with a good modern camera.';
   async function regenerate(img, p, model, text = '', { colour = false } = {}) {
-    const k = cfg.keys[p].trim(); if (!k) throw new Error(`No ${NAMES[p]} key yet: add it in View › Cloud AI keys.`);
+    const k = cfg.keys[p].trim(); if (!k) throw new Error(`No ${NAMES[p]} key yet: add it in AI settings › Cloud AI (the AI button in the status bar).`);
     const prompt = REGEN + (colour ? ' Give it natural, realistic colour.' : ' Keep its own colours (or its black and white or sepia tone).') + (text ? ' What it shows: ' + text : ''), b64 = jpeg(img, 1536);
     if (p === 'gemini') {
       const j = await call(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(k)}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ contents: [{ parts: [{ inline_data: { mime_type: 'image/jpeg', data: b64 } }, { text: prompt }] }], generationConfig: { responseModalities: ['IMAGE', 'TEXT'] } }) }, p);

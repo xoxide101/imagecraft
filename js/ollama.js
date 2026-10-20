@@ -26,7 +26,7 @@
   async function models() {
     const tags = await api('/api/tags'), list = [];
     for (const m of tags.models || []) {
-      if (/:cloud$/.test(m.name) || !m.size) { if (cfg.cloud) list.push({ name: m.name, gb: 0, cloud: true }); continue; } // cloud models send the picture away: only when allowed (Ollama does not say which can see; one that cannot says so when asked)
+      if (/:cloud$/.test(m.name) || !m.size) { if (cfg.cloud && (!IC.aiMode || IC.aiMode() !== 'local')) list.push({ name: m.name, gb: 0, cloud: true }); continue; } // cloud models send the picture away: only when allowed (Ollama does not say which can see; one that cannot says so when asked)
       let caps = []; try { caps = (await api('/api/show', { model: m.name })).capabilities || []; } catch (e) { /* skip */ }
       if (caps.includes('vision')) list.push({ name: m.name, gb: m.size / 1e9 });
     }
