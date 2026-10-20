@@ -154,6 +154,10 @@ Small AI models that run inside the browser, on the graphics card if there is on
 - It takes about 10 to 30 seconds on a mid-range graphics card once the model is loaded (the first look loads it). ImageCraft asks for a short context (8k), so the model fits on the card.
 - **Opened as a file?** Ollama refuses pages without a web address until it is told to allow them: `setx OLLAMA_ORIGINS *` in a command prompt, then quit and restart Ollama. `*` lets any page use Ollama, websites included, so you may prefer to set it only while you use ImageCraft. (Ollama does not accept the narrower "null".) A page served from `localhost` works without it.
 
+### If an AI model disappears
+
+The AI models come from Hugging Face and Google. Copies of every one ImageCraft uses are kept in the [craft-models](https://github.com/xoxide101/craft-models) repository, each with its licence. If an original download fails (the file was moved or deleted, or the site is down), ImageCraft uses the copy instead: it rejoins the parts, checks the SHA-256 fingerprint, and only then uses it. It was tested with Hugging Face and Google blocked: the repair model, the finder and the face finder all loaded from the copies. The originals are always tried first.
+
 ## When something goes wrong
 
 The red badge in the status bar counts faults in the program. A tool saying what it needs ("No faces found", "Paint over the shadow first") is shown as a message and kept in the Debug log as a note, not counted as an error.
