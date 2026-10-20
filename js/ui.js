@@ -1636,7 +1636,19 @@
   const NO_CLEAR = new Set(['jpg', 'pdf', 'pcx', 'bmp', 'ppm', 'pi1', 'pi2', 'pi3', 'neo', 'koa', 'scr', 'mac']);
   // formats (and depths) that cannot hold see-through: those parts are filled with a colour first
   const noClear = (fmt, bits) => (NO_CLEAR.has(fmt) && !(fmt === 'bmp' && bits === 32)) || (fmt === 'tga' && bits !== 32) || ((fmt === 'png' || fmt === 'tif') && (bits === 24 || bits === 48));
-  const sv = { fmt: 'png', bits: 0, palette: 'adaptive', dither: 'fs', quality: 90, fit: 'cover', back: '#ffffff', name: '', aa: 0 };
+  const sv = { fmt: 'png', bits: 0, palette: 'adaptive', dither: 'fs', quality: 90, fit: 'cover', back: '#ffffff', name: '', aa: 0, sbs: { on: false, from: 0, layout: 'across', labels: true, a: 'Before', b: 'After', gap: 16 } };
+  // Side by side: an earlier version (the original, the saved one or any step) and the current one in one picture,
+  // the earlier one scaled to match (a picture made bigger is compared at its new size), with a label on each
+  function sideBySide() {
+    const p = pic(), S = sv.sbs, A0 = p.steps[Math.min(S.from, p.steps.length - 1)].img, B = now(), across = S.layout === 'across';
+    const k = across ? B.height / A0.height : B.width / A0.width, A = Math.abs(k - 1) < 1e-6 ? A0 : X.resize(A0, { width: Math.round(A0.width * k), height: Math.round(A0.height * k) });
+    const g = Math.max(0, +S.gap || 0), W = across ? A.width + g + B.width : Math.max(A.width, B.width), H = across ? Math.max(A.height, B.height) : A.height + g + B.height;
+    const c = document.createElement('canvas'); c.width = W; c.height = H; const x = c.getContext('2d'); x.fillStyle = sv.back; x.fillRect(0, 0, W, H);
+    const bx = across ? A.width + g : 0, by = across ? 0 : A.height + g; x.drawImage(X.canvasOf(A), 0, 0); x.drawImage(X.canvasOf(B), bx, by);
+    if (S.labels) { const fs = Math.max(14, Math.round(Math.min(A.width, A.height, B.width, B.height) / 14)); x.font = `600 ${fs}px system-ui, sans-serif`; x.textBaseline = 'top';
+      for (const [t, lx, ly] of [[S.a, 0, 0], [S.b, bx, by]]) { if (!t) continue; const pad = Math.round(fs * 0.45), tw = x.measureText(t).width; x.fillStyle = 'rgba(0,0,0,.6)'; x.fillRect(lx + pad, ly + pad, tw + pad * 2, fs + pad * 1.4); x.fillStyle = '#fff'; x.fillText(t, lx + pad * 2, ly + pad * 1.6); } }
+    return x.getImageData(0, 0, W, H);
+  }
   let saveTok = 0, saveBlob = null, savePrep = null;
   function openSave() {
     if (!now()) { toast('Open a picture first.'); return; }
@@ -1647,6 +1659,7 @@
     const f = F.FORMATS[fmt], st = pic().steps[pic().at], n = st.colours ?? F.countColours(now(), 257), clear = F.hasClear(now());
     if (sv.bits && f.depths.includes(sv.bits)) return sv.bits;
     if (f.depths.length === 1) return f.depths[0];
+    if (sv.sbs.on && pic().at > 0) return f.depths.includes(24) ? 24 : f.depths[f.depths.length - 1]; // two versions together: full colour, 8 bits per colour
     if (st.deep && f.depths.includes(48)) return clear ? 64 : 48; // a 16-bit step saves as 16 bits per colour
     const fits = f.depths.filter((b) => b <= 8 && (1 << b) >= n && n > 0);
     if (fits.length) return fits[0];
@@ -1656,7 +1669,13 @@
     const o = $('save-opts'), f = F.FORMATS[sv.fmt], bits = bitsFor(sv.fmt), groups = {};
     Object.entries(F.FORMATS).forEach(([k, x]) => (groups[x.group] = groups[x.group] || []).push([k, x]));
     const reducing = bits <= 8 || bits === 16 || f.fit;
+    const p = pic(), S = sv.sbs, stepName = (i) => (i === 0 ? 'The original' : p.saved && p.saved.step === i ? `Saved: ${p.steps[i].label}` : `Step ${i}: ${p.steps[i].label}`);
     o.innerHTML = `<label class="field"><span>File name</span><input class="input" id="sv-name" value="${esc(sv.name)}"></label>
+      <div class="field sbs-box"><label class="check"><input type="checkbox" id="sv-sbs" ${S.on ? 'checked' : ''}><span><b>Side by side</b> (an earlier version beside this one, in one picture)</span></label>
+      ${S.on ? `<label class="field"><span>Beside it</span><select class="input" id="sv-from">${p.steps.slice(0, p.at).map((st, i) => `<option value="${i}" ${i === S.from ? 'selected' : ''}>${esc(stepName(i))}</option>`).join('') || '<option value="0">The original</option>'}</select></label>
+        <div class="seg" role="group" aria-label="Layout"><button type="button" class="btn" data-sbl="across" aria-pressed="${S.layout === 'across'}">Side by side</button><button type="button" class="btn" data-sbl="down" aria-pressed="${S.layout === 'down'}">One above the other</button></div>
+        <label class="check"><input type="checkbox" id="sv-lab" ${S.labels ? 'checked' : ''}> Labels</label>${S.labels ? `<div class="row" style="gap:6px"><input class="input" id="sv-la" value="${esc(S.a)}" aria-label="First label"><input class="input" id="sv-lb" value="${esc(S.b)}" aria-label="Second label"></div>` : ''}
+        <label class="field"><span>Gap: <b id="sv-gv">${S.gap}</b> px (the colour below)</span><input type="range" id="sv-gap" min="0" max="80" value="${S.gap}" data-rt-skip></label><label class="field"><span>Gap colour</span><input type="color" class="input" id="sv-gapc" value="${sv.back}"></label>` : ''}</div>
       <div class="field"><span>Format</span><div class="fmt-list" id="sv-fmts">${Object.entries(groups).map(([g, list]) => `<h4>${g}</h4>${list.map(([k, x]) => `<button type="button" data-f="${k}" aria-pressed="${k === sv.fmt}"><span>${esc(x.name)} <small>.${x.ext}</small></span><small>${esc(x.what)}</small></button>`).join('')}`).join('')}</div></div>
       ${f.depths.length > 1 ? `<label class="field"><span>Colour depth</span><select class="input" id="sv-bits">${f.depths.map((b) => `<option value="${b}" ${b === bits ? 'selected' : ''}>${DEPTH_NAME[b] || b + '-bit'}</option>`).join('')}</select></label>` : `<p class="hint">Colour depth: <b>${DEPTH_NAME[bits] || bits + '-bit'}</b></p>`}
       ${reducing && !f.cells && !(f.fit && f.palette) ? `<label class="field"><span>Colours</span><select class="input" id="sv-pal">${PALS.map(([k, l]) => `<option value="${k}" ${k === sv.palette ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select></label>` : ''}
@@ -1676,6 +1695,14 @@
     on('#sv-q', 'input', (e) => { sv.quality = +e.target.value; o.querySelector('#sv-qv').textContent = sv.quality; prepareSave(); });
     on('#sv-back', 'input', (e) => { sv.back = e.target.value; prepareSave(); });
     on('#sv-aa', 'change', (e) => { sv.aa = +e.target.value; prepareSave(); });
+    on('#sv-sbs', 'change', (e) => { S.on = e.target.checked; const base = baseName(pic().name); if (S.on) { if (S.from >= p.at) S.from = 0; if (sv.name === base) sv.name = `${base} – side by side`; } else if (sv.name === `${base} – side by side`) sv.name = base; drawSaveOpts(); prepareSave(); });
+    on('#sv-from', 'change', (e) => { S.from = +e.target.value; if (S.a === 'Before' || /^Step \d|^Original|^Saved/.test(S.a)) S.a = S.from === 0 ? 'Before' : `Step ${S.from}`; drawSaveOpts(); prepareSave(); });
+    o.querySelectorAll('[data-sbl]').forEach((b) => b.addEventListener('click', () => { S.layout = b.dataset.sbl; drawSaveOpts(); prepareSave(); }));
+    on('#sv-lab', 'change', (e) => { S.labels = e.target.checked; drawSaveOpts(); prepareSave(); });
+    on('#sv-la', 'input', (e) => { S.a = e.target.value; prepareSave(); });
+    on('#sv-lb', 'input', (e) => { S.b = e.target.value; prepareSave(); });
+    on('#sv-gap', 'input', (e) => { S.gap = +e.target.value; o.querySelector('#sv-gv').textContent = S.gap; prepareSave(); });
+    on('#sv-gapc', 'input', (e) => { sv.back = e.target.value; prepareSave(); });
   }
   // the picture as it will be in the file: fitted to an old screen, colours reduced, see-through filled
   function prepared(img, fmt, o) {
@@ -1704,7 +1731,7 @@
     setTimeout(async () => {
       if (my !== saveTok) return;
       try {
-        const bits = bitsFor(sv.fmt), o = { ...sv, bits, quality: sv.quality / 100 }, img = prepared(now(), sv.fmt, o); if (img === now() && pic().steps[pic().at].deep) o.deep = pic().steps[pic().at].deep;
+        const sbs = sv.sbs.on && pic().at > 0, src = sbs ? sideBySide() : now(), bits = bitsFor(sv.fmt), o = { ...sv, bits, quality: sv.quality / 100 }, img = prepared(src, sv.fmt, o); if (!sbs && img === now() && pic().steps[pic().at].deep) o.deep = pic().steps[pic().at].deep;
         const blob = await F.write(img, sv.fmt, o); if (my !== saveTok) return;
         saveBlob = blob; savePrep = img;
         const pv = $('save-prev'); pv.innerHTML = ''; pv.className = 'save-prev' + (img.width < 700 ? ' pixels' : '');
