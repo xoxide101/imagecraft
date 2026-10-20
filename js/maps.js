@@ -136,9 +136,11 @@
   LIST.push({ id: 'subject', name: 'Main subject', group: 'Subject (AI)', needsCut: true, what: 'The main subject (people, an animal, an object), found by the cut-out AI. Restore it with care.', make: (img) => subjectOf(img) });
   LIST.push({ id: 'background', name: 'Background', group: 'Subject (AI)', needsCut: true, what: 'Everything but the main subject: it can take stronger clean-up, and gives colour hints.', make: (img) => subjectOf(img).map((v) => 1 - v) });
   // anything named: "the motorbike\", "a tear in the paper", "flowers" (added from the Maps tab)
-  function addFind(text) {
-    const words = String(text).trim().slice(0, 80); if (!words) return null; const id = 'q:' + words.toLowerCase();
-    if (!byId[id]) { const m = { id, name: `“${words}”`, group: 'Found by name (AI)', needsFind: [words], what: `Where the picture shows “${words}”, found by the AI finder.`, make: (img) => found(img, words) }; LIST.push(m); byId[id] = m; }
+  // Gemini's object masks (cloud): found once per picture and words, kept
+  const cloudMemo = new WeakMap();
+  function addFind(text, engine = 'builtin') {
+    const words = String(text).trim().slice(0, 80); if (!words) return null; const cloud = engine === 'gemini', id = (cloud ? 'qg:' : 'q:') + words.toLowerCase();
+    if (!byId[id]) { const m = cloud ? { id, name: `“${words}” (Gemini)`, group: 'Found by name (AI)', needsCloud: words, what: `Where the picture shows “${words}”, outlined by Gemini (the picture is sent to Google).`, make: (img) => { const c = cloudMemo.get(img); return (c && c[words]) || new Float32Array(img.width * img.height); } } : { id, name: `“${words}”`, group: 'Found by name (AI)', needsFind: [words], what: `Where the picture shows “${words}”, found by the AI finder.`, make: (img) => found(img, words) }; LIST.push(m); byId[id] = m; }
     return id;
   }
   // colour rules cannot see on a picture whose colours all lean one way (sepia, a strong cast): measured once
@@ -195,7 +197,7 @@
     // anything a map needs first (the face finder looks at the picture once)
   async function prepare(ids, img) {
     const want = new Set();
-    for (const id of [].concat(ids)) { const m = id && byId[id]; if (!m) continue; if (m.needsFaces) await IC.faces.ensure(img); if (m.needsFind) m.needsFind.forEach((w) => want.add(w)); if (m.needsCut && !cutMemo.has(img)) { const c = document.createElement('canvas'); c.width = img.width; c.height = img.height; c.getContext('2d').putImageData(img, 0, 0); cutMemo.set(img, await CRAFTAI.cutout(c)); } }
+    for (const id of [].concat(ids)) { const m = id && byId[id]; if (!m) continue; if (m.needsCloud) { let c = cloudMemo.get(img); if (!c) { c = {}; cloudMemo.set(img, c); } if (!c[m.needsCloud]) c[m.needsCloud] = await IC.cloud.segment(img, m.needsCloud, await IC.cloud.seeModel('gemini')); } if (m.needsFaces) await IC.faces.ensure(img); if (m.needsFind) m.needsFind.forEach((w) => want.add(w)); if (m.needsCut && !cutMemo.has(img)) { const c = document.createElement('canvas'); c.width = img.width; c.height = img.height; c.getContext('2d').putImageData(img, 0, 0); cutMemo.set(img, await CRAFTAI.cutout(c)); } }
     if (!want.size) return;
     let fm = findMemo.get(img); if (!fm) { fm = new Map(); findMemo.set(img, fm); }
     // the scene words go together the first time (one look at the picture, about 15 seconds)
@@ -204,7 +206,7 @@
     const c = document.createElement('canvas'); c.width = img.width; c.height = img.height; c.getContext('2d').putImageData(img, 0, 0);
     const r = await CRAFTAI.find(c, missing); missing.forEach((w, i) => fm.set(w, { w: r.w, h: r.h, m: r.maps[i] }));
   }
-  const known = (id, img) => { const m = byId[id]; if (!m) return false; if (m.needsFaces && !IC.faces.known(img)) return false; if (m.needsCut && !cutMemo.has(img)) return false; if (m.needsFind) { const fm = findMemo.get(img); return !!fm && m.needsFind.every((w) => fm.has(w)); } return true; };
+  const known = (id, img) => { const m = byId[id]; if (!m) return false; if (m.needsFaces && !IC.faces.known(img)) return false; if (m.needsCut && !cutMemo.has(img)) return false; if (m.needsCloud) { const c = cloudMemo.get(img); return !!(c && c[m.needsCloud]); } if (m.needsFind) { const fm = findMemo.get(img); return !!fm && m.needsFind.every((w) => fm.has(w)); } return true; };
   // a smaller copy (thumbnails) shares what the AI found in the full picture
   const share = (from, to) => { if (findMemo.has(from)) findMemo.set(to, findMemo.get(from)); if (cutMemo.has(from)) cutMemo.set(to, cutMemo.get(from)); };
   // a gap filled smoothly from what is around it (push–pull: averaged down a pyramid, then filled back up): a guess, for colour hints only

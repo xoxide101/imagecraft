@@ -18,6 +18,7 @@
   async function call(url, opts, who) {
     let r; try { r = await fetch(url, opts); } catch (e) { throw new Error(`${NAMES[who]} could not be reached (no internet, or the browser blocked it).`); }
     const t = await r.text(); let j = null; try { j = JSON.parse(t); } catch (e) { /* not JSON */ }
+    if (!r.ok && /quota|billing|credit balance|insufficient_quota/i.test(t)) throw new Error(`${NAMES[who]}: this account has no paid credit for it yet (${who === 'gemini' ? 'Google: turn on billing for the key in Google AI Studio; the free tier does not draw pictures' : who === 'anthropic' ? 'Anthropic Console › Plans & Billing' : 'OpenAI: Settings › Billing'}). The other services and the built-in AI still work.`);
     if (!r.ok) { const m = (j && (j.error && (j.error.message || j.error.type))) || t.slice(0, 200); throw new Error(`${NAMES[who]}: ${/workspace/i.test(m) ? 'this key is not tied to one workspace: add the Workspace ID (Anthropic Console › Settings › Workspaces) under the Claude key, or use a key made inside a workspace. ' : r.status === 401 || r.status === 403 ? 'the key was refused (check it in AI settings › Cloud AI). ' : ''}${m}`); }
     return j;
   }
@@ -75,5 +76,92 @@
     }
     throw new Error('Claude describes pictures but does not draw them: choose Gemini or OpenAI to regenerate.');
   }
-  IC.cloud = { cfg, save, has, NAMES, models, describe, regenerate };
+  // ------------------------------------------------------------------ a picture (canvas-sized) to a PNG blob / base64
+  const pngOf = (img) => new Promise((res) => { const c = document.createElement('canvas'); c.width = img.width; c.height = img.height; c.getContext('2d').putImageData(img, 0, 0); c.toBlob((b) => res(b), 'image/png'); });
+  const b64Of = async (blob) => { const u = new Uint8Array(await blob.arrayBuffer()); let s = ''; for (let i = 0; i < u.length; i += 32768) s += String.fromCharCode.apply(null, u.subarray(i, i + 32768)); return btoa(s); };
+  const scaled = (img, W, H) => { const c = document.createElement('canvas'); c.width = img.width; c.height = img.height; c.getContext('2d').putImageData(img, 0, 0); const o = document.createElement('canvas'); o.width = W; o.height = H; const x = o.getContext('2d'); x.imageSmoothingQuality = 'high'; x.drawImage(c, 0, 0, W, H); return x.getImageData(0, 0, W, H); };
+  // a picture and an instruction to an image model; back: ImageData at the size sent
+  async function edit(img, p, model, prompt, mask) {
+    const k = cfg.keys[p].trim(); if (!k) throw new Error(`No ${NAMES[p]} key yet: add it in AI settings › Cloud AI (the AI button in the status bar).`);
+    let out;
+    if (p === 'openai') {
+      const fd = new FormData(); fd.append('model', model); fd.append('prompt', prompt); fd.append('image', new File([await pngOf(img)], 'image.png', { type: 'image/png' }));
+      if (mask) fd.append('mask', new File([await pngOf(mask)], 'mask.png', { type: 'image/png' }));
+      const j = await call('https://api.openai.com/v1/images/edits', { method: 'POST', headers: { Authorization: `Bearer ${k}` }, body: fd }, p);
+      const b = j.data?.[0]?.b64_json; if (!b) throw new Error(`${NAMES[p]} sent no picture back.`); out = await toImageData(b);
+    } else if (p === 'gemini') {
+      const j = await call(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(k)}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ contents: [{ parts: [{ inline_data: { mime_type: 'image/png', data: await b64Of(await pngOf(img)) } }, { text: prompt }] }], generationConfig: { responseModalities: ['IMAGE', 'TEXT'] } }) }, p);
+      const part = ((j.candidates || [])[0]?.content?.parts || []).find((x) => x.inline_data || x.inlineData), d = part && (part.inline_data || part.inlineData);
+      if (!d) throw new Error(`${NAMES[p]} sent no picture back (choose a model with "image" in its name).`); out = await toImageData(d.data, d.mime_type || d.mimeType || 'image/png');
+    } else throw new Error('Claude describes pictures but does not draw them: choose Gemini or OpenAI.');
+    return out.width === img.width && out.height === img.height ? out : scaled(out, img.width, img.height);
+  }
+
+  // ------------------------------------------------------------------ fill marked areas (repair): only the marked parts change
+  // The marked area and a margin round it are cut out (sharper and cheaper than the whole picture), at most 1024 px
+  // across; OpenAI gets a mask (see-through = fill), Gemini sees the area painted magenta and is asked to fill it. The
+  // answer is laid back only where it was marked, with a soft edge, so the rest stays the original.
+  async function fill(img, hole, p, model, text = '') {
+    const W = img.width, H = img.height; let x0 = W, y0 = H, x1 = -1, y1 = -1;
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (hole[y * W + x] > 0.5) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+    if (x1 < 0) throw new Error('Nothing is marked.');
+    const m = Math.round(Math.max(x1 - x0, y1 - y0) * 0.35 + 24); x0 = Math.max(0, x0 - m); y0 = Math.max(0, y0 - m); x1 = Math.min(W - 1, x1 + m); y1 = Math.min(H - 1, y1 + m);
+    const cw = x1 - x0 + 1, ch = y1 - y0 + 1, k = Math.min(1, 1024 / Math.max(cw, ch)), sw = Math.max(16, Math.round(cw * k)), sh = Math.max(16, Math.round(ch * k));
+    const crop = new ImageData(cw, ch), hc = new Float32Array(cw * ch);
+    for (let y = 0; y < ch; y++) { crop.data.set(img.data.subarray(((y0 + y) * W + x0) * 4, ((y0 + y) * W + x0 + cw) * 4), y * cw * 4); for (let x = 0; x < cw; x++) hc[y * cw + x] = hole[(y0 + y) * W + x0 + x]; }
+    const small = scaled(crop, sw, sh), hs = new Float32Array(sw * sh); for (let y = 0; y < sh; y++) for (let x = 0; x < sw; x++) hs[y * sw + x] = hc[Math.min(ch - 1, Math.floor(((y + 0.5) * ch) / sh)) * cw + Math.min(cw - 1, Math.floor(((x + 0.5) * cw) / sw))];
+    const what = text ? ` The photo shows: ${text}` : '';
+    let back;
+    if (p === 'openai') { const mask = new ImageData(sw, sh); for (let i = 0; i < sw * sh; i++) mask.data[i * 4 + 3] = hs[i] > 0.5 ? 0 : 255; back = await edit(small, p, model, `Fill in the transparent (masked) areas of this old photograph so they match the surrounding photo exactly: same people, clothing, textures, lighting, colour and grain. Change nothing else.${what}`, mask); }
+    else { const shown = new ImageData(new Uint8ClampedArray(small.data), sw, sh); for (let i = 0; i < sw * sh; i++) if (hs[i] > 0.5) { shown.data[i * 4] = 255; shown.data[i * 4 + 1] = 0; shown.data[i * 4 + 2] = 255; } back = await edit(shown, p, model, `The bright magenta areas of this old photograph are damage. Repaint only those areas so they match the photo around them exactly (same people, clothing, textures, lighting, colour and grain) and leave everything else exactly as it is. No magenta may remain.${what}`); }
+    return layBack(img, scaled(back, cw, ch), hc, x0, y0, cw, ch, Math.max(2, Math.round(3 / k)));
+  }
+  // the filled crop laid back only where marked (the mark grown a little and feathered)
+  function layBack(img, big, hc, x0, y0, cw, ch, r) {
+    const W = img.width, out = new ImageData(new Uint8ClampedArray(img.data), img.width, img.height), o = out.data, soft = new Float32Array(cw * ch), st = Math.max(1, r >> 1);
+    for (let y = 0; y < ch; y++) for (let x = 0; x < cw; x++) { let v = hc[y * cw + x] > 0.5 ? 1 : 0; for (let j = -r; j <= r && v < 1; j += st) for (let i = -r; i <= r; i += st) { const yy = y + j, xx = x + i; if (yy >= 0 && yy < ch && xx >= 0 && xx < cw && hc[yy * cw + xx] > 0.5) v = Math.max(v, 1 - Math.hypot(i, j) / (r + 1)); } soft[y * cw + x] = v; }
+    for (let y = 0; y < ch; y++) for (let x = 0; x < cw; x++) { const w = soft[y * cw + x]; if (w <= 0) continue; const pi = ((y0 + y) * W + x0 + x) * 4, bi = (y * cw + x) * 4; for (let c = 0; c < 3; c++) o[pi + c] = Math.round(o[pi + c] + (big.data[bi + c] - o[pi + c]) * w); }
+    return out;
+  }
+
+  // ------------------------------------------------------------------ colour from the cloud, detail from the photo
+  // The cloud model colourises a copy; only its colour (Lab a and b, smoothed a little) is joined to the photo's own
+  // full-size lightness, so nothing in the photo is redrawn: every edge and texture stays the original's.
+  async function colourise(img, p, model, { amount = 100, text = '' } = {}) {
+    const k = Math.min(1, 1536 / Math.max(img.width, img.height)), small = scaled(img, Math.round(img.width * k), Math.round(img.height * k));
+    const back = await edit(small, p, model, `Colourise this old black-and-white or faded photograph with natural, realistic colours. Keep everything exactly as it is: same people, faces, clothing, objects, framing and detail; change only the colours.${text ? ' The photo shows: ' + text : ''}`);
+    return IC.filters.colourFrom(img, scaled(back, img.width, img.height), { amount });
+  }
+
+  // ------------------------------------------------------------------ object masks (Gemini): sharper than CLIPSeg
+  // Gemini answers with a box (0–1000) and a small PNG mask for each thing it finds; they are laid into one map 0–1.
+  async function segment(img, words, model) {
+    const k = cfg.keys.gemini.trim(); if (!k) throw new Error('No Gemini key yet.');
+    const W = img.width, H = img.height, b64 = jpeg(img, 1024);
+    const prompt = `Give the segmentation masks for: ${words}. Output a JSON list of masks where each entry contains the 2D bounding box in the key "box_2d", the segmentation mask in key "mask", and the text label in the key "label".`;
+    const j = await call(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(k)}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ contents: [{ parts: [{ inline_data: { mime_type: 'image/jpeg', data: b64 } }, { text: prompt }] }], generationConfig: { temperature: 0.2 } }) }, 'gemini');
+    const text = ((j.candidates || [])[0]?.content?.parts || []).map((x) => x.text || '').join(''), m = text.match(/\[[\s\S]*\]/); if (!m) throw new Error('Gemini did not answer with masks.');
+    const items = JSON.parse(m[0]), map = new Float32Array(W * H);
+    for (const it of items) {
+      const [ya, xa, yb, xb] = it.box_2d || []; if (!it.mask || !(xb > xa) || !(yb > ya)) continue;
+      const bx0 = Math.round((xa / 1000) * W), by0 = Math.round((ya / 1000) * H), bw = Math.max(1, Math.round(((xb - xa) / 1000) * W)), bh = Math.max(1, Math.round(((yb - ya) / 1000) * H));
+      const mk = await new Promise((res) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => res(null); i.src = String(it.mask).startsWith('data:') ? it.mask : 'data:image/png;base64,' + it.mask; }); if (!mk) continue;
+      const c = document.createElement('canvas'); c.width = bw; c.height = bh; const x = c.getContext('2d'); x.drawImage(mk, 0, 0, bw, bh); const d = x.getImageData(0, 0, bw, bh).data;
+      for (let y = 0; y < bh; y++) for (let xx = 0; xx < bw; xx++) { const X = bx0 + xx, Y = by0 + y; if (X < 0 || Y < 0 || X >= W || Y >= H) continue; const v = d[(y * bw + xx) * 4] / 255; if (v > map[Y * W + X]) map[Y * W + X] = v; }
+    }
+    return map;
+  }
+
+  // ------------------------------------------------------------------ one aligned face (512 × 512) redrawn by the cloud
+  const face = (crop, p, model) => edit(crop, p, model, 'Restore this old, blurred or damaged face photo so it looks sharp and natural, like a modern photo of the same person. Keep the identity, expression, pose, hair, age and framing exactly the same. Do not change the background or the crop.');
+
+  // which services can do a job, given the keys; which of their models to use (the person's choice, or a good default)
+  const engines = (job) => ({ fill: ['openai', 'gemini'], colour: ['gemini', 'openai'], masks: ['gemini'], face: ['gemini', 'openai'] }[job] || []).filter(has);
+  // the newest model that fits (by the version numbers in its name), so retired models (gemini-2.5-flash) are never chosen
+  const ver = (id) => (String(id).match(/\d+(?:\.\d+)?/g) || []).map(Number);
+  const newest = (ms) => ms.slice().sort((a, b) => { const x = ver(a.id), y = ver(b.id); for (let i = 0; i < Math.max(x.length, y.length); i++) { const d = (y[i] || 0) - (x[i] || 0); if (d) return d; } return a.id.length - b.id.length; })[0];
+  const drawModel = async (p) => { const want = cfg.models['draw:' + p], ms = (await models(p)).filter((x) => x.draw); if (want && ms.some((x) => x.id === want)) return want; const pick = newest(ms.filter((x) => /^gpt-image/.test(x.id) && !/mini/.test(x.id))) || newest(ms.filter((x) => /flash-image/.test(x.id) && !/preview/.test(x.id))) || newest(ms.filter((x) => /flash-image|gpt-image/.test(x.id))) || ms[0]; if (!pick) throw new Error(`${NAMES[p]}: this key has no model that can draw pictures.`); return pick.id; };
+  const seeModel = async (p) => { const want = cfg.models['see:' + p], ms = (await models(p)).filter((x) => x.see && !x.draw); if (want && ms.some((x) => x.id === want)) return want; const plain = (x) => !/lite|image|tts|live|audio|thinking|preview|exp/.test(x.id); const pick = newest(ms.filter((x) => /^gemini-[\d.]+-flash$/.test(x.id))) || newest(ms.filter((x) => /flash/.test(x.id) && plain(x))) || newest(ms.filter(plain)) || ms[0]; if (!pick) throw new Error(`${NAMES[p]}: this key has no model that can look at pictures.`); return pick.id; };
+
+  IC.cloud = { cfg, save, has, NAMES, models, describe, regenerate, edit, fill, layBack, colourise, segment, face, engines, drawModel, seeModel };
 })();

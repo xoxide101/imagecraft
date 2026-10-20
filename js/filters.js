@@ -148,6 +148,14 @@
   const fLab = (t) => (t > 0.008856 ? Math.cbrt(t) : 7.787 * t + 16 / 116), fInv = (t) => (t > 0.206893 ? t * t * t : (t - 16 / 116) / 7.787);
   function toLab(r, g, b) { const R = srgbToLin(r), G = srgbToLin(g), B = srgbToLin(b), X = (0.412453 * R + 0.35758 * G + 0.180423 * B) / 0.950456, Y = 0.212671 * R + 0.71516 * G + 0.072169 * B, Z = (0.019334 * R + 0.119193 * G + 0.950227 * B) / 1.088754; const fy = fLab(Y); return [Y > 0.008856 ? 116 * fy - 16 : 903.3 * Y, 500 * (fLab(X) - fy), 200 * (fy - fLab(Z))]; }
   function fromLab(L, a, b) { const fy = (L + 16) / 116, X = fInv(fy + a / 500) * 0.950456, Y = fInv(fy), Z = fInv(fy - b / 200) * 1.088754; const R = 3.240479 * X - 1.53715 * Y - 0.498535 * Z, G = -0.969256 * X + 1.875992 * Y + 0.041556 * Z, B = 0.055648 * X - 0.204043 * Y + 1.057311 * Z; return [R, G, B].map((v) => Math.max(0, Math.min(1, linToSrgb(Math.max(0, v))))); }
+  // the colour of one picture (Lab a, b, a little smoothed) joined to the lightness of another of the same size
+  function colourFrom(img, col, { amount = 100 } = {}) {
+    const W = img.width, H = img.height, n = W * H, d = img.data, c = col.data, A = new Float32Array(n), B = new Float32Array(n), L = new Float32Array(n);
+    for (let p = 0; p < n; p++) { L[p] = toLab(d[p * 4] / 255, d[p * 4 + 1] / 255, d[p * 4 + 2] / 255)[0]; const q = toLab(c[p * 4] / 255, c[p * 4 + 1] / 255, c[p * 4 + 2] / 255); A[p] = q[1]; B[p] = q[2]; }
+    const r = Math.max(1, Math.round(Math.max(W, H) / 700)), sa = boxMean(A, W, H, r), sb = boxMean(B, W, H, r), k = amount / 100, out = new ImageData(W, H), o = out.data;
+    for (let p = 0; p < n; p++) { const rgb = fromLab(L[p], sa[p] * k, sb[p] * k); for (let q = 0; q < 3; q++) o[p * 4 + q] = Math.round(rgb[q] * 255); o[p * 4 + 3] = d[p * 4 + 3]; }
+    return out;
+  }
   async function colourise(img, { amount = 100, warm = 0 } = {}) {
     const W = img.width, H = img.height, d = img.data, L = new Float32Array(W * H);
     for (let p = 0; p < W * H; p++) L[p] = toLab(d[p * 4] / 255, d[p * 4 + 1] / 255, d[p * 4 + 2] / 255)[0];
@@ -646,5 +654,5 @@
     return o;
   }
 
-  IC.filters = { colourise, mmpx, deband, chromaRebuild, guidedBy, cas, dehaze, hazeLevel, isToned, shadowRecover, guided, autoColour, clarity, pyramidBlend, aliasCheck, antialias, light, colour, autoLevels, autoFix, whiteBalance, greyscale, sepia, invert, threshold, posterize, blur, sharpen, denoise, median, despeckle, deblock, undither, pixelate, resize, scale2x, scale3x, rotate: rotateAny, rotate90: rotate, flip, crop, trimBox, canvasSize, makeClear, flatten, copy, canvasOf };
+  IC.filters = { colourFrom, colourise, mmpx, deband, chromaRebuild, guidedBy, cas, dehaze, hazeLevel, isToned, shadowRecover, guided, autoColour, clarity, pyramidBlend, aliasCheck, antialias, light, colour, autoLevels, autoFix, whiteBalance, greyscale, sepia, invert, threshold, posterize, blur, sharpen, denoise, median, despeckle, deblock, undither, pixelate, resize, scale2x, scale3x, rotate: rotateAny, rotate90: rotate, flip, crop, trimBox, canvasSize, makeClear, flatten, copy, canvasOf };
 })();
