@@ -844,6 +844,8 @@
     if (id === 'facerestore' && !String(s.model).startsWith('cloud-') && CL.engines('face').length) s.model = 'cloud-' + CL.engines('face')[0];
     return s;
   }
+  // where a step will run, for the Process plan: the cloud service it will use, or this computer
+  function whereTag(id) { const job = { repair: 'fill', colourise: 'colour', facerestore: 'face' }[id], eng = aiMode === 'cloud' && job && IC.cloud.engines(job)[0]; return eng ? `<span class="where cloud" title="Sent to ${esc(IC.cloud.NAMES[eng])} (the switch is on Cloud AI)">Cloud: ${esc(IC.cloud.NAMES[eng].split(' ')[0])}</span>` : `<span class="where" title="${job ? (aiMode === 'cloud' ? 'No cloud key that can do this: runs on this computer' : 'The switch is not on Cloud AI: runs on this computer') : 'No cloud version of this step: runs on this computer'}">This computer</span>`; }
   function openTool(id, preset) {
     if (!pic() && !(TOOLS[id] && TOOLS[id].noPic)) { toast('Open a picture first.'); return; }
     if (id === 'repair' || id === 'shadowlift') repairPaint = null; // a fresh painting each time
@@ -1295,7 +1297,7 @@
     add(`<div class="field"><span>What the photo needs</span><ul class="hint" style="margin:4px 0 0;padding-left:18px">${S.lines.map((l) => `<li>${esc(l)}</li>`).join('')}</ul></div>`);
     if (!S.plan.length) { add('<p class="hint">Nothing to do for these goals: tick another goal above.</p>'); return; }
     const auto = S.plan.filter((x) => !x.manual && x.on), total = auto.reduce((a, x) => a + (x.ms || 0), 0);
-    const list = add(`<div class="field"><span>The plan (in this order)</span>${S.plan.map((x, i) => `<div class="plan-step"><input type="checkbox" data-i="${i}" ${x.on ? 'checked' : ''} ${x.manual ? 'disabled title="Done by you"' : ''}><div><b>${esc(x.label)}</b>${x.manual ? ' <span class="turn">your turn</span>' : ''}<small>${esc(x.why)}${x.ms ? ` · about ${fmtTime(x.ms / 1000)}` : ''}</small></div><button class="btn outline" type="button" data-open="${i}" title="Open this tool to adjust it (the plan stays here: come back with Process a photo)">Open</button></div>`).join('')}</div>`);
+    const list = add(`<div class="field"><span>The plan (in this order)</span>${S.plan.map((x, i) => `<div class="plan-step"><input type="checkbox" data-i="${i}" ${x.on ? 'checked' : ''} ${x.manual ? 'disabled title="Done by you"' : ''}><div><b>${esc(x.label)}</b>${x.manual ? ' <span class="turn">your turn</span>' : ` ${whereTag(x.id)}`}<small>${esc(x.why)}${x.ms ? ` · about ${fmtTime(x.ms / 1000)}` : ''}</small></div><button class="btn outline" type="button" data-open="${i}" title="Open this tool to adjust it (the plan stays here: come back with Process a photo)">Open</button></div>`).join('')}</div>`);
     list.onchange = (e) => { const i = e.target.dataset.i; if (i != null) { S.plan[+i].on = e.target.checked; renderProps(); } };
     list.onclick = (e) => { const b = e.target.closest('[data-open]'); if (!b) return; const x = S.plan[+b.dataset.open]; closeTool(true); openTool(x.id, x.s); };
     add(`<p class="hint">${auto.length} automatic step${auto.length === 1 ? '' : 's'}, about <b>${fmtTime(total / 1000)}</b> in all on this computer${S.plan.some((x) => x.id === 'facerestore' || x.id === 'colourise') ? ' (AI steps download their models the first time)' : ''}. Your-turn steps are left for you: open them when the automatic ones are done.</p>`);

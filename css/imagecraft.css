@@ -258,3 +258,6 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 /* curves editor */
 .curvebox { position: relative; width: 100%; aspect-ratio: 1; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); touch-action: none; cursor: crosshair; }
 .curvebox canvas { width: 100%; height: 100%; display: block; }
+
+.where { display: inline-block; font-size: 10.5px; font-weight: 600; padding: 0 6px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); vertical-align: 1px; }
+.where.cloud { color: #fff; background: var(--accent); border-color: var(--accent); }
