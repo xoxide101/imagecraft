@@ -183,6 +183,24 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 .maplist button[aria-current="true"] { border-color: var(--accent); background: var(--accent-soft); }
 .maplist canvas { width: 56px; height: 42px; object-fit: contain; border-radius: 4px; background: #111; }
 .maplist b { font-size: 12px; } .maplist small { display: block; color: var(--muted); font-size: 10.5px; line-height: 1.3; }
+.infobox { position: absolute; left: 12px; bottom: 12px; z-index: 6; width: 300px; max-width: calc(100% - 24px); max-height: 46%; display: flex; flex-direction: column; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18); font-size: 12.5px; }
+.infobox.folded { width: auto; }
+.infobox .ib-tabs { display: flex; gap: 2px; padding: 4px; border-bottom: 1px solid var(--line); align-items: center; }
+.infobox .ib-tabs button { flex: 1; border: 0; background: none; color: var(--muted); padding: 5px 4px; border-radius: 6px; cursor: pointer; font: inherit; white-space: nowrap; }
+.infobox .ib-tabs button[aria-selected="true"] { background: var(--panel-2); color: var(--fg); font-weight: 600; }
+.infobox .ib-tabs .ib-fold { flex: 0 0 auto; padding: 5px 8px; }
+.infobox .ib-body { overflow: auto; padding: 8px 10px 10px; }
+.infobox canvas { display: block; max-width: 100%; max-height: 120px; margin: 0 auto 6px; border-radius: 4px; background: repeating-conic-gradient(var(--check-a) 0 25%, var(--check-b) 0 50%) 0 0 / 12px 12px; }
+.infobox dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; margin: 0; }
+.infobox dt { color: var(--muted); }
+.infobox dd { margin: 0; overflow-wrap: anywhere; }
+.infobox ol { margin: 4px 0 0; padding-left: 20px; }
+.infobox li { margin: 2px 0; }
+.infobox .ib-note { color: var(--muted); margin: 6px 0 0; }
+.infobox .ib-findings { margin: 6px 0 0; padding-left: 16px; }
+.plan-step { display: grid; grid-template-columns: auto 1fr auto; gap: 2px 8px; align-items: start; padding: 6px 0; border-top: 1px solid var(--line); }
+.plan-step small { display: block; color: var(--muted); }
+.plan-step .turn { color: var(--accent); font-weight: 600; }
 .mapbar { position: absolute; left: 50%; top: 12px; transform: translateX(-50%); z-index: 6; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; justify-content: center; max-width: calc(100% - 24px); background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 6px 10px; box-shadow: 0 4px 14px rgba(0,0,0,.2); }
 .mapbar b { margin-right: 4px; }
 

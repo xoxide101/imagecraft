@@ -109,6 +109,7 @@
     cur = i; view.fit = true; renderPics(); renderHist(); renderProps(); show(); fitView(); status();
     $('welcome').hidden = !!pic(); $('stage').hidden = !pic();
     if (fresh) colourCount();
+    renderInfo();
   }
   function push(label, img, deep, how) {
     const p = pic(); p.steps.length = p.at + 1; p.steps.push({ label, img, deep: deep || undefined, how: how || undefined });
@@ -149,7 +150,7 @@
     push(label, deep ? F.down16(deep, out8.width, out8.height) : out8, deep, how);
   }
   let deepOn = true; try { deepOn = localStorage.getItem('imagecraft-deep') !== 'off'; } catch (e) { /* blocked storage */ }
-  function afterChange() { if (mapView) { mapView = null; $('mapbar').hidden = true; } renderPics(); renderHist(); renderProps(); show(); if (view.fit) fitView(); status(); colourCount(); }
+  function afterChange() { if (mapView) { mapView = null; $('mapbar').hidden = true; } renderPics(); renderHist(); renderProps(); show(); if (view.fit) fitView(); status(); colourCount(); renderInfo(); }
   const canUndo = () => !!pic() && pic().at > 0 && !tool;
   const canRedo = () => !!pic() && pic().at < pic().steps.length - 1 && !tool;
   function undo() { if (tool) { closeTool(); return; } if (canUndo()) { pic().at--; afterChange(); } }
@@ -166,7 +167,7 @@
   let countT = null;
   function colourCount() {
     clearTimeout(countT); const st = pic() && pic().steps[pic().at]; if (!st || st.colours != null) { status(); return; }
-    countT = setTimeout(() => { if (st.img.width * st.img.height > 6e6) { st.colours = -1; } else st.colours = F.countColours(st.img); status(); if (!tool) renderProps(); }, 60);
+    countT = setTimeout(() => { if (st.img.width * st.img.height > 6e6) { st.colours = -1; } else st.colours = F.countColours(st.img); status(); if (!tool) renderProps(); renderInfo(); }, 60);
   }
 
   // ------------------------------------------------------------------ opening
@@ -425,6 +426,7 @@
         seg('from', 'From', [['step', 'A step in History'], ['pic', 'Another open picture']]), { t: 'stepsel', k: 'step', label: 'Version', show: (s) => s.from === 'step' }, { t: 'picsel', k: 'other', label: 'Picture (a cut-out is placed by its solid parts)', show: (s) => s.from === 'pic' }, sel('mode', 'How', IC.detail.MODES.map((m) => [m, { normal: 'Normal (mix)', multiply: 'Multiply (darker)', screen: 'Screen (lighter)', overlay: 'Overlay (contrast)', softlight: 'Soft light', lighten: 'Lighten only', darken: 'Darken only', difference: 'Difference (shows changes)', luminosity: 'Its brightness, my colours', colour: 'Its colours, my brightness' }[m]])),
         range('amount', 'Amount %', 0, 100), note('Use Where to bring the version back only in some places: the sharper version on the texture, the smoother one on the sky.')],
       run: (img, s) => { const src = s.from === 'pic' ? pics[s.other] && pics[s.other].steps[pics[s.other].at].img : pic().steps[s.step] && pic().steps[s.step].img; if (!src) throw new Error(s.from === 'pic' ? 'Open another picture first (for example a cut-out you repaired).' : 'Choose a version.'); return IC.detail.blend(img, src, { mode: s.mode, amount: s.amount }); } },
+    process: { title: 'Process a photo', icon: IK.auto, viewOnly: true, s: {}, run: (img) => img, fields: [{ t: 'custom', render: (into, t) => processPanel(into, t) }] },
     assess: { title: 'Ask AI what it needs', icon: IK.modern, viewOnly: true, s: {}, run: (img) => img,
       fields: [{ t: 'custom', render: (into, t) => assessPanel(into, t) }] },
     split: { title: 'Split subject and background', icon: IK.cutout, live: false, applyLabel: 'Make the two pictures', s: { fill: true, grow: 2 },
@@ -776,7 +778,7 @@
   // ------------------------------------------------------------------ running a tool
   let tool = null, token = 0, timer = null;
   // Where: any tool that keeps the picture's size can work only where a map says (a mask: white = apply, black = leave)
-  const NO_MASK = new Set(['resize', 'crop', 'canvas', 'straighten', 'looks', 'text', 'trace', 'upscale', 'remaster', 'modern', 'depth', 'noisemap', 'stack', 'split', 'falsecolour', 'assess', 'repair', 'redeye', 'shadowlift', 'facerestore', 'colourise']);
+  const NO_MASK = new Set(['resize', 'crop', 'canvas', 'straighten', 'looks', 'text', 'trace', 'upscale', 'remaster', 'modern', 'depth', 'noisemap', 'stack', 'split', 'falsecolour', 'assess', 'repair', 'redeye', 'shadowlift', 'facerestore', 'colourise', 'process']);
   const maskable = (def) => !NO_MASK.has(def.id) && !def.viewOnly;
   const MASK_FIELDS = [
     { t: 'html', html: () => '<h3 style="margin:10px 0 0">Where</h3>' },
@@ -858,6 +860,7 @@
     try {
       await wait(0); const t0 = performance.now(); if (t.s.wMap) await IC.maps.prepare([t.s.wMap, t.s.wOp ? t.s.wMap2 : ''], t.base); const r0 = await t.def.run(t.base, t.s, etaSay((m) => { if (my === token) busyNow(m); })), r = masked(t, r0);
       if (my !== token || tool !== t) return;
+      if (infoTab === 'working') setTimeout(renderInfo, 0);
       t.ms = performance.now() - t0; ICLOG.info(`${t.def.title}: ${t.base.width} × ${t.base.height} → ${r.width} × ${r.height} in ${Math.round(t.ms)} ms`, JSON.stringify(t.s).slice(0, 400));
       const sizeChanged = !t.preview ? r.width !== t.base.width || r.height !== t.base.height : r.width !== t.preview.width || r.height !== t.preview.height;
       t.out = r; t.preview = t.showMask && t.s.wMap ? IC.maps.grey(maskOf(t), t.base.width, t.base.height) : r; busy(null); show(); if (sizeChanged && view.fit) fitView(); renderOut();
@@ -885,6 +888,7 @@
 
   // ------------------------------------------------------------------ the right-hand panel
   function renderProps() {
+    if (infoTab === 'working') setTimeout(renderInfo, 0); // the Working tab shows the open tool
     const P = $('props'); P.innerHTML = '';
     if (!tool) { P.append(pictureInfo()); return; }
     const t = tool, d = t.def;
@@ -1025,6 +1029,59 @@
     const inp = document.createElement('input'); inp.type = 'file'; inp.accept = '.json,application/json';
     inp.onchange = async () => { const f = inp.files[0]; if (!f) return; try { const rec = JSON.parse(await f.text()); await useRecipe(rec, all); } catch (e) { toast(e.message.startsWith('That') ? e.message : 'That file could not be read as a recipe.'); } };
     inp.click();
+  }
+  // ------------------------------------------------------------------ the info box (bottom left): Original, Current, Saved, Working
+  let infoTab = 'current', infoFolded = false; try { infoTab = localStorage.getItem('imagecraft-infotab') || 'current'; infoFolded = localStorage.getItem('imagecraft-infofold') === '1'; } catch (e) { /* blocked storage */ }
+  const thumbOf = (img) => { const k = Math.min(1, 280 / img.width, 120 / img.height), c = document.createElement('canvas'); c.width = Math.max(1, Math.round(img.width * k)); c.height = Math.max(1, Math.round(img.height * k)); const x = c.getContext('2d'); x.imageSmoothingQuality = 'high'; x.drawImage(X.canvasOf(img), 0, 0, c.width, c.height); return c; };
+  const savedAt = (p) => (p.saved && p.steps.includes(p.saved.step) ? p.steps.indexOf(p.saved.step) : -1); // -1: not saved (or what was saved has been undone past)
+  function renderInfo() {
+    const box = $('infobox'), p = pic(); if (!box) return; if (!p) { box.hidden = true; return; } box.hidden = false;
+    const tabs = [['original', 'Original'], ['current', 'Current'], ['saved', 'Saved'], ['working', 'Working']];
+    box.className = 'infobox' + (infoFolded ? ' folded' : '');
+    box.innerHTML = `<div class="ib-tabs">${infoFolded ? '<button type="button" data-ib="unfold" title="Show the picture details">ⓘ Details</button>' : tabs.map(([k, l]) => `<button type="button" data-ib="${k}" aria-selected="${k === infoTab}">${l}</button>`).join('') + '<button type="button" class="ib-fold" data-ib="fold" title="Fold away">–</button>'}</div>${infoFolded ? '' : '<div class="ib-body"></div>'}`;
+    box.onclick = (e) => { const b = e.target.closest('[data-ib]'); if (!b) return; const k = b.dataset.ib; if (k === 'fold' || k === 'unfold') infoFolded = k === 'fold'; else if (k === 'measure0' || k === 'measure') { measureFor(p, k === 'measure0'); return; } else infoTab = k; try { localStorage.setItem('imagecraft-infotab', infoTab); localStorage.setItem('imagecraft-infofold', infoFolded ? '1' : '0'); } catch (err) { /* blocked storage */ } renderInfo(); };
+    if (infoFolded) return;
+    const body = box.querySelector('.ib-body'), s0 = p.steps[0], st = p.steps[p.at], sa = savedAt(p), steps = (a, b) => p.steps.slice(a, b + 1).map((x) => `<li>${esc(x.label)}</li>`).join('');
+    const findings = (list) => (list ? `<ul class="ib-findings">${list.map((l) => `<li>${esc(l)}</li>`).join('')}</ul>` : '');
+    if (infoTab === 'original') {
+      body.append(thumbOf(s0.img)); body.insertAdjacentHTML('beforeend', `<dl><dt>File</dt><dd>${esc(p.name)}</dd><dt>Format</dt><dd>${esc(p.info.format || '')}${p.info.bits ? ` · ${p.info.bits}-bit` : ''}${s0.deep ? ' · 16 bits kept' : ''}</dd><dt>Size</dt><dd>${fmtN(s0.img.width)} × ${fmtN(s0.img.height)} px${p.size ? ` · ${kb(p.size)}` : ''}</dd>${s0.colours != null ? `<dt>Colours</dt><dd>${s0.colours < 0 ? 'many' : fmtN(s0.colours)}</dd>` : ''}</dl>${p.measured0 ? findings(p.measured0) : '<div class="btns" style="margin-top:6px"><button class="btn outline" type="button" data-ib="measure0">Measure the original</button></div>'}`);
+    } else if (infoTab === 'current') {
+      body.append(thumbOf(st.img)); body.insertAdjacentHTML('beforeend', `<dl><dt>Size</dt><dd>${fmtN(st.img.width)} × ${fmtN(st.img.height)} px</dd><dt>Colours</dt><dd>${st.colours == null ? 'counting…' : st.colours < 0 ? 'many' : fmtN(st.colours)}</dd><dt>Depth</dt><dd>${st.deep ? '16 bits per colour' : '8 bits per colour'}</dd><dt>Steps</dt><dd>${p.at} since the original${p.at < p.steps.length - 1 ? ` (${p.steps.length - 1 - p.at} undone)` : ''}</dd><dt>State</dt><dd>${p.dirty ? 'changed, not saved' : sa >= 0 ? 'saved' : 'as opened'}</dd></dl>${st.measured ? findings(st.measured) : '<div class="btns" style="margin-top:6px"><button class="btn outline" type="button" data-ib="measure">Measure it now</button></div>'}`);
+    } else if (infoTab === 'saved') {
+      body.innerHTML = sa < 0 ? `<p class="ib-note">${p.saved ? 'What was saved has since been undone.' : 'Not saved yet.'} Save as… keeps what is done so far; the steps that went into it are listed here.</p>` : `<dl><dt>Saved as</dt><dd>${esc(p.saved.name)}</dd><dt>When</dt><dd>${p.saved.when.toLocaleString()}</dd></dl><p class="ib-note">From the original to what was saved:</p><ol>${steps(1, sa) || '<li>(no changes: saved as opened)</li>'}</ol>`;
+    } else {
+      const from = Math.max(1, sa + 1), open = tool && !tool.def.viewOnly ? `<p class="ib-note"><b>Open now:</b> ${esc(tool.def.title)}${tool.preview ? ' (previewed, not applied yet: press Apply to keep it)' : ' (not applied yet)'}.</p>` : '';
+      body.innerHTML = `${p.at >= from ? `<p class="ib-note">Done ${sa >= 0 ? 'since the last save' : 'so far'}, not in a file yet:</p><ol start="${from}">${steps(from, p.at)}</ol>` : `<p class="ib-note">${sa >= 0 ? 'Nothing changed since the last save.' : 'No changes yet.'}</p>`}${open}`;
+    }
+  }
+  async function measureFor(p, original) {
+    const st = original ? p.steps[0] : p.steps[p.at]; busyNow('Measuring…');
+    try { const f = await IC.process.measure(st.img, { say: busyNow }); const lines = IC.process.describe(f); if (original) p.measured0 = lines; else st.measured = lines; } catch (e) { logFail('Measuring failed', e); toast(e.message); }
+    busy(null); renderInfo();
+  }
+  // ------------------------------------------------------------------ Process a photo: goals → measured → a plan for this photo
+  const processState = new WeakMap();
+  function processPanel(into, t) {
+    const p = pic(); let S = processState.get(p); if (!S) { S = { goals: { edits: false, bigger: false, colour: true, repair: true }, factor: 2, faces: false }; processState.set(p, S); }
+    const el = document.createElement('div'); into.append(el); const add = (h) => { const d = document.createElement('div'); d.innerHTML = h; el.append(d); return d; };
+    add('<p class="hint">Say what you are doing, and ImageCraft measures this photo (noise, blur, JPEG blocks, printing dots, light, colour cast, specks, and faces if you like) and lays out the steps in the order that works best: repair, clean, light and colour, your own edits, faces, make bigger, a final sharpen. Each step says why. Untick anything you do not want, open any step to adjust it, then run the ticked ones.</p>');
+    const goals = [['repair', 'Repair (specks, tears, JPEG blocks, printing dots)'], ['colour', 'Colour correction (light, fading, casts)'], ['bigger', 'Make bigger'], ['edits', 'Edits (crop, straighten, curves, colour: your own touch)']];
+    const g = add(`<div class="field"><span>What are you doing?</span>${goals.map(([k, l]) => `<label class="check"><input type="checkbox" data-g="${k}" ${S.goals[k] ? 'checked' : ''}> ${l}</label>`).join('')}</div>`);
+    g.onchange = (e) => { const k = e.target.dataset.g; if (k) { S.goals[k] = e.target.checked; if (S.f) S.plan = IC.process.plan(S.f, S.goals, { factor: S.factor, speed }); renderProps(); } };
+    if (S.goals.bigger) { const f2 = add(`<div class="field"><span>How much bigger</span><div class="seg">${[2, 4].map((k) => `<button type="button" class="btn" data-fac="${k}" aria-pressed="${S.factor === k}">${k}×</button>`).join('')}</div></div>`); f2.onclick = (e) => { const b = e.target.closest('[data-fac]'); if (b) { S.factor = +b.dataset.fac; if (S.f) S.plan = IC.process.plan(S.f, S.goals, { factor: S.factor, speed }); renderProps(); } }; }
+    const fc = add(`<label class="check"><input type="checkbox" ${S.faces ? 'checked' : ''}> Look for faces too (the first time downloads the face finder, about 4 MB)</label>`); fc.querySelector('input').onchange = (e) => { S.faces = e.target.checked; };
+    const look = add('<div class="btns"><button class="btn primary" type="button">Look at the photo</button></div>').querySelector('button');
+    look.onclick = async () => { const img = t.base; busyNow('Measuring…'); try { S.f = await IC.process.measure(img, { faces: S.faces, say: busyNow }); S.lines = IC.process.describe(S.f); S.plan = IC.process.plan(S.f, S.goals, { factor: S.factor, speed }); } catch (e) { logFail('Measuring failed', e); toast(e.message); } busy(null); if (tool === t) renderProps(); };
+    if (!S.f) return;
+    add(`<div class="field"><span>What the photo needs</span><ul class="hint" style="margin:4px 0 0;padding-left:18px">${S.lines.map((l) => `<li>${esc(l)}</li>`).join('')}</ul></div>`);
+    if (!S.plan.length) { add('<p class="hint">Nothing to do for these goals: tick another goal above.</p>'); return; }
+    const auto = S.plan.filter((x) => !x.manual && x.on), total = auto.reduce((a, x) => a + (x.ms || 0), 0);
+    const list = add(`<div class="field"><span>The plan (in this order)</span>${S.plan.map((x, i) => `<div class="plan-step"><input type="checkbox" data-i="${i}" ${x.on ? 'checked' : ''} ${x.manual ? 'disabled title="Done by you"' : ''}><div><b>${esc(x.label)}</b>${x.manual ? ' <span class="turn">your turn</span>' : ''}<small>${esc(x.why)}${x.ms ? ` · about ${fmtTime(x.ms / 1000)}` : ''}</small></div><button class="btn outline" type="button" data-open="${i}" title="Open this tool to adjust it (the plan stays here: come back with Process a photo)">Open</button></div>`).join('')}</div>`);
+    list.onchange = (e) => { const i = e.target.dataset.i; if (i != null) { S.plan[+i].on = e.target.checked; renderProps(); } };
+    list.onclick = (e) => { const b = e.target.closest('[data-open]'); if (!b) return; const x = S.plan[+b.dataset.open]; closeTool(true); openTool(x.id, x.s); };
+    add(`<p class="hint">${auto.length} automatic step${auto.length === 1 ? '' : 's'}, about <b>${fmtTime(total / 1000)}</b> in all on this computer${S.plan.some((x) => x.id === 'facerestore' || x.id === 'colourise') ? ' (AI steps download their models the first time)' : ''}. Your-turn steps are left for you: open them when the automatic ones are done.</p>`);
+    const go = add('<div class="btns"><button class="btn primary" type="button">Run the ticked steps</button></div>').querySelector('button');
+    go.onclick = () => { const steps = S.plan.filter((x) => !x.manual && x.on).map((x) => ({ id: x.id, s: x.s })); if (!steps.length) return toast('Tick at least one automatic step.'); closeTool(true); runSteps(steps).then(() => { S.f = null; renderInfo(); }); };
   }
   function renderHist() {
     const L = $('hist'); L.innerHTML = ''; const p = pic(); if (!p) return;
@@ -1215,7 +1272,7 @@
   $('save-go').onclick = () => {
     if (!saveBlob) return; const f = F.FORMATS[sv.fmt], e = f.extFor ? f.extFor({ bits: bitsFor(sv.fmt) }) : f.ext;
     ICLOG.info(`Saved ${sv.name}.${e} (${F.FORMATS[sv.fmt].name}, ${kb(saveBlob.size)}${savePrep ? ', ' + savePrep.width + ' × ' + savePrep.height : ''})`);
-    download(saveBlob, `${(sv.name || 'picture').replace(/[\\/:*?"<>|]+/g, '-')}.${e}`); pic().dirty = false; renderPics(); renderProps(); $('savedlg').hidden = true;
+    download(saveBlob, `${(sv.name || 'picture').replace(/[\\/:*?"<>|]+/g, '-')}.${e}`); pic().saved = { at: pic().at, step: pic().steps[pic().at], name: `${sv.name || 'picture'}.${e}`, when: new Date() }; pic().dirty = false; renderPics(); renderProps(); $('savedlg').hidden = true;
     toast(`Saved as ${f.name}.`);
   };
 
@@ -1316,6 +1373,7 @@
       { id: 'home', label: 'Home', hue: '#5b4bdb', groups: [
         ['File', [B('Open', I.folder, pickFiles, { big: true, always: true, key: 'Ctrl+O', title: 'Open pictures (several at once if you like)' }), B('Save as', I.save, openSave, { big: true, key: 'Ctrl+S', title: 'Save in any format and colour depth' }), { col: [B('Copy picture', I.copy, copyPicture), B('Close picture', I.close, () => closePic(cur))] }]],
         ['Edit', [{ col: [B('Undo', I.undo, undo, { key: 'Ctrl+Z', disabled: () => !canUndo() && !tool }), B('Redo', I.redo, redo, { key: 'Ctrl+Y', disabled: () => !canRedo() }), B('Back to the original', IK.revert, () => { if (pic().at) goStep(0); })] }]],
+        ['Plan', [B('Process a photo', IK.auto, T('process'), { big: true, title: 'Say what you are doing (edits, bigger, colour, repair); the photo is measured and a plan made for it' })]],
         ['Quick', [B('Auto fix', IK.auto, () => quick('Auto fix', (i) => X.autoFix(i)), { big: true, title: 'Levels, a little colour and sharpening, in one click' }), B('Modernise', IK.modern, T('modern'), { big: true, title: 'Clean up and enlarge pixel art, old screens, old photos or blocky JPEGs' }), B('Compare', IK.compare, toggleCompare, { big: true, pressed: () => view.compare, title: 'Before and after, side by side (drag the line)' })]],
         ['Help', [B('How to use', I.help, help, { big: true, always: true })]],
       ] },

@@ -34,6 +34,14 @@ Classic formats fit the picture to that machine's screen and colours for you (th
 - **Dithering**: Floyd–Steinberg, Atkinson, Jarvis, Stucki, Burkes, Sierra, Sierra Lite, ordered 2 × 2 / 4 × 4 / 8 × 8, and noise, with a strength slider.
 - **Computer looks**: Atari ST, Amiga, Commodore 64, ZX Spectrum, Amstrad CPC, CGA, EGA, VGA, Macintosh, Game Boy, Apple II, PICO-8 and Teletext, at the real screen size (with tall or wide pixels where the machine had them) or kept at your picture's size.
 
+### Process a photo (Home › Plan)
+
+Say what you are doing: **Repair**, **Colour correction**, **Make bigger** (2× or 4×) and/or **Edits** (your own crop, straighten, curves and colour). ImageCraft measures the photo (noise, blur, JPEG blocks, printing dots, light and fading, haze, colour cast or toning, specks, and faces if you ask; about 3 seconds) and lays out a plan in the order that works best: repair first (printing dots, JPEG blocks, specks, then tears you mark yourself), then noise and blur, light and colour, your own edits, faces, making bigger (photos are made 4× with the AI and averaged down to 2×), and a light final sharpen. Each step says why, with the measurement behind it, and roughly how long it takes on this computer; untick any, open any to adjust it, then run the ticked ones (each goes into History). Steps that need you (marking tears, crop, curves) are listed as "your turn". On the motorbike test: blocks 2.3×, dark (29%), soft (1.6 px), one small face; the plan of eight automatic steps was estimated at 14 seconds and took 13.4.
+
+### The details box (bottom left)
+
+Four tabs, folded away with **–**: **Original** (the file as opened: format, bits, size, colours, and its measurements on request), **Current** (the picture now: size, colours, 8 or 16 bits per colour, steps, saved or not), **Saved** (the steps from the original to what was last saved, and the file it went to) and **Working** (what has been done since, not in a file yet, and any tool that is open but not applied).
+
 ### Deep colour (16 bits per colour)
 
 Every picture is expanded to full colour when it opens, so a palette never limits what the tools can do. Beyond that, each History step keeps **16 bits per colour** (65,536 levels instead of 256), so a chain of edits doesn't round away detail or band smooth skies. The status bar shows **16-bit** when a step has it.
@@ -160,7 +168,7 @@ The AI models come from Hugging Face and Google. Copies of every one ImageCraft 
 
 ## When something goes wrong
 
-The red badge in the status bar counts faults in the program. A tool saying what it needs ("No faces found", "Paint over the shadow first") is shown as a message and kept in the Debug log as a note, not counted as an error.
+The red badge in the status bar counts faults in the program in this session (the Debug log keeps earlier sessions' entries, dated, for reference). A tool saying what it needs ("No faces found", "Paint over the shadow first") is shown as a message and kept in the Debug log as a note, not counted as an error.
 
 The **Debug** tab (left panel, or View › Debug log) lists errors and what happened: files opened and saved, tools run and how long they took, AI models that would not load. A red error count appears in the status bar when there is one. **Copy** or **Save** the log to send it along with a question.
 

@@ -6,7 +6,7 @@
 (function () {
   'use strict';
   const KEY = 'imagecraft-log', MAX = 300, listeners = new Set();
-  let list = [];
+  let list = []; const START = Date.now();
   try { list = JSON.parse(localStorage.getItem(KEY) || '[]'); } catch (e) { list = []; }
   let saveT = null;
   const save = () => { clearTimeout(saveT); saveT = setTimeout(() => { try { localStorage.setItem(KEY, JSON.stringify(list.slice(-MAX))); } catch (e) { /* full or blocked */ } }, 300); };
@@ -41,7 +41,8 @@
     add, info: (m, d) => add('info', m, d), warn: (m, d) => add('warn', m, d), error: (m, d) => add('error', m, d),
     entries: () => list.slice(), clear: () => { list = []; save(); listeners.forEach((f) => f(null)); },
     onChange: (f) => { listeners.add(f); return () => listeners.delete(f); }, text, env, time,
-    errors: () => list.filter((e) => e.level === 'error').length,
+    // the red badge counts this session's errors; the log keeps earlier ones (marked by their date) for reference
+    errors: () => list.filter((e) => e.level === 'error' && e.t >= START).length, allErrors: () => list.filter((e) => e.level === 'error').length,
   };
   add('info', 'ImageCraft started');
 })();

@@ -349,7 +349,7 @@
   // the frequency spectrum, away from the middle where the picture itself lives. Each spike and its mirror is notched
   // out with a soft Butterworth notch; everything else (the edges of faces too) is kept. A plain low-pass blur (the
   // usual quick answer) softens the whole picture instead.
-  function descreen(img, { strength = 100, sensitivity = 50, cut = 0.7, sharpen = 60 } = {}) {
+  function descreen(img, { strength = 100, sensitivity = 50, cut = 0.7, sharpen = 60, detectOnly = false } = {}) {
     const W = img.width, H = img.height, P = pow2(W), Q = pow2(H), N = P * Q, s = img.data;
     if (N > 4096 * 4096) throw new Error('This picture is too big to descreen in one go (over 16 megapixels once padded): crop it or make it smaller first.');
     const mx = (x, n) => { const m = 2 * n; x = ((x % m) + m) % m; return x < n ? x : m - 1 - x; }; // mirrored edges (no seams in the spectrum)
@@ -371,6 +371,7 @@
       if (top) peaks.push([u, v, e]);
     }
     peaks.sort((a, b) => b[2] - a[2]); peaks.length = Math.min(peaks.length, 48);
+    if (detectOnly) return peaks.length < 4 ? { peaks: 0, period: 0 } : { peaks: peaks.length, period: 1 / Math.min(...peaks.slice(0, 6).map(([u, v]) => Math.hypot(u / P, v / Q))) };
     if (peaks.length < 4) { const o = new ImageData(new Uint8ClampedArray(s), W, H); o.peaks = 0; return o; } // no screen found: left alone
     // the screen's own spacing: the strongest spikes are its first harmonic. Notching the spikes left the rosette that
     // colour screens make with each other (it sits below the screen frequency), so the screen is taken out by a blur
