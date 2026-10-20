@@ -111,6 +111,22 @@
     if (fresh) colourCount();
     renderInfo(); renderMaps(); // the Maps tab, if it is showing, follows the picture
   }
+  // ------------------------------------------------------------------ local activity: what ran on this computer
+  const localLog = [];
+  const actThumb = (img) => { try { const k = Math.min(1, 200 / Math.max(img.width, img.height)), c = document.createElement('canvas'); c.width = Math.max(1, Math.round(img.width * k)); c.height = Math.max(1, Math.round(img.height * k)); const s = document.createElement('canvas'); s.width = img.width; s.height = img.height; s.getContext('2d').putImageData(img, 0, 0); c.getContext('2d').drawImage(s, 0, 0, c.width, c.height); return c.toDataURL('image/jpeg', 0.8); } catch (e) { return ''; } };
+  function noteStep(label, before, after, ms) { localLog.unshift({ kind: 'step', at: Date.now(), label, secs: ms && ms < 1e8 ? ms / 1000 : null, size: `${after.width} × ${after.height}`, before: before ? actThumb(before) : '', after: actThumb(after), state: 'done' }); if (localLog.length > 60) localLog.pop(); localChanged(); }
+  function localChanged() {
+    const el = $('st-local'); if (el) { const run = localLog.filter((e) => e.state === 'running').length; el.querySelector('b').textContent = localLog.length || ''; el.classList.toggle('sending', !!run); el.title = run ? `Running on this computer now: ${localLog.find((e) => e.state === 'running').model}… click to watch` : `Local activity: ${localLog.length} this session`; }
+    if ($('locallog') && !$('locallog').hidden) drawLocalLog();
+  }
+  function openLocalLog() { let back = $('locallog'); if (!back) { back = document.createElement('div'); back.className = 'backdrop'; back.id = 'locallog'; document.body.append(back); back.onclick = (e) => { if (e.target === back || e.target.closest('[data-act=close]')) back.hidden = true; }; } back.hidden = false; drawLocalLog(); }
+  function drawLocalLog() {
+    const f = window.CRAFTAI && CRAFTAI.found();
+    $('locallog').innerHTML = `<div class="dialog wide" role="dialog" aria-modal="true" aria-labelledby="ll-title"><h2 id="ll-title">Local activity</h2><p class="hint">Everything that ran on this computer this session, newest first: the built-in AI models (on the ${f && f.webgpu ? 'graphics card' : 'processor'}) and every step that changed a picture, with before and after. Nothing here was sent anywhere. Cloud calls are under the cloud button.</p>
+      <div class="cl-list">${localLog.length ? localLog.map((e) => e.kind === 'ai' ? `<div class="ai-card cl-${e.state === 'running' ? 'sending' : e.state}"><h3>AI model · ${esc(e.model)} <span class="hint">${new Date(e.at).toLocaleTimeString()} · on the ${esc(e.device)} · ${e.state === 'running' ? 'running…' : `${e.secs.toFixed(1)} s · ${e.state === 'done' ? 'OK' : 'FAILED'}`}${e.first ? ' · downloaded or loaded first' : ''}</span></h3>${e.error ? `<p class="cl-err">${esc(e.error)}</p>` : ''}</div>`
+        : `<div class="ai-card"><h3>Step · ${esc(e.label)} <span class="hint">${new Date(e.at).toLocaleTimeString()}${e.secs != null ? ` · ${e.secs.toFixed(1)} s` : ''} · ${esc(e.size)}</span></h3><div class="cl-pics">${e.before ? `<figure class="cl-pic"><img src="${e.before}" alt=""><figcaption>before</figcaption></figure>` : ''}<figure class="cl-pic"><img src="${e.after}" alt=""><figcaption>after</figcaption></figure></div></div>`).join('') : '<p class="hint"><b>Nothing has run yet.</b></p>'}</div>
+      <div class="dialog-actions"><button class="btn primary" type="button" data-act="close">Close</button></div></div>`;
+  }
   function push(label, img, deep, how) {
     const p = pic(); p.steps.length = p.at + 1; p.steps.push({ label, img, deep: deep || undefined, how: how || undefined });
     if (p.steps.length > MAX_STEPS) p.steps.splice(1, 1);
@@ -145,8 +161,8 @@
   }
   // a new step from a tool's 8-bit result, with its 16-bit copy worked out
   async function pushDeep(label, out8, fn, ms, mask, how) {
-    const st = pic().steps[pic().at]; let deep = null;
-    if (fn && deepOn) { busyNow(`${label} (in 16 bits)…`); try { deep = await deepRun(fn, st, out8, ms, mask); } catch (e) { ICLOG.warn(`${label}: the 16-bit pass was skipped`, e); } }
+    const st = pic().steps[pic().at]; let deep = null; noteStep(label, st.img, out8, ms);
+    if (fn && deepOn) { busyNow(`${label} (in 16 bits)…`); IC.cloud.hold = true; try { deep = await deepRun(fn, st, out8, ms, mask); } catch (e) { if (!e.cloudHold) ICLOG.warn(`${label}: the 16-bit pass was skipped`, e); } finally { IC.cloud.hold = false; } } // the 16-bit pass re-runs the step: never a second (paid) cloud call; a cloud step stays 8-bit
     push(label, deep ? F.down16(deep, out8.width, out8.height) : out8, deep, how);
   }
   let deepOn = true; try { deepOn = localStorage.getItem('imagecraft-deep') !== 'off'; } catch (e) { /* blocked storage */ }
@@ -482,7 +498,7 @@
         await ensureScratches(img, s); const hole = repairDamage(img, s); let n = 0; for (let i = 0; i < hole.length; i++) n += hole[i] > 0.5; if (tool) tool.holePct = (100 * n) / hole.length;
         if (!n) throw new Error('Nothing is marked: paint over the damage or click it, or tick a kind of damage.');
         let out;
-        if (s.how.startsWith('cloud-')) { const pv = s.how.slice(6); IC.cloud.task('Repair fill'); if (!cloudOK()) throw new Error('Cloud AI is switched off (status bar).'); say && say(`Sending the marked area to ${IC.cloud.NAMES[pv]}… (10 to 60 seconds)`); const ld = lastDescription.get(pic()); out = await IC.cloud.fill(img, IC.maps.grow(hole, img.width, img.height, 2), pv, await IC.cloud.drawModel(pv), ld ? ld.subject : ''); }
+        if (s.how.startsWith('cloud-')) { const pv = s.how.slice(6); IC.cloud.task('Repair fill'); if (!cloudOK()) throw new Error('Cloud AI is switched off (status bar).'); say && say(`Sending the marked area to ${IC.cloud.NAMES[pv]}… (10 to 60 seconds)`); const ld = lastDescription.get(pic()); out = await IC.cloud.tryEach(IC.cloud.orderFrom('fill', pv), async (p2) => { say && say(`Sending the marked area to ${IC.cloud.NAMES[p2]}… (10 to 60 seconds)`); return IC.cloud.fill(img, IC.maps.grow(hole, img.width, img.height, 2), p2, await IC.cloud.drawModel(p2), ld ? ld.subject : ''); }); }
         else if (s.how === 'ai') { say && say('Filling in the damage (AI; the first time downloads it)…'); out = await CRAFTAI.inpaint(img, IC.maps.grow(hole, img.width, img.height, 2)); } // the model keeps a thin ring at a hole's edge, so it gets the hole 2 pixels wider
         else out = IC.maps.telea(img, hole, 3, 0.5); // fast marching (Telea): 38 dB on thin cracks against 36 for a plain smooth fill and 30 for the AI
         // only the marked parts change (feathered by a pixel), so the rest stays exactly the original
@@ -512,7 +528,7 @@
         { t: 'custom', render: (into, t) => { const opts = [['builtin', 'On this computer (DDColor)'], ...(cloudOK() ? IC.cloud.engines('colour').map((p) => [p, `Cloud: ${IC.cloud.NAMES[p].split(' ')[0]} (only its colours are used; the picture is sent)`]) : [])]; if (!opts.some((o) => o[0] === t.s.engine)) t.s.engine = 'builtin'; if (opts.length < 2) return; const d = document.createElement('div'); d.className = 'field'; d.innerHTML = `<span>Engine</span>${opts.map(([k, l]) => `<label class="check"><input type="radio" name="cz-eng" value="${k}" ${t.s.engine === k ? 'checked' : ''}> ${esc(l)}</label>`).join('')}`; d.onchange = (e) => { t.s.engine = e.target.value; t.stale = true; renderProps(); }; into.append(d); } },
         range('amount', 'Colour strength (%)', 0, 150), range('warm', 'Cooler ↔ warmer', -50, 50, 1, (s) => s.engine === 'builtin'), { t: 'out' }, note('The first use downloads about 135 MB (once). It works best on the whole photo before other colour changes. Press Preview.')],
       report: () => (tool && tool.secs ? `<p class="hint">Took ${tool.secs.toFixed(1)} s.</p>` : ''),
-      run: async (img, s, say) => { if (s.engine && s.engine !== 'builtin') { IC.cloud.task('Colourise'); if (!cloudOK()) throw new Error('Cloud AI is switched off (status bar).'); say && say(`Sending a copy to ${IC.cloud.NAMES[s.engine]}… (10 to 60 seconds)`); const t0 = performance.now(), ld = lastDescription.get(pic()), o = await IC.cloud.colourise(img, s.engine, await IC.cloud.drawModel(s.engine), { amount: s.amount, text: ld ? `${ld.subject}. ${ld.materials}` : '' }); if (tool) tool.secs = (performance.now() - t0) / 1000; return o; }
+      run: async (img, s, say) => { if (s.engine && s.engine !== 'builtin') { IC.cloud.task('Colourise'); if (!cloudOK()) throw new Error('Cloud AI is switched off (status bar).'); say && say(`Sending a copy to ${IC.cloud.NAMES[s.engine]}… (10 to 60 seconds)`); const t0 = performance.now(), ld = lastDescription.get(pic()), o = await IC.cloud.tryEach(IC.cloud.orderFrom('colour', s.engine), async (p2) => { say && say(`Sending a copy to ${IC.cloud.NAMES[p2]}… (10 to 60 seconds)`); return IC.cloud.colourise(img, p2, await IC.cloud.drawModel(p2), { amount: s.amount, text: ld ? `${ld.subject}. ${ld.materials}` : '' }); }); if (tool) tool.secs = (performance.now() - t0) / 1000; return o; }
         say && say(speed.colourise ? `Colourising: about ${fmtTime(speed.colourise / 1000)}` : 'Getting the colour model ready (the first time downloads about 135 MB)…'); const t0 = performance.now(); const o = await X.colourise(img, s); const ms = performance.now() - t0; noteSpeed('colourise', ms); if (tool) tool.secs = ms / 1000; return o; } },
     redeye: { title: 'Red eye', icon: IK.cutout, live: false, s: { strength: 100, level: 50 },
       fields: [note('The flash lit the back of the eye. The face finder finds each iris, and only there, where red is far above green and blue, the red is taken down to them: the pupil becomes dark again and the iris keeps its own colour.'),
@@ -683,8 +699,8 @@
         if (s.kind === 'photo') { const bl = IC.restore.blockiness(o); if (bl.luma > 1.3) { say && say('Smoothing the JPEG blocks…'); o = X.deblock(o, { strength: 50 }); } if (bl.colour > 2) o = X.chromaRebuild(o, { size: 8 }); }
         if (s.kind === 'photo') { say && say('Dust and noise…'); o = IC.restore.impulse(o, { threshold: 30 }); const n = IC.restore.noiseLevel(o); if (n.luma > 1 || n.chroma > 1) o = IC.restore.nlm(o, nlmFor(n)); say && say('Sharpness and tone…'); const m = IC.restore.measure(o); if (m && m.radius > 0.8) o = IC.restore.deblur(o, { kind: 'gauss', radius: Math.min(3, m.radius * 0.7), noise: kFor(IC.restore.noiseLevel(o).luma) + 20, strength: 60 }); const toned = X.isToned(o) || undefined, hz = X.hazeLevel(o); if (hz > 0.22) o = X.dehaze(o, { strength: Math.min(80, (hz - 0.15) * 300), keepSome: 0.15 }); o = X.clarity(X.autoColour(X.shadowRecover(o, { shadows: 40, highlights: 15, detail: 5, maxGain: 2.5 }), { strength: 100, keepTone: toned ? true : 'auto' }), { amount: 30 }); }
         if (s.kind === 'jpeg') { say && say('Smoothing the blocks…'); o = X.deblock(o, { strength: 60 }); }
-        if (s.kind === 'photo' && s.colourise) { say && say('Colourising (AI)…'); o = await X.colourise(o, { amount: 80 }); } // a little under full strength: with the clean-up's own contrast, full colour came out too vivid
-        if (s.kind === 'photo' && s.faces) { say && say('Finding faces…'); const f = await IC.faces.ensure(o); if (f.length) o = await IC.faces.restore(o, f, { fidelity: 0.7, onStep: (m) => say && say(m) }); }
+        if (s.kind === 'photo' && s.colourise) { if (aiMode === 'cloud' && IC.cloud.engines('colour').length) { IC.cloud.task('Modernise: colourise'); o = await IC.cloud.tryEach(IC.cloud.engines('colour'), async (p2) => { say && say(`Colourising: sending a copy to ${IC.cloud.NAMES[p2]}…`); return IC.cloud.colourise(o, p2, await IC.cloud.drawModel(p2), { amount: 80 }); }); } else { say && say('Colourising (AI, on this computer)…'); o = await X.colourise(o, { amount: 80 }); } } // a little under full strength: with the clean-up's own contrast, full colour came out too vivid
+        if (s.kind === 'photo' && s.faces) { say && say('Finding faces…'); const f = await IC.faces.ensure(o); if (f.length) { const cl = aiMode === 'cloud' && IC.cloud.engines('face').length; if (cl) IC.cloud.task('Modernise: faces'); o = await IC.faces.restore(o, f, { model: cl ? 'cloud-' + IC.cloud.engines('face')[0] : 'codeformer', fidelity: 0.7, onStep: (m) => say && say(m) }); } }
         if (k > 1) o = s.useAi ? await upscaleWith(o, s.kind === 'jpeg' || s.kind === 'photo' ? 'ai-esrgan3' : 'ai-sharp', k, say, true, { strength: s.kind === 'jpeg' ? 0.8 : 0.5 }) : X.resize(o, { width: o.width * k, height: o.height * k });
         // a light finish (an old photo was sharpened by the deblur already)
         return s.kind === 'photo' ? X.colour(o, { vibrance: 6 }) : X.colour(X.sharpen(o, { amount: 50, radius: 1, threshold: 3 }), { vibrance: 12 });
@@ -819,12 +835,21 @@
   const maskOf = (t) => IC.maps.mask(t.base, { map: t.s.wMap, map2: t.s.wOp ? t.s.wMap2 : '', op: t.s.wOp, invert: t.s.wInvert, level: t.s.wLevel, softness: t.s.wSoft, feather: t.s.wFeather });
   const masked = (t, r) => (t.s.wMap && r.width === t.base.width && r.height === t.base.height ? IC.maps.apply(t.base, r, maskOf(t)) : r);
   const isLive = (t) => (typeof t.def.live === 'function' ? t.def.live(t.s) : t.def.live !== false);
+  // With the switch on Cloud AI, the steps that have a cloud version use it (unless chosen otherwise in the panel);
+  // on Local AI or Both they start on this computer. Used by the panels, Process a photo, Modernise and recipes.
+  function cloudAuto(id, s) {
+    if (aiMode !== 'cloud' || !s) return s; const CL = IC.cloud;
+    if (id === 'repair' && !String(s.how).startsWith('cloud-') && CL.engines('fill').length) s.how = 'cloud-' + CL.engines('fill')[0];
+    if (id === 'colourise' && (!s.engine || s.engine === 'builtin') && CL.engines('colour').length) s.engine = CL.engines('colour')[0];
+    if (id === 'facerestore' && !String(s.model).startsWith('cloud-') && CL.engines('face').length) s.model = 'cloud-' + CL.engines('face')[0];
+    return s;
+  }
   function openTool(id, preset) {
     if (!pic() && !(TOOLS[id] && TOOLS[id].noPic)) { toast('Open a picture first.'); return; }
     if (id === 'repair' || id === 'shadowlift') repairPaint = null; // a fresh painting each time
     if (tool) closeTool(true);
     const def = TOOLS[id], base = now();
-    tool = { def, base, s: { ...JSON.parse(JSON.stringify(typeof def.s === 'function' ? def.s(base) : def.s)), ...(preset || {}) }, preview: null };
+    tool = { def, base, s: { ...cloudAuto(id, JSON.parse(JSON.stringify(typeof def.s === 'function' ? def.s(base) : def.s))), ...(preset || {}) }, preview: null };
     if (maskable(def)) tool.s = { wMap: '', wOp: '', wMap2: 'skin', wInvert: false, wLevel: 0.35, wSoft: 0.3, wFeather: 2, ...tool.s };
     if (mapView) closeMap();
     showSide('right'); renderProps(); if (def.enter) def.enter();
@@ -877,7 +902,7 @@
   // which AI the cloud-capable steps may use: 'local' (nothing leaves this computer), 'cloud' or 'both'
   let aiMode = 'both'; try { aiMode = localStorage.getItem('imagecraft-aimode') || 'both'; } catch (e) { /* blocked storage */ }
   const cloudOK = () => aiMode !== 'local', localOK = () => aiMode !== 'cloud'; IC.aiMode = () => aiMode;
-  function aiModeUI() { const el = $('st-aimode'); if (!el) return; el.innerHTML = [['local', 'Local AI'], ['cloud', 'Cloud AI'], ['both', 'Both']].map(([k, l]) => `<button type="button" class="btn" data-mode="${k}" aria-pressed="${aiMode === k}">${l}</button>`).join(''); aiChip(); }
+  function aiModeUI() { const el = $('st-aimode'); if (!el) return; el.innerHTML = [['local', 'Local AI'], ['both', 'Both'], ['cloud', 'Cloud AI']].map(([k, l]) => `<button type="button" class="btn" data-mode="${k}" aria-pressed="${aiMode === k}">${l}</button>`).join(''); aiChip(); }
   let ollamaSeen = null; // what Ollama said last time: null (not asked), { ok, n } or { blocked }
   async function aiChip() {
     const el = $('st-ai'); if (!el) return; const f = window.CRAFTAI && CRAFTAI.found(), cl = ['anthropic', 'gemini', 'openai'].filter((k) => IC.cloud.has(k)).map((k) => IC.cloud.NAMES[k].split(' ')[0]);
@@ -1038,7 +1063,7 @@
   async function runSteps(steps) {
     for (const s0 of steps) {
       const def = TOOLS[s0.id], img = pic().steps[pic().at].img; busyNow(`${def.title}…`); await wait(0);
-      try { const base = typeof def.s === 'function' ? def.s(img) : JSON.parse(JSON.stringify(def.s)); const t0 = performance.now(), sx = { ...base, ...s0.s }, out = await def.run(img, sx, (m) => busyNow(m)); await pushDeep(def.title, out, (im) => def.run(im, sx), performance.now() - t0, null, { id: s0.id, s: sx }); }
+      try { const base = typeof def.s === 'function' ? def.s(img) : JSON.parse(JSON.stringify(def.s)); const t0 = performance.now(), sx = cloudAuto(s0.id, { ...base, ...s0.s }), out = await def.run(img, sx, (m) => busyNow(m)); await pushDeep(def.title, out, (im) => def.run(im, sx), performance.now() - t0, null, { id: s0.id, s: sx }); }
       catch (e) { busy(null); logFail(`${def.title} failed`, e); toast(`${def.title}: ${e.message}`); return; }
     }
     busy(null); toast(`Done: ${steps.length} step${steps.length === 1 ? '' : 's'}. Each is in History; Undo goes back one at a time.`);
@@ -1203,7 +1228,7 @@
       const img = now(); say && say(`${st.label} (${++n} of ${rec.steps.length})…`); await wait(0); const t0 = performance.now();
       if (st.quick) { const fn = QUICK[st.quick]; if (!fn) throw new Error(`Unknown quick action “${st.quick}”.`); const out = await fn(img); await pushDeep(st.label, out, fn, performance.now() - t0, null, { quick: st.quick }); continue; }
       const def = TOOLS[st.id]; if (!def || def.viewOnly) throw new Error(`Unknown tool “${st.id}”.`);
-      const base = typeof def.s === 'function' ? def.s(img) : JSON.parse(JSON.stringify(def.s)), s = { ...base, ...st.s };
+      const base = typeof def.s === 'function' ? def.s(img) : JSON.parse(JSON.stringify(def.s)), s = cloudAuto(st.id, { ...base, ...st.s });
       if (s.wMap) await IC.maps.prepare([s.wMap, s.wOp ? s.wMap2 : ''], img);
       const r0 = await def.run(img, s, (m) => say && say(`${st.label}: ${m}`)), mk = s.wMap && r0.width === img.width && r0.height === img.height ? IC.maps.mask(img, { map: s.wMap, map2: s.wOp ? s.wMap2 : '', op: s.wOp, invert: s.wInvert, level: s.wLevel, softness: s.wSoft, feather: s.wFeather }) : null;
       await pushDeep(st.label, mk ? IC.maps.apply(img, r0, mk) : r0, (im) => def.run(im, s), performance.now() - t0, mk, { id: st.id, s: st.s });
@@ -1284,7 +1309,7 @@
     L.append(bar);
     p.steps.forEach((s, i) => { const li = document.createElement('li'), b = document.createElement('button'); b.innerHTML = `<span class="n">${i}</span>${esc(s.label)}`; b.setAttribute('aria-current', String(i === p.at)); if (i > p.at) b.className = 'undone'; b.onclick = () => goStep(i); li.append(b); L.append(li); });
   }
-  const showTab = (name) => { document.querySelectorAll('.tab').forEach((x) => x.setAttribute('aria-selected', String(x.dataset.tab === name))); ['pics', 'hist', 'maps', 'debug'].forEach((k) => { $('tab-' + k).hidden = k !== name; }); if (name === 'debug') renderLog(); if (name === 'maps') renderMaps(); };
+  const showTab = (name) => { document.querySelectorAll('.tab').forEach((x) => x.setAttribute('aria-selected', String(x.dataset.tab === name))); ['pics', 'hist', 'maps'].forEach((k) => { $('tab-' + k).hidden = k !== name; }); if (name === 'maps') renderMaps(); };
   // ------------------------------------------------------------------ maps (left panel, Maps tab; one shown at a time over the picture)
   let thumbFor = null, thumbSmall = null;
   // ------------------------------------------------------------------ the cloud maps the photo once; every built-in tool then uses its layers
@@ -1435,7 +1460,7 @@
   document.querySelectorAll('.tab').forEach((t) => t.addEventListener('click', () => showTab(t.dataset.tab)));
   const showSide = (side) => { if (matchMedia('(max-width: 980px)').matches) document.querySelector('.work').classList.add(side === 'right' ? 'show-right' : 'show-left'); };
 
-  // ------------------------------------------------------------------ debug log (left panel, Debug tab)
+  // ------------------------------------------------------------------ debug log (a window: the bug button in the status bar)
   function renderLog() {
     const L = $('dbg-list'); if (!L || $('tab-debug').hidden) return;
     const only = $('dbg-errors').checked, items = ICLOG.entries().filter((e) => !only || e.level !== 'info').slice(-200).reverse();
@@ -1447,19 +1472,23 @@
   $('dbg-clear').onclick = () => { ICLOG.clear(); renderLog(); status(); };
   $('dbg-copy').onclick = async () => { try { await navigator.clipboard.writeText(ICLOG.text()); toast('Debug log copied. Paste it into a message.'); } catch (e) { toast('The browser would not copy; use Save instead.'); } };
   $('dbg-save').onclick = () => { const d = new Date(), p2 = (n) => String(n).padStart(2, '0'); download(new Blob([ICLOG.text()], { type: 'text/plain;charset=utf-8' }), `ImageCraft debug ${d.getFullYear()}.${p2(d.getMonth() + 1)}.${p2(d.getDate())}.${p2(d.getHours())}.${p2(d.getMinutes())}.txt`); };
-  const openDebug = () => { showSide('left'); showTab('debug'); };
+  const openDebug = () => { $('tab-debug').hidden = false; renderLog(); };
+  $('dbg-close').onclick = () => { $('tab-debug').hidden = true; };
+  $('tab-debug').addEventListener('click', (e) => { if (e.target === $('tab-debug')) $('tab-debug').hidden = true; });
 
   // ------------------------------------------------------------------ status bar
   let hover = null;
   const statusEl = $('status');
-  statusEl.innerHTML = `<button class="st-ai" id="st-ai" type="button" title="AI settings: the built-in models, Ollama, and your cloud keys">AI</button><button class="st-ai" id="st-cloud" type="button" hidden title="Cloud activity: every call, what was sent and what came back"></button><button class="st-err" id="st-err" hidden title="Errors were logged: open the Debug tab"></button><span id="st-size"></span><span id="st-cols"></span><span id="st-at"></span><span class="grow"></span><span class="seg aimode" id="st-aimode" title="Which AI the steps that can use the cloud may use (the built-in tools always run on this computer)"></span><span class="zoombox"><button class="btn" id="st-out" title="Zoom out" aria-label="Zoom out">−</button><input type="range" id="st-zoom" min="-100" max="100" value="0" aria-label="Zoom" data-rt-skip><button class="btn" id="st-in" title="Zoom in" aria-label="Zoom in">+</button><button class="btn" id="st-pct" title="Fit the picture (click) or 100% (double-click)">100%</button></span>`;
+  statusEl.innerHTML = `<button class="st-ai" id="st-ai" type="button" title="AI settings: the built-in models, Ollama, and your cloud keys">AI</button><span id="st-size"></span><span id="st-cols"></span><span id="st-at"></span><span class="grow"></span><button class="st-icon" id="st-local" type="button" title="Local activity: what ran on this computer (AI models and steps), how long, before and after" aria-label="Local activity"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><b></b></button><span class="seg aimode" id="st-aimode" title="Which AI the steps that can use the cloud may use"></span><button class="st-icon" id="st-cloud" type="button" title="Cloud activity: every call, what was sent and what came back" aria-label="Cloud activity"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 18h10a4 4 0 0 0 .6-7.95A6 6 0 0 0 6.1 9.3 4.4 4.4 0 0 0 7 18Z"/></svg><b></b></button><button class="st-icon" id="st-err" type="button" title="Debug log: errors and what happened" aria-label="Debug log"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="7" y="6" width="10" height="14" rx="5"/><path d="M12 10v10M7 12H3M21 12h-4M7 17l-3 2M17 17l3 2M7 8 4 6M17 8l3-2M9.5 6.5 8 3.5M14.5 6.5 16 3.5"/></svg><b></b></button><span class="zoombox"><button class="btn" id="st-out" title="Zoom out" aria-label="Zoom out">−</button><input type="range" id="st-zoom" min="-100" max="100" value="0" aria-label="Zoom" data-rt-skip><button class="btn" id="st-in" title="Zoom in" aria-label="Zoom in">+</button><button class="btn" id="st-pct" title="Fit the picture (click) or 100% (double-click)">100%</button></span>`;
   // the zoom slider: 100% in the middle, 2% at the left, 6400% at the right
   const zToS = (z) => Math.round(z >= 1 ? (Math.log(z) / Math.log(64)) * 100 : (Math.log(z) / Math.log(50)) * 100), sToZ = (s) => (s >= 0 ? Math.pow(64, s / 100) : Math.pow(50, s / 100));
   $('st-zoom').oninput = (e) => setZoom(sToZ(+e.target.value));
   $('st-err').onclick = openDebug;
   $('st-ai').onclick = () => openAI(); aiChip();
   $('st-cloud').onclick = () => openCloudLog();
-  IC.cloud.onLog((L) => { const el = $('st-cloud'), busyN = L.filter((e) => e.state === 'sending').length, fails = L.filter((e) => e.state === 'failed').length; el.hidden = !L.length; el.textContent = busyN ? `☁ sending… ${busyN}` : `☁ ${L.length} call${L.length === 1 ? '' : 's'}${fails ? ` · ${fails} failed` : ''}`; el.classList.toggle('sending', !!busyN); if ($('cloudlog') && !$('cloudlog').hidden) drawCloudLog(); });
+  $('st-local').onclick = () => openLocalLog();
+  CRAFTAI.onActivity((e) => { if (!localLog.includes(e)) { localLog.unshift(e); if (localLog.length > 60) localLog.pop(); } localChanged(); });
+  IC.cloud.onLog((L) => { const el = $('st-cloud'), busyN = L.filter((e) => e.state === 'sending').length, fails = L.filter((e) => e.state === 'failed').length; el.querySelector('b').textContent = L.length || ''; el.title = busyN ? `Sending to the cloud now (${busyN})… click to watch` : `Cloud activity: ${L.length} call${L.length === 1 ? '' : 's'} this session${fails ? `, ${fails} failed` : ''}`; el.classList.toggle('sending', !!busyN); el.classList.toggle('bad', !busyN && !!fails && L[0].state === 'failed'); if ($('cloudlog') && !$('cloudlog').hidden) drawCloudLog(); });
   $('st-aimode').onclick = (e) => { const b = e.target.closest('[data-mode]'); if (!b) return; aiMode = b.dataset.mode; try { localStorage.setItem('imagecraft-aimode', aiMode); } catch (err) { /* blocked storage */ } aiModeUI(); if (tool && /assess|regen/.test(tool.def.id)) { if (tool.oll) tool.oll = { status: 'checking' }; renderProps(); } toast(aiMode === 'local' ? 'Local AI only: nothing is sent off this computer.' : aiMode === 'cloud' ? 'Cloud AI: Ask AI uses your cloud services, and Regenerate is on.' : 'Local and cloud AI: choose per tool.'); };
   aiModeUI();
   $('st-at').onclick = () => { const h = $('st-at').dataset.hex; if (h) navigator.clipboard.writeText(h).then(() => toast(`${h} copied.`), () => toast('Could not copy.')); };
@@ -1478,7 +1507,7 @@
   function zoomUI() { $('st-pct').textContent = Math.round(view.zoom * 100) + '%'; if (document.activeElement !== $('st-zoom')) $('st-zoom').value = zToS(view.zoom); }
   function status() {
     const img = now(), st = pic() && pic().steps[pic().at];
-    const ne = ICLOG.errors(); $('st-err').hidden = !ne; $('st-err').textContent = `⚠ ${ne} error${ne === 1 ? '' : 's'}`;
+    const ne = ICLOG.errors(); $('st-err').classList.toggle('bad', !!ne); $('st-err').querySelector('b').textContent = ne ? ne : ''; $('st-err').title = ne ? `${ne} error${ne === 1 ? '' : 's'} this session: open the Debug log` : 'Debug log: errors and what happened';
     $('st-size').innerHTML = img ? `<b>${fmtN(img.width)} × ${fmtN(img.height)}</b> pixels${st && st.deep ? ' · <b title="This step keeps 16 bits per colour: smooth gradients, no banding. Save as PNG or TIFF 48/64-bit to keep them.">16-bit</b>' : ''}` : 'No picture open';
     $('st-cols').innerHTML = st && st.colours != null ? (st.colours < 0 ? 'Many colours' : `<b>${fmtN(st.colours)}</b> colour${st.colours === 1 ? '' : 's'}`) : '';
     statusHover();
@@ -1740,7 +1769,7 @@
         ['Zoom', [B('Fit', I.fit, fitView, { big: true, key: '0' }), B('100%', I.actual, actual, { big: true, key: '1' }), { col: [B('Zoom in', I.zoomIn, () => zoomBy(1.25), { key: '+' }), B('Zoom out', I.zoomOut, () => zoomBy(0.8), { key: '−' })] }]],
         ['Show', [B('Compare', IK.compare, () => openTool('compare'), { big: true, title: 'Versions together: side by side, a grid of up to four, a split, or the differences (any picture, any step)' }), B('Before / after', IK.compare, toggleCompare, { pressed: () => view.compare, title: 'The dragging line between the picture and its original (or before the open tool)' }), B('Duplicate picture', I.folder, duplicatePic, { title: 'A copy of the picture as it is now, to try different steps on' }), B('Colour info', IK.colour, () => { view.loupe = !view.loupe; try { localStorage.setItem('imagecraft-loupe', view.loupe ? 'on' : 'off'); } catch (e) { /* blocked storage */ } if (!view.loupe && $('loupe')) $('loupe').hidden = true; }, { pressed: () => view.loupe, title: 'A small table beside the mouse: the colour under it in HEX, RGB, CMYK, HSL, Lab and its nearest name' }), B('Pixel grid', IK.grid, () => { view.grid = !view.grid; layout(); if (view.grid && view.zoom < 6) toast('The grid shows from 600% zoom.'); }, { big: true, pressed: () => view.grid })]],
         ['AI', [B('AI settings', IK.modern, () => openAI(), { big: true, always: true, title: 'Built-in AI models, Ollama, and your own Claude, Gemini and OpenAI keys (also the AI button in the status bar)' })]],
-        ['Debug', [B('Debug log', I.console, () => openDebug(), { big: true, always: true, title: 'Errors and what happened (also the Debug tab on the left)' })]],
+        ['Debug', [B('Debug log', I.console, () => openDebug(), { big: true, always: true, title: 'Errors and what happened (also the bug button in the status bar)' })]],
         ['Behind see-through', [{ col: [B('Checks', IK.grid, () => setBg('check'), { pressed: () => view.bg === 'check' }), B('White', I.sun, () => setBg('white'), { pressed: () => view.bg === 'white' }), B('Black', I.moon, () => setBg('black'), { pressed: () => view.bg === 'black' })] }]],
       ] },
     ],

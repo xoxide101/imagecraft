@@ -97,7 +97,6 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .ai-tabs button[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--accent); font-weight: 600; }
 .ai-card { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin: 8px 0; }
 .ai-card h3 { margin: 0 0 4px; font-size: 14px; }
-#st-cloud.sending { border-color: var(--accent); animation: stpulse 1s ease-in-out infinite alternate; }
 @keyframes stpulse { to { background: color-mix(in srgb, var(--accent) 25%, var(--panel-2)); } }
 .cl-list { max-height: 62vh; overflow: auto; }
 .cl-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
@@ -219,7 +218,12 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 .dbg time { color: var(--muted); margin-right: 4px; }
 .dbg details summary { cursor: pointer; color: var(--muted); }
 .dbg pre { margin: 4px 0 0; white-space: pre-wrap; font: inherit; color: var(--muted); }
-.st-err { color: #e5484d; font-weight: 700; cursor: pointer; border: 0; background: transparent; padding: 0; }
+.st-icon { display: inline-flex; align-items: center; gap: 3px; border: 1px solid var(--line); background: var(--panel-2); color: var(--muted); border-radius: 999px; padding: 2px 7px; cursor: pointer; font: inherit; font-size: 11px; line-height: 1; height: 22px; }
+.st-icon:hover { color: var(--fg); border-color: var(--accent); }
+.st-icon b:empty { display: none; }
+.st-icon.sending { color: var(--fg); border-color: var(--accent); animation: stpulse 1s ease-in-out infinite alternate; }
+.st-icon.bad { color: #e5484d; border-color: #e5484d; }
+#st-local { margin-right: 4px; } #st-cloud { margin-left: 4px; } #st-err { margin: 0 6px 0 2px; }
 
 /* maps */
 .maplist { display: grid; gap: 4px; padding: 0 8px 12px; }

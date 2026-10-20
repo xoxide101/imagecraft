@@ -104,13 +104,17 @@
   let queue = Promise.resolve();
   const inTurn = (fn) => { const p = queue.then(fn, fn); queue = p.catch(() => {}); return p; };
   function run(k, fn) { return inTurn(() => run1(k, fn)); }
+  // every run is reported (onActivity): which model, on what, how long, whether it downloaded first
+  let actHook = null; const onActivity = (fn) => { actHook = fn; };
   async function run1(k, fn) {
-    try { return await fn(await ready(k)); }
-    catch (e) {
-      if (deviceFor(k) !== 'webgpu' || !/OrtRun|webgpu|shader|GPU/i.test(e.message)) throw e;
-      if (window.ICLOG) ICLOG.warn(`AI model “${MODELS[k].name}” failed on the graphics card; using the processor`, e);
-      cpuOnly.add(k); progress(k, { status: 'cpu' });
-      return fn(await ready(k));
+    const key = k + ':' + (k === 'cutout' ? cutoutId() : deviceFor(k)), e = { kind: 'ai', at: Date.now(), model: MODELS[k].name, device: deviceFor(k) === 'webgpu' ? 'graphics card' : 'processor', first: !loaded[key], state: 'running' }; if (actHook) actHook(e);
+    const end = (state, err) => { e.state = state; e.secs = (Date.now() - e.at) / 1000; if (err) e.error = String(err.message || err); if (actHook) actHook(e); };
+    try { const r = await fn(await ready(k)); end('done'); return r; }
+    catch (err) {
+      if (deviceFor(k) !== 'webgpu' || !/OrtRun|webgpu|shader|GPU/i.test(err.message)) { end('failed', err); throw err; }
+      if (window.ICLOG) ICLOG.warn(`AI model “${MODELS[k].name}” failed on the graphics card; using the processor`, err);
+      cpuOnly.add(k); progress(k, { status: 'cpu' }); e.device = 'processor (the graphics card failed)';
+      try { const r = await fn(await ready(k)); end('done'); return r; } catch (err2) { end('failed', err2); throw err2; }
     }
   }
   function ready(k) {
@@ -372,7 +376,7 @@
     };
     const off = onProgress((k, p) => {
       const el = back.querySelector(`[data-state="${k}"]`); if (!el) return;
-      el.title = p.status === 'error' ? p.message || '' : ''; // the reason, on hover (and in the Debug tab)
+      el.title = p.status === 'error' ? p.message || '' : ''; // the reason, on hover (and in the Debug log)
       el.textContent = p.status === 'ready' ? '✓ Ready' : p.status === 'error' ? 'Could not load' : p.total ? `Downloading ${Math.round((p.loaded / p.total) * 100)}%` : 'Starting…';
     });
     back.onclick = async (e) => {
@@ -388,5 +392,5 @@
     };
   }
 
-  window.CRAFTAI = { scratches, gfpgan, colourise, codeformer, inpaint, find, sizeOf, probe: () => probed, found: () => found, settings: () => settings, enabled, ready, cutout, pick, upscale, onProgress, downloaded, forget, openSettings, MODELS };
+  window.CRAFTAI = { onActivity, scratches, gfpgan, colourise, codeformer, inpaint, find, sizeOf, probe: () => probed, found: () => found, settings: () => settings, enabled, ready, cutout, pick, upscale, onProgress, downloaded, forget, openSettings, MODELS };
 })();

@@ -45,6 +45,7 @@
     return o;
   }
   async function call(url, opts, who) {
+    if (IC.cloud.hold) { const e = new Error('The 16-bit pass does not call the cloud again.'); e.cloudHold = true; throw e; }
     const e = { at: Date.now(), who, task, what: url.replace(/^https:\/\/[^/]+/, '').replace(/[?&]key=[^&]*/, '').replace(/\?$/, ''), model: (() => { try { return JSON.parse(opts.body).model || ''; } catch (err) { return opts && opts.body instanceof FormData ? opts.body.get('model') || '' : (url.match(/models\/([^:/?]+):/) || [])[1] || ''; } })(), sent: sentOf(opts), state: 'sending' };
     if (!/\/models(\?|$)/.test(e.what)) { log.unshift(e); if (log.length > 40) log.pop(); tell(); }
     for (const p of e.sent.pics) if (p.blob) p.url = URL.createObjectURL(p.blob);
@@ -206,12 +207,18 @@
   const face = (crop, p, model) => edit(crop, p, model, 'Restore this old, blurred or damaged face photo so it looks sharp and natural, like a modern photo of the same person. Keep the identity, expression, pose, hair, age and framing exactly the same. Do not change the background or the crop.');
 
   // which services can do a job, given the keys; which of their models to use (the person's choice, or a good default)
-  const engines = (job) => ({ fill: ['openai', 'gemini'], colour: ['gemini', 'openai'], masks: ['gemini'], locate: ['openai', 'anthropic'], face: ['gemini', 'openai'] }[job] || []).filter(has);
+  const engines = (job) => lastIn(({ fill: ['openai', 'gemini'], colour: ['gemini', 'openai'], masks: ['gemini'], locate: ['openai', 'anthropic'], face: ['gemini', 'openai'] }[job] || []).filter(has));
   // the newest model that fits (by the version numbers in its name), so retired models (gemini-2.5-flash) are never chosen
   const ver = (id) => (String(id).match(/\d+(?:\.\d+)?/g) || []).map(Number);
   const newest = (ms) => ms.slice().sort((a, b) => { const x = ver(a.id), y = ver(b.id); for (let i = 0; i < Math.max(x.length, y.length); i++) { const d = (y[i] || 0) - (x[i] || 0); if (d) return d; } return a.id.length - b.id.length; })[0];
   const drawModel = async (p) => { const want = cfg.models['draw:' + p], ms = (await models(p)).filter((x) => x.draw); if (want && ms.some((x) => x.id === want)) return want; const pick = newest(ms.filter((x) => /^gpt-image/.test(x.id) && !/mini/.test(x.id))) || newest(ms.filter((x) => /flash-image/.test(x.id) && !/preview/.test(x.id))) || newest(ms.filter((x) => /flash-image|gpt-image/.test(x.id))) || ms[0]; if (!pick) throw new Error(`${NAMES[p]}: this key has no model that can draw pictures.`); return pick.id; };
   const seeModel = async (p) => { const want = cfg.models['see:' + p], ms = (await models(p)).filter((x) => x.see && !x.draw); if (want && ms.some((x) => x.id === want)) return want; const plain = (x) => !/lite|image|tts|live|audio|thinking|preview|exp/.test(x.id); const pick = newest(ms.filter((x) => /^gemini-[\d.]+-flash$/.test(x.id))) || newest(ms.filter((x) => /flash/.test(x.id) && plain(x))) || newest(ms.filter(plain)) || ms[0]; if (!pick) throw new Error(`${NAMES[p]}: this key has no model that can look at pictures.`); return pick.id; };
 
-  IC.cloud = { log, onLog, task: setTask, cfg, save, has, NAMES, models, describe, regenerate, edit, fill, layBack, colourise, segment, segmentMany, locate, face, engines, drawModel, seeModel };
+  const passable = (e) => /paid credit|quota|no longer available|not found|could not be reached|sent no picture|did not answer/i.test(e.message);
+  // a service that said it is unpaid (or over its quota) goes to the back of the line for the rest of the session
+  const unpaid = new Set(), lastIn = (l) => [...l.filter((p) => !unpaid.has(p)), ...l.filter((p) => unpaid.has(p))];
+  async function tryEach(list, fn) { list = lastIn(list); let last = null; for (const p of list) { try { return await fn(p); } catch (e) { last = e; if (/paid credit|quota/i.test(e.message)) unpaid.add(p); if (!passable(e) || p === list[list.length - 1]) throw e; if (window.ICLOG) ICLOG.add('info', `Cloud: ${NAMES[p]} could not do it (${e.message.slice(0, 120)}); trying ${NAMES[list[list.indexOf(p) + 1]]}`); } } throw last; }
+  // a job with this service first, then the others that can do it
+  const orderFrom = (job, first) => { const l = engines(job); return first && l.includes(first) ? [first, ...l.filter((x) => x !== first)] : l; };
+  IC.cloud = { tryEach, orderFrom, log, onLog, task: setTask, cfg, save, has, NAMES, models, describe, regenerate, edit, fill, layBack, colourise, segment, segmentMany, locate, face, engines, drawModel, seeModel };
 })();
