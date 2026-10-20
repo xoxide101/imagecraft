@@ -109,6 +109,7 @@
     cur = i; view.fit = true; renderPics(); renderHist(); renderProps(); show(); fitView(); status();
     $('welcome').hidden = !!pic(); $('stage').hidden = !pic();
     if (fresh) colourCount();
+    if (fresh) setTimeout(() => showKindTiles(), 50); else hideKindTiles();
     renderInfo(); renderMaps(); // the Maps tab, if it is showing, follows the picture
   }
   // ------------------------------------------------------------------ local activity: what ran on this computer
@@ -309,7 +310,7 @@
   let drag = null;
   $('desk').addEventListener('pointerdown', (e) => {
     // bars and boxes over the picture (the map bar, the busy note) take their own clicks: pressing them must not start moving the picture
-    if (!shown() || e.target.closest('.welcome') || e.target.closest('.cropbox') || e.target.closest('.mapbar') || e.target.closest('.busy')) return;
+    if (!shown() || e.target.closest('.welcome') || e.target.closest('.kind-tiles') || e.target.closest('.cropbox') || e.target.closest('.mapbar') || e.target.closest('.busy')) return;
     if (e.target === $('split')) { drag = { kind: 'split' }; $('desk').setPointerCapture(e.pointerId); return; }
     const [px, py] = atPic(e), img = shown();
     if (e.button === 0 && tool && tool.def.pick && px >= 0 && py >= 0 && px < img.width && py < img.height) { const i = ((py | 0) * img.width + (px | 0)) * 4, d = (tool.base || img).data; tool.def.pick(tool.s, [d[i], d[i + 1], d[i + 2]], px / img.width, py / img.height); renderProps(); schedule(0); return; }
@@ -949,13 +950,43 @@
   function kindOf(p) { p = p || pic(); if (!p) return 'photo'; if (!p.kind) { const g = IC.process.guessKind(p.steps[0].img); p.kind = g.kind; p.kindWhy = g.why; p.kindGuessed = true; } return p.kind; }
   const toolFits = (id) => allTools || !ONLY[id] || ONLY[id].split(' ').includes(kindOf());
   function setKind(k) { const p = pic(); if (!p) return; p.kind = k; p.kindGuessed = false; processState.delete(p); renderProps(); toast(`${KIND_NAME[k]}: the tools and Process now suit ${k === 'vector' || k === 'pixel' ? KIND_NAME[k].toLowerCase() : `a ${KIND_NAME[k].toLowerCase()}`}.`); }
+  // After a picture opens: a tile for each kind, each showing this picture as that pipeline would start to treat it.
+  // A click sets the kind and opens its pipeline (Process); Not now keeps the guess. Can be switched off.
+  let askKind = true; try { askKind = localStorage.getItem('imagecraft-askkind') !== '0'; } catch (e) { /* blocked storage */ }
+  const KIND_WHAT = { photo: 'repair, noise, light and colour, faces', painting: 'colour and cracks, keeping the brushwork', drawing: 'white paper, clean lines', vector: 'solid colours, clean edges, SVG', pixel: 'every pixel kept' };
+  function kindPreview(k, sm) {
+    try {
+      if (k === 'photo') return X.autoColour(sm);
+      if (k === 'painting') return X.autoLevels(sm);
+      if (k === 'drawing') return X.paperClean(sm, { strength: 85, deepen: 30, keepColour: true });
+      if (k === 'vector') return C.reduce(sm, { colours: 8, dither: 'none' });
+      if (k === 'pixel') { const w = Math.max(8, Math.round(sm.width / 6)), h = Math.max(6, Math.round(sm.height / 6)); return X.resize(X.resize(sm, { width: w, height: h, method: 'nearest' }), { width: sm.width, height: sm.height, method: 'nearest' }); }
+    } catch (e) { /* the plain picture */ }
+    return sm;
+  }
+  function hideKindTiles() { const el = $('kindtiles'); if (el) el.hidden = true; }
+  function showKindTiles(force) {
+    const p = pic(), el = $('kindtiles'); if (!p || !el || (!force && (!askKind || p.kindAsked))) return;
+    p.kindAsked = true; const guess = kindOf(p), img = p.steps[0].img, k = Math.min(1, 150 / Math.max(img.width, img.height)), sm = X.resize(img, { width: Math.max(1, Math.round(img.width * k)), height: Math.max(1, Math.round(img.height * k)) });
+    el.innerHTML = `<div class="kt-head"><b>What kind of picture is this?</b><span class="hint">Each tile is your picture as that pipeline would start on it.${p.kindGuessed ? ` It looks like a <b>${esc(KIND_NAME[guess].toLowerCase())}</b> (${esc(p.kindWhy || '')}).` : ''}</span></div><div class="kt-row">${KINDS.map(([kk, l]) => `<button type="button" class="kt-tile" data-kt="${kk}" aria-pressed="${kk === guess}"><canvas width="150" height="110"></canvas><b>${l}${kk === guess && p.kindGuessed ? ' <span class="where cloud">guess</span>' : ''}</b><small>${esc(KIND_WHAT[kk])}</small></button>`).join('')}</div><div class="kt-foot"><label class="check"><input type="checkbox" data-kask ${askKind ? 'checked' : ''}> Ask when a picture opens</label><button class="btn outline" type="button" data-kt-close>Not now</button></div>`;
+    el.hidden = false;
+    // the little pictures, one at a time so the page stays responsive
+    (async () => { for (const b of el.querySelectorAll('[data-kt]')) { await wait(10); if (el.hidden || pic() !== p) return; const v = kindPreview(b.dataset.kt, sm), c = b.querySelector('canvas'), x = c.getContext('2d'), kk = Math.min(150 / v.width, 110 / v.height); x.fillStyle = '#111'; x.fillRect(0, 0, 150, 110); x.imageSmoothingEnabled = b.dataset.kt !== 'pixel'; x.drawImage(X.canvasOf(v), (150 - v.width * kk) / 2, (110 - v.height * kk) / 2, v.width * kk, v.height * kk); } })();
+    el.onclick = (e) => {
+      if (e.target.closest('[data-kt-close]')) { hideKindTiles(); return; }
+      const b = e.target.closest('[data-kt]'); if (!b) return; hideKindTiles(); p.kind = b.dataset.kt; p.kindGuessed = false; processState.delete(p); openTool('process'); toast(`${KIND_NAME[p.kind]}: the tools and Process now suit it. Fix everything is at the top.`);
+    };
+    el.onchange = (e) => { if (e.target.matches('[data-kask]')) { askKind = e.target.checked; try { localStorage.setItem('imagecraft-askkind', askKind ? '1' : '0'); } catch (err) { /* blocked storage */ } } };
+  }
   function kindField() {
     const p = pic(), k = kindOf(p), d = document.createElement('div'); d.className = 'field kind-field';
-    d.innerHTML = `<span>Kind of picture${p.kindGuessed ? ` <small class="hint">(guessed: ${esc(p.kindWhy || '')})</small>` : ''}</span><select class="input" data-kind>${KINDS.map(([v, l]) => `<option value="${v}" ${v === k ? 'selected' : ''}>${l}</option>`).join('')}</select><label class="check"><input type="checkbox" data-alltools ${allTools ? 'checked' : ''}> Show all tools (also those for other kinds)</label>`;
+    d.innerHTML = `<span>Kind of picture${p.kindGuessed ? ` <small class="hint">(guessed: ${esc(p.kindWhy || '')})</small>` : ''}</span><select class="input" data-kind>${KINDS.map(([v, l]) => `<option value="${v}" ${v === k ? 'selected' : ''}>${l}</option>`).join('')}</select><button class="btn outline" type="button" data-kt-show style="margin-top:4px">Choose with pictures…</button><label class="check"><input type="checkbox" data-alltools ${allTools ? 'checked' : ''}> Show all tools (also those for other kinds)</label>`;
+    d.onclick = (e) => { if (e.target.closest('[data-kt-show]')) { if (tool) closeTool(true); showKindTiles(true); } };
     d.onchange = (e) => { if (e.target.matches('[data-kind]')) setKind(e.target.value); if (e.target.matches('[data-alltools]')) { allTools = e.target.checked; try { localStorage.setItem('imagecraft-alltools', allTools ? '1' : '0'); } catch (err) { /* blocked storage */ } } };
     return d;
   }
   function openTool(id, preset) {
+    if (id !== 'process') hideKindTiles();
     if (pic() && !toolFits(id) && TOOLS[id]) { toast(`“${TOOLS[id].title}” is for ${ONLY[id].split(' ').map((k) => KIND_NAME[k].toLowerCase() + 's').join(' and ')}; this picture is set as ${KIND_NAME[kindOf()].toLowerCase()}. Change the kind in Picture, or tick Show all tools.`); return; }
     if (!pic() && !(TOOLS[id] && TOOLS[id].noPic)) { toast('Open a picture first.'); return; }
     if (id === 'repair' || id === 'shadowlift') repairPaint = null; // a fresh painting each time

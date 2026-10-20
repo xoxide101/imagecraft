@@ -43,13 +43,14 @@
   // plain paper, little colour, dark lines) or a photo. A painting is not guessed (it reads as a photo): chosen by the person.
   function guessKind(img) {
     const W = img.width, H = img.height, d = img.data, n = W * H, st = Math.max(1, Math.floor(n / 150000)), cols = new Set(), q5 = new Set();
-    let paper = 0, dark = 0, chroma = 0, flat = 0, k = 0;
+    let paper = 0, dark = 0, chroma = 0, flat = 0, k = 0, ink = 0, inkC = 0, inkFlat = 0;
     for (let p = 0; p + W + 1 < n; p += st) { const i = p * 4, r = d[i], g = d[i + 1], b = d[i + 2], L = 0.299 * r + 0.587 * g + 0.114 * b, mx = Math.max(r, g, b), mn = Math.min(r, g, b);
-      if (cols.size < 5000) cols.add((r << 16) | (g << 8) | b); q5.add(((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3)); k++; chroma += mx - mn; if (L > 200 && mx - mn < 40) paper++; if (L < 110) dark++;
-      const j = i + 4, l = i + W * 4; if (Math.abs(d[j] - r) + Math.abs(d[j + 1] - g) + Math.abs(d[j + 2] - b) < 6 && Math.abs(d[l] - r) + Math.abs(d[l + 1] - g) + Math.abs(d[l + 2] - b) < 6) flat++; }
-    const fc = cols.size, pf = paper / k, df = dark / k, cm = chroma / k / 255, ff = flat / k;
+      if (cols.size < 5000) cols.add((r << 16) | (g << 8) | b); q5.add(((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3)); k++; chroma += mx - mn; const isPaper = L > 200 && mx - mn < 40; if (isPaper) paper++; else { ink++; inkC += mx - mn; } if (L < 110) dark++;
+      const j = i + 4, l = i + W * 4; if (Math.abs(d[j] - r) + Math.abs(d[j + 1] - g) + Math.abs(d[j + 2] - b) < 6 && Math.abs(d[l] - r) + Math.abs(d[l + 1] - g) + Math.abs(d[l + 2] - b) < 6) { flat++; if (!(L > 200 && mx - mn < 40)) inkFlat++; } }
+    const fc = cols.size, pf = paper / k, df = dark / k, cm = chroma / k / 255, ff = flat / k, ic = ink ? inkC / ink / 255 : 0, iff = ink ? inkFlat / ink : 0; // ic: how colourful the marks are (not the paper)
     if (fc <= 64 && n < 600000) return { kind: 'pixel', why: `${fc} colours, small` };
-    if (pf > 0.5 && df < 0.3 && cm < 0.12) return { kind: 'drawing', why: `${Math.round(pf * 100)}% plain paper, little colour` };
+    if (pf > 0.3 && ic > 0.25 && iff > 0.45) return { kind: 'vector', why: `strong solid colours on a plain background (${Math.round(iff * 100)}% of the marks flat)` };
+    if (pf > 0.5 && df < 0.3 && ic < 0.18) return { kind: 'drawing', why: `${Math.round(pf * 100)}% plain paper, grey or dark marks` };
     if (ff > 0.6 && q5.size < 1500) return { kind: 'vector', why: `${Math.round(ff * 100)}% flat colour areas, ${q5.size < 300 ? 'few' : 'a limited number of'} colours` };
     return { kind: 'photo', why: 'continuous tones' };
   }
