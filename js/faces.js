@@ -135,7 +135,7 @@
     const a = num1 / den, b = num2 / den; return [a, b, dx - (a * sx - b * sy), dy - (b * sx + a * sy)];
   }
   const sample = (img, x, y, out, o) => { const W = img.width, H = img.height, d = img.data; x = Math.max(0, Math.min(W - 1.001, x)); y = Math.max(0, Math.min(H - 1.001, y)); const x0 = x | 0, y0 = y | 0, tx = x - x0, ty = y - y0, i = (y0 * W + x0) * 4; for (let c = 0; c < 3; c++) out[o + c] = (d[i + c] * (1 - tx) + d[i + 4 + c] * tx) * (1 - ty) + (d[i + W * 4 + c] * (1 - tx) + d[i + W * 4 + 4 + c] * tx) * ty; };
-  async function restore(img, faces, { fidelity = 0.7, strength = 1, onStep } = {}) {
+  async function restore(img, faces, { fidelity = 0.7, strength = 1, onStep, model = 'codeformer' } = {}) {
     const W = img.width, H = img.height, acc = new Float32Array(W * H * 3), wsum = new Float32Array(W * H), tmp = [0, 0, 0];
     let k = 0;
     for (const f of faces) {
@@ -143,7 +143,7 @@
       const [a, b, tx, ty] = similarity(fivePoints(f), TEMPLATE), det = a * a + b * b; // image → crop
       const inv = (u, v) => { const X = u - tx, Y = v - ty; return [(a * X + b * Y) / det, (-b * X + a * Y) / det]; }; // crop → image
       const crop = new ImageData(512, 512); for (let v = 0; v < 512; v++) for (let u = 0; u < 512; u++) { const [x, y] = inv(u + 0.5, v + 0.5); sample(img, x - 0.5, y - 0.5, crop.data, (v * 512 + u) * 4); crop.data[(v * 512 + u) * 4 + 3] = 255; }
-      const out = await CRAFTAI.codeformer(crop, fidelity);
+      const out = model === 'gfpgan' ? await CRAFTAI.gfpgan(crop) : await CRAFTAI.codeformer(crop, fidelity);
       // back over the picture: where each picture pixel falls in the crop, faded over the crop's outer 12%
       const corners = [[0, 0], [512, 0], [0, 512], [512, 512]].map(([u, v]) => inv(u, v)), x0 = Math.max(0, Math.floor(Math.min(...corners.map((c) => c[0])))), x1 = Math.min(W - 1, Math.ceil(Math.max(...corners.map((c) => c[0])))), y0 = Math.max(0, Math.floor(Math.min(...corners.map((c) => c[1])))), y1 = Math.min(H - 1, Math.ceil(Math.max(...corners.map((c) => c[1]))));
       for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {

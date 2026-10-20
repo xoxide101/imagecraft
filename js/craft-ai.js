@@ -26,9 +26,11 @@
     inpaint: { raw: 'https://huggingface.co/andraniksargsyan/migan/resolve/main/migan_pipeline_v2.onnx', name: 'Repair (fill in damage)', what: 'Fills tears, scratches, holes and stamps from what is around them (MI-GAN, Picsart). It invents what is missing, so use it where the original is lost.', mb: { gpu: 28, cpu: 28 }, licence: 'MIT', cpuOnly: true }, // on the graphics-card runtime a run could hang; the processor takes 2 s
     codeformer: { raw: 'https://huggingface.co/bluefoxcreation/Codeformer-ONNX/resolve/main/codeformer.onnx', name: 'Restore faces (CodeFormer)', what: 'Redraws small, blurred or damaged faces from a model of faces, with a slider for how closely it keeps to the original. Large: about 377 MB the first time. Non-commercial use only (S-Lab License 1.0).', mb: { gpu: 377, cpu: 377 }, licence: 'S-Lab 1.0 (non-commercial)' },
     colourise: { raw: 'https://huggingface.co/edgetools/ddcolor/resolve/main/ddcolor-tiny-fp16.onnx', name: 'Colourise (DDColor)', what: 'Gives a black-and-white or faded photo likely colours (DDColor-tiny, Apache-2.0). Only the colour is guessed; the brightness and every detail stay the photo’s own. About 135 MB the first time.', mb: { gpu: 135, cpu: 135 }, licence: 'Apache-2.0', cpuOnly: true }, // one of its MatMul steps fails on the graphics-card runtime: the processor (about 10 s)
+    gfpgan: { raw: 'https://huggingface.co/neurobytemind/GFPGANv1.4.onnx/resolve/main/GFPGANv1.4.onnx', name: 'Restore faces (GFPGAN 1.4)', what: 'Redraws small, blurred or damaged faces (Tencent ARC). Natural skin and colour; no closeness slider. Large: about 340 MB the first time. Trained on FFHQ faces: non-commercial use.', mb: { gpu: 340, cpu: 340 }, licence: 'Apache-2.0 (code); FFHQ-trained weights, non-commercial' },
+    scratches: { raw: 'https://huggingface.co/Saimon8420/old-photo-scratch-detection-web/resolve/main/scratch_detection_fp16w.onnx', name: 'Find scratches (old photos)', what: 'Finds scratches, cracks and dust on old photos so Repair can fill them (Microsoft’s Bringing Old Photos Back to Life, MIT). About 75 MB the first time.', mb: { gpu: 75, cpu: 75 }, licence: 'MIT' },
     pick: { id: 'Xenova/slimsam-77-uniform', name: 'Pick an object', what: 'Click an object in a picture and it is outlined for you, to keep or take out.', mb: { gpu: 21, cpu: 14 }, licence: 'Apache-2.0' },
   };
-  const DEFAULTS = { on: true, gpu: null, use: { cutout: true, best: false, sharp: true, photo: true, jpeg: true, esrgan: true, esrgan2: true, esrgan3: true, find: true, inpaint: true, codeformer: true, colourise: true, pick: true } };
+  const DEFAULTS = { on: true, gpu: null, use: { cutout: true, best: false, sharp: true, photo: true, jpeg: true, esrgan: true, esrgan2: true, esrgan3: true, find: true, inpaint: true, codeformer: true, gfpgan: true, scratches: true, colourise: true, pick: true } };
   let settings = DEFAULTS;
   try { settings = { ...DEFAULTS, ...JSON.parse(localStorage.getItem(KEY) || '{}') }; settings.use = { ...DEFAULTS.use, ...(settings.use || {}) }; } catch (e) { /* ignore */ }
   const save = () => { try { localStorage.setItem(KEY, JSON.stringify(settings)); } catch (e) { /* ignore */ } };
@@ -289,6 +291,27 @@
     const o = await run('colourise', (ses) => ses.run({ [ses.inputNames[0]]: new T.ort.Tensor('float32', grey512, [1, 3, 512, 512]) }).then((r) => r[ses.outputNames[0]]));
     return { a: o.data.slice(0, N), b: o.data.slice(N, 2 * N) };
   }
+  // GFPGAN 1.4: an aligned 512 × 512 face (RGB scaled to −1…1) in, the restored face out
+  async function gfpgan(face) {
+    const T = await lib(), N = 512 * 512, d = face.data, x = new Float32Array(3 * N);
+    for (let p = 0; p < N; p++) for (let c = 0; c < 3; c++) x[c * N + p] = d[p * 4 + c] / 127.5 - 1;
+    const o = await run('gfpgan', (ses) => ses.run({ [ses.inputNames[0]]: new T.ort.Tensor('float32', x, [1, 3, 512, 512]) }).then((r) => r[ses.outputNames[0]]));
+    const y = o.data, out = new ImageData(512, 512); for (let p = 0; p < N; p++) { for (let c = 0; c < 3; c++) out.data[p * 4 + c] = Math.round(Math.max(0, Math.min(255, (y[c * N + p] + 1) * 127.5))); out.data[p * 4 + 3] = 255; }
+    return out;
+  }
+  // Find scratches (Bringing Old Photos Back to Life): grey in ((v/255 − 0.5)/0.5, sides a multiple of 16), the
+  // chance of a scratch out; looked at no bigger than 1024 px across (as the original's own working size), then
+  // enlarged smoothly to the picture's size
+  async function scratches(img, max = 1024) {
+    const T = await lib(), W = img.width, H = img.height, k = Math.min(1, max / Math.max(W, H)), w = Math.max(16, Math.round((W * k) / 16) * 16), h = Math.max(16, Math.round((H * k) / 16) * 16);
+    const c = document.createElement('canvas'); c.width = w; c.height = h; const x = c.getContext('2d'); x.imageSmoothingQuality = 'high'; const src = document.createElement('canvas'); src.width = W; src.height = H; src.getContext('2d').putImageData(img, 0, 0); x.drawImage(src, 0, 0, w, h);
+    const d = x.getImageData(0, 0, w, h).data, inp = new Float32Array(w * h); for (let p = 0; p < w * h; p++) inp[p] = (0.299 * d[p * 4] + 0.587 * d[p * 4 + 1] + 0.114 * d[p * 4 + 2]) / 127.5 - 1;
+    const o = await run('scratches', (ses) => ses.run({ [ses.inputNames[0]]: new T.ort.Tensor('float32', inp, [1, 1, h, w]) }).then((r) => r[ses.outputNames[0]]));
+    const pr = o.data, out = new Float32Array(W * H);
+    for (let y = 0; y < H; y++) { const sy = Math.min(h - 1, Math.max(0, ((y + 0.5) * h) / H - 0.5)), y0 = Math.floor(sy), y1 = Math.min(h - 1, y0 + 1), ty = sy - y0;
+      for (let xx = 0; xx < W; xx++) { const sx = Math.min(w - 1, Math.max(0, ((xx + 0.5) * w) / W - 0.5)), x0 = Math.floor(sx), x1 = Math.min(w - 1, x0 + 1), tx = sx - x0; out[y * W + xx] = (pr[y0 * w + x0] * (1 - tx) + pr[y0 * w + x1] * tx) * (1 - ty) + (pr[y1 * w + x0] * (1 - tx) + pr[y1 * w + x1] * tx) * ty; } }
+    return out;
+  }
   function pick(src, pts) {
     return remember('pick:' + keyOf(src) + JSON.stringify(pts), (async () => {
       const T = await lib(), c = await canvasOf(src, 1024), image = await rawOf(T, c);
@@ -365,5 +388,5 @@
     };
   }
 
-  window.CRAFTAI = { colourise, codeformer, inpaint, find, sizeOf, probe: () => probed, found: () => found, settings: () => settings, enabled, ready, cutout, pick, upscale, onProgress, downloaded, forget, openSettings, MODELS };
+  window.CRAFTAI = { scratches, gfpgan, colourise, codeformer, inpaint, find, sizeOf, probe: () => probed, found: () => found, settings: () => settings, enabled, ready, cutout, pick, upscale, onProgress, downloaded, forget, openSettings, MODELS };
 })();

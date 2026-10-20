@@ -34,11 +34,18 @@ Classic formats fit the picture to that machine's screen and colours for you (th
 - **Dithering**: Floyd–Steinberg, Atkinson, Jarvis, Stucki, Burkes, Sierra, Sierra Lite, ordered 2 × 2 / 4 × 4 / 8 × 8, and noise, with a strength slider.
 - **Computer looks**: Atari ST, Amiga, Commodore 64, ZX Spectrum, Amstrad CPC, CGA, EGA, VGA, Macintosh, Game Boy, Apple II, PICO-8 and Teletext, at the real screen size (with tall or wide pixels where the machine had them) or kept at your picture's size.
 
+### Cloud AI (your own keys; optional)
+
+**View › Cloud AI keys** takes your own Claude (Anthropic), Gemini (Google) and OpenAI keys. They are kept only in this browser and sent only to their own company, with each request you make (billed to your account there). **Test them** shows how many of each service's models can look at pictures and how many can draw.
+- **Ask AI** can then use Claude, Gemini or GPT (or Ollama's cloud models, such as kimi-k3, when you allow them) to describe a photo instead of a local model. The panel says where the picture is sent.
+- **Regenerate** (Clean up › Cloud) sends the photo, with the description, to Gemini's or OpenAI's image model and gets back a redrawn, restored version: tears, scratches, blur and fading fixed, missing parts drawn in. **Everything in it is drawn by the AI**, so faces and details can change. It opens as a new picture at the original's size, to compare or to blend parts back with Detail › Blend a version.
+- Checked without real keys: all three services answer a page opened as a file, and a wrong key gives a clear message.
+
 ### Process a photo (Home › Plan)
 
 Say what you are doing: **Repair**, **Colour correction**, **Make bigger** (2× or 4×) and/or **Edits** (your own crop, straighten, curves and colour). ImageCraft measures the photo (noise, blur, JPEG blocks, printing dots, light and fading, haze, colour cast or toning, specks, and faces if you ask; about 3 seconds) and lays out a plan in the order that works best: repair first (printing dots, JPEG blocks, specks, then tears you mark yourself), then noise and blur, light and colour, your own edits, faces, making bigger (photos are made 4× with the AI and averaged down to 2×), and a light final sharpen. Each step says why, with the measurement behind it, and roughly how long it takes on this computer; untick any, open any to adjust it, then run the ticked ones (each goes into History). Steps that need you (marking tears, crop, curves) are listed as "your turn". On the motorbike test: blocks 2.3×, dark (29%), soft (1.6 px), one small face; the plan of eight automatic steps was estimated at 14 seconds and took 13.4.
 
-### The details box (bottom left)
+### The details box (bottom of the left panel)
 
 Four tabs, folded away with **–**: **Original** (the file as opened: format, bits, size, colours, and its measurements on request), **Current** (the picture now: size, colours, 8 or 16 bits per colour, steps, saved or not), **Saved** (the steps from the original to what was last saved, and the file it went to) and **Working** (what has been done since, not in a file yet, and any tool that is open but not applied).
 
@@ -118,11 +125,12 @@ Heavy work says how far it has got and roughly how long is left, worked out from
 
 ### Restore faces (AI, redrawn; non-commercial)
 
-**Detail › Faces › Restore faces** redraws small, blurred, grainy or damaged faces with CodeFormer. Each face is straightened onto the model's 512 × 512 layout (eyes, nose tip and mouth corners from the face finder, by a similarity transform), restored there, and laid back with a soft edge, so the rest of the picture is untouched. **Keep to the original** sets how closely it follows the real face; lower is cleaner but more invented. On the test group photo, all six faces went from soft blurs to clear faces; on a toddler, the expression around the eyes changed at 70%, so check closely and raise the slider when likeness matters most. It is a large download (about 377 MB, once). The first run is timed and later runs are estimated. CodeFormer is under the S-Lab License 1.0: **non-commercial use only**. ImageCraft downloads it from huggingface.co when asked and does not include it.
+**Detail › Faces › Restore faces** redraws small, blurred, grainy or damaged faces with **CodeFormer** (with a closeness slider) or **GFPGAN 1.4** (Tencent ARC; natural skin and colour, about 340 MB once; 0.1 s a face on a graphics card, about 15 s on the processor). Each face is straightened onto the model's 512 × 512 layout (eyes, nose tip and mouth corners from the face finder, by a similarity transform), restored there, and laid back with a soft edge, so the rest of the picture is untouched. **Keep to the original** sets how closely it follows the real face; lower is cleaner but more invented. On the test group photo, all six faces went from soft blurs to clear faces; on a toddler, the expression around the eyes changed at 70%, so check closely and raise the slider when likeness matters most. It is a large download (about 377 MB, once). The first run is timed and later runs are estimated. CodeFormer is under the S-Lab License 1.0: **non-commercial use only**. ImageCraft downloads it from huggingface.co when asked and does not include it.
 
 ### Repair damage
 
 **Clean up › Repair › Repair damage** marks the damage and fills it in from what is around it.
+- **Scratches, cracks and dust (AI)**: the scratch finder from Microsoft's *Bringing Old Photos Back to Life* (MIT; about 75 MB once), on by default. On the test photos it marked 1.5% of the damaged portrait (flakes and cracks along the tears) and 0.2% of the group, and left faces alone; large torn areas are still marked by hand.
 - **Found by themselves**: specks and dust (from the speck finder), and optionally white or black flecks and thin scratches, and an orange date stamp near the bottom. On test photos the automatic marks cover about 0.2% of the picture. An earlier, looser finder marked 20–67% (hair and faces too), so it was made strict.
 - **Marked by you**: tears, flaking and stains. **Paint** over them (left button; the right button takes marks away), or **click** one and the AI picker outlines it. Red shows what will be filled.
 - **Fill with**: **AI** (MI-GAN, MIT, about 28 MB the first time, a few seconds on a graphics card), or **Fill from the edges** (Telea's fast marching) for specks, scratches and thin cracks. On thin cracks drawn over a photo it came closest to the real pixels: 38.0 dB, against 36.0 for a plain smooth fill and 30.2 for the AI. Only the marked pixels change. Over large areas the AI invents what is there, so ImageCraft warns when more than 15% is marked.
@@ -211,6 +219,8 @@ Open-source libraries it uses are listed with their licences in Credits.
 - [MMPX](https://casual-effects.com/research/McGuire2021PixelArt/) pixel-art magnification, ported to JavaScript from the MIT reference code (© 2020 Morgan McGuire & Mara Gagiu).
 - [DDColor](https://github.com/piddnad/DDColor) (Apache-2.0), the tiny model as exported for the browser at huggingface.co/edgetools/ddcolor, colourises.
 - [CodeFormer](https://github.com/sczhou/CodeFormer) (S-Lab License 1.0, non-commercial), downloaded on request as an ONNX file from huggingface.co/bluefoxcreation/Codeformer-ONNX.
+- Scratch finder: Microsoft's [Bringing Old Photos Back to Life](https://github.com/microsoft/Bringing-Old-Photos-Back-to-Life) (MIT), as exported for the browser at huggingface.co/Saimon8420/old-photo-scratch-detection-web.
+- [GFPGAN](https://github.com/TencentARC/GFPGAN) 1.4 (Tencent ARC; Apache-2.0 code, FFHQ-trained weights, non-commercial), downloaded on request from huggingface.co/neurobytemind/GFPGANv1.4.onnx.
 - [MI-GAN](https://github.com/Picsart-AI-Research/MI-GAN) (MIT) fills in damage; the ONNX pipeline file is from huggingface.co/andraniksargsyan/migan.
 - [MediaPipe Tasks Vision](https://github.com/google-ai-edge/mediapipe) and its Face Landmarker model (Apache-2.0), bundled as `lib/craft-face-libs.js` (built from `lib/face-build`).
 - Smart sharpen follows AMD FidelityFX CAS (MIT); the method was re-written here from its published description, not copied.

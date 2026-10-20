@@ -231,7 +231,9 @@
     } catch (e) { ICLOG.error('Picking failed', e); toast('Could not outline it: ' + e.message); }
     busy(null);
   }
-  const repairDamage = (img, s) => { let m = IC.maps.damage(img, s); if (repairPaint && repairPaint.length === m.length) m = m.map((v, i) => Math.max(v, repairPaint[i])); return IC.maps.grow(m, img.width, img.height, s.grow); };
+  const scratchMemo = new WeakMap();
+  const ensureScratches = async (img, s) => { if (s.scratches && !scratchMemo.has(img)) { busyNow('Looking for scratches (the first time downloads the finder, about 75 MB)…'); scratchMemo.set(img, await CRAFTAI.scratches(img)); } };
+  const repairDamage = (img, s) => { let m = IC.maps.damage(img, s); const sc = s.scratches && scratchMemo.get(img); if (sc) { const th = 0.65 - (s.level / 100) * 0.5; m = m.map((v, i) => (sc[i] >= th ? 1 : v)); } if (repairPaint && repairPaint.length === m.length) m = m.map((v, i) => Math.max(v, repairPaint[i])); return IC.maps.grow(m, img.width, img.height, s.grow); };
   const markOver = (img, m) => { const o = new ImageData(new Uint8ClampedArray(img.data), img.width, img.height), d = o.data; for (let p = 0; p < m.length; p++) if (m[p] > 0.5) { d[p * 4] = Math.round(d[p * 4] * 0.35 + 255 * 0.65); d[p * 4 + 1] = Math.round(d[p * 4 + 1] * 0.35); d[p * 4 + 2] = Math.round(d[p * 4 + 2] * 0.35 + 40); } return o; };
   // the picture compared against: before the open tool, or else the original
   const compareBase = () => (tool && tool.preview ? tool.base : pic() ? pic().steps[0].img : null);
@@ -427,6 +429,18 @@
         range('amount', 'Amount %', 0, 100), note('Use Where to bring the version back only in some places: the sharper version on the texture, the smoother one on the sky.')],
       run: (img, s) => { const src = s.from === 'pic' ? pics[s.other] && pics[s.other].steps[pics[s.other].at].img : pic().steps[s.step] && pic().steps[s.step].img; if (!src) throw new Error(s.from === 'pic' ? 'Open another picture first (for example a cut-out you repaired).' : 'Choose a version.'); return IC.detail.blend(img, src, { mode: s.mode, amount: s.amount }); } },
     process: { title: 'Process a photo', icon: IK.auto, viewOnly: true, s: {}, run: (img) => img, fields: [{ t: 'custom', render: (into, t) => processPanel(into, t) }] },
+    cloudkeys: { title: 'Cloud AI keys', icon: IK.modern, viewOnly: true, s: {}, run: (img) => img, fields: [{ t: 'custom', render: (into) => cloudKeysPanel(into) }] },
+    regen: { title: 'Regenerate (cloud AI)', icon: IK.modern, live: false, toNew: 'regenerated', applyLabel: 'Open as a new picture', s: () => ({ provider: IC.cloud.has('gemini') ? 'gemini' : 'openai', model: '', colour: false, text: (lastDescription.get(pic()) && `${lastDescription.get(pic()).subject}. ${lastDescription.get(pic()).materials}`) || '' }),
+      fields: [{ t: 'custom', render: (into, t) => regenPanel(into, t) }, { t: 'out' }],
+      report: () => (tool && tool.regenInfo ? `<p class="hint">${esc(tool.regenInfo)}</p>` : ''),
+      run: async (img, s, say) => {
+        if (!IC.cloud.has(s.provider)) throw new Error('Add a Gemini or OpenAI key first (View › Cloud AI keys).'); if (!s.model) throw new Error('Choose a model first.');
+        say && say(`Sending the picture to ${IC.cloud.NAMES[s.provider]}… (it usually takes 10 to 60 seconds)`); const t0 = performance.now();
+        let o = await IC.cloud.regenerate(img, s.provider, s.model, s.text, { colour: s.colour });
+        const back = `${o.width} × ${o.height}`; if (o.width !== img.width || o.height !== img.height) o = X.resize(o, { width: img.width, height: img.height }); // the same size as the original, so Blend a version can mix them
+        if (tool) tool.regenInfo = `Redrawn by ${s.model} (${IC.cloud.NAMES[s.provider]}) in ${((performance.now() - t0) / 1000).toFixed(0)} s; it came back ${back} and was scaled to the original's ${img.width} × ${img.height}. Everything in it is redrawn: compare with the original, and use Detail › Blend a version to take only the parts you want.`;
+        return o;
+      } },
     assess: { title: 'Ask AI what it needs', icon: IK.modern, viewOnly: true, s: {}, run: (img) => img,
       fields: [{ t: 'custom', render: (into, t) => assessPanel(into, t) }] },
     split: { title: 'Split subject and background', icon: IK.cutout, live: false, applyLabel: 'Make the two pictures', s: { fill: true, grow: 2 },
@@ -444,17 +458,17 @@
       fields: [note('A JPEG keeps the brightness in full but the colour at half size, in 8 × 8 blocks; old prints and scans smear colour more than brightness too. Colour edges almost always sit on brightness edges, so the colour is made to follow the brightness detail that is really there. Nothing is invented and the brightness is not touched.'),
         range('size', 'Block size to smooth over', 2, 16), range('strength', 'Strength %', 0, 100), note('4 is best for most JPEGs (tested: colour error 2.2 dB lower on a heavily compressed one). Raise it when False colour shows big colour blocks.')],
       run: (img, s) => X.chromaRebuild(img, s) },
-    repair: { title: 'Repair damage', icon: IK.dust, live: false, paint: true, s: { specks: true, flecks: false, stamp: false, level: 50, grow: 2, how: 'ai', mark: 'paint', brush: 14 },
+    repair: { title: 'Repair damage', icon: IK.dust, live: false, paint: true, s: { scratches: true, specks: true, flecks: false, stamp: false, level: 50, grow: 2, how: 'ai', mark: 'paint', brush: 14 },
       fields: [note('Marks the damage, then fills it in from what is around it. Specks are found by themselves; <b>mark tears, flaking and stains yourself</b>: paint over them with the left mouse button, or click one and the AI outlines it. The right button takes marks away; the middle button moves the picture. Red shows what will be filled.'),
         seg('mark', 'Mark by', [['paint', 'Painting'], ['pick', 'Clicking (AI outlines it)']]),
-        chk('specks', 'Specks and dust (found by themselves)'), chk('flecks', 'White or black flecks and thin scratches (can catch thin white things such as poles: check the red)'), chk('stamp', 'Date stamp (orange numbers near the bottom)'),
+        chk('scratches', 'Scratches, cracks and dust (AI: the old-photo scratch finder, about 75 MB once)'), chk('specks', 'Specks and dust (found by themselves)'), chk('flecks', 'White or black flecks and thin scratches (can catch thin white things such as poles: check the red)'), chk('stamp', 'Date stamp (orange numbers near the bottom)'),
         range('level', 'Sensitivity', 0, 100), range('grow', 'Take a little more round each mark (pixels)', 0, 8), range('brush', 'Brush size (pixels)', 2, 80, 1, (s) => s.mark === 'paint'),
         seg('how', 'Fill with', [['ai', 'AI (MI-GAN): best for anything bigger than a speck'], ['smooth', 'Fill from the edges (Telea): specks, scratches, thin cracks']]),
-        { t: 'btns', buttons: [{ label: 'Show what will be filled', run: () => { if (!tool) return; tool.preview = markOver(tool.base, repairDamage(tool.base, tool.s)); tool.stale = true; show(); } }, { label: 'Clear the painting', run: () => { repairPaint = null; if (tool) { tool.preview = null; show(); } } }] },
+        { t: 'btns', buttons: [{ label: 'Show what will be filled', run: () => { const t = tool; if (!t) return; ensureScratches(t.base, t.s).then(() => { busy(null); if (tool !== t) return; t.preview = markOver(t.base, repairDamage(t.base, t.s)); t.stale = true; show(); }, (e) => { busy(null); logFail('The scratch finder failed', e); toast(e.message); }); } }, { label: 'Clear the painting', run: () => { repairPaint = null; if (tool) { tool.preview = null; show(); } } }] },
         { t: 'out' }, note('The AI draws what is missing from what is around it; check faces closely. The first use downloads it (about 28 MB). Press Preview.')],
       report: () => (tool && tool.holePct != null ? `<p class="hint"><b>${tool.holePct < 0.1 ? tool.holePct.toFixed(2) : tool.holePct.toFixed(1)}%</b> of the picture filled.${tool.holePct > 15 && tool.s.how === 'ai' ? ' <b>That is a lot:</b> over large areas the AI invents what is there (it can draw odd things); it works best on specks, scratches and tears of moderate size. Check closely, or mark less.' : ''}</p>` : ''),
       run: async (img, s, say) => {
-        const hole = repairDamage(img, s); let n = 0; for (let i = 0; i < hole.length; i++) n += hole[i] > 0.5; if (tool) tool.holePct = (100 * n) / hole.length;
+        await ensureScratches(img, s); const hole = repairDamage(img, s); let n = 0; for (let i = 0; i < hole.length; i++) n += hole[i] > 0.5; if (tool) tool.holePct = (100 * n) / hole.length;
         if (!n) throw new Error('Nothing is marked: paint over the damage or click it, or tick a kind of damage.');
         let out;
         if (s.how === 'ai') { say && say('Filling in the damage (AI; the first time downloads it)…'); out = await CRAFTAI.inpaint(img, IC.maps.grow(hole, img.width, img.height, 2)); } // the model keeps a thin ring at a hole's edge, so it gets the hole 2 pixels wider
@@ -469,16 +483,16 @@
         range('sensitivity', 'How faint a screen to look for', 0, 100), range('cut', 'Smoothing (× the dot spacing)', 0.4, 1.4, 0.05), range('sharpen', 'Sharpen back (%)', 0, 100), { t: 'out' }],
       report: () => (tool && tool.out && tool.out.peaks != null ? `<p class="hint">${tool.out.peaks >= 4 ? `Printing screen found: dots every <b>${tool.out.period.toFixed(1)}</b> pixels.` : 'No printing screen found, so nothing was changed (raise the sensitivity if you can see dots).'}</p>` : ''),
       run: (img, s) => IC.restore.descreen(img, s) },
-    facerestore: { title: 'Restore faces (AI, redrawn)', icon: IK.cutout, live: false, s: { fidelity: 70, strength: 100 },
+    facerestore: { title: 'Restore faces (AI, redrawn)', icon: IK.cutout, live: false, s: { model: 'codeformer', fidelity: 70, strength: 100 },
       fields: [note('<b>This redraws faces</b> from a model of faces (CodeFormer): small, blurred, grainy or damaged faces become clear, but the model draws what it expects, so a face can come out a little different from the person. The slider sets how closely it keeps to the original. Each face is straightened onto the model’s layout, restored, and laid back with a soft edge, so the rest of the picture is untouched.'),
-        range('fidelity', 'Keep to the original (%): higher is more the person, lower is cleaner', 0, 100), range('strength', 'Blend with the original (%)', 0, 100), { t: 'out' },
-        note('The first use downloads about 377 MB (once). Non-commercial use only (CodeFormer’s S-Lab License). Press Preview.')],
+        seg('model', 'Model', [['codeformer', 'CodeFormer (closeness slider)'], ['gfpgan', 'GFPGAN 1.4 (natural)']]), range('fidelity', 'Keep to the original (%): higher is more the person, lower is cleaner', 0, 100, 1, (s) => s.model !== 'gfpgan'), range('strength', 'Blend with the original (%)', 0, 100), { t: 'out' },
+        note('The first use downloads the model once: CodeFormer about 377 MB, GFPGAN about 340 MB. Non-commercial use only. Press Preview.')],
       report: () => { const n = tool && tool.faces; if (n == null) return ''; return `<p class="hint"><b>${n}</b> face${n === 1 ? '' : 's'} restored${tool.secs ? ` in ${tool.secs.toFixed(1)} s` : ''}.</p>`; },
       run: async (img, s, say) => {
         say && say('Finding faces…'); const faces = await IC.faces.ensure(img); if (!faces.length) throw new Error('No faces found in this picture.');
-        const t0 = performance.now(), per = speed.codeformer; say && say(per ? `Restoring ${faces.length} face${faces.length === 1 ? '' : 's'}: about ${fmtTime((faces.length * per) / 1000)} on this computer` : 'Getting the face model ready (the first time downloads about 377 MB; it can take a few minutes)…');
-        const out = await IC.faces.restore(img, faces, { fidelity: s.fidelity / 100, strength: s.strength / 100, onStep: (m) => say && say(m) });
-        const secs = (performance.now() - t0) / 1000; if (per || faces.length) noteSpeed('codeformer', (secs * 1000) / faces.length); if (tool) { tool.faces = faces.length; tool.secs = secs; }
+        const t0 = performance.now(), mk = s.model === 'gfpgan' ? 'gfpgan' : 'codeformer', per = speed[mk]; say && say(per ? `Restoring ${faces.length} face${faces.length === 1 ? '' : 's'}: about ${fmtTime((faces.length * per) / 1000)} on this computer` : 'Getting the face model ready (the first time downloads it, about 350 MB; it can take a few minutes)…');
+        const out = await IC.faces.restore(img, faces, { model: mk, fidelity: s.fidelity / 100, strength: s.strength / 100, onStep: (m) => say && say(m) });
+        const secs = (performance.now() - t0) / 1000; noteSpeed(mk, (secs * 1000) / faces.length); if (tool) { tool.faces = faces.length; tool.secs = secs; }
         return out;
       } },
     colourise: { title: 'Colourise (AI, a guess)', icon: IK.colour, live: false, s: { amount: 100, warm: 0 },
@@ -778,7 +792,7 @@
   // ------------------------------------------------------------------ running a tool
   let tool = null, token = 0, timer = null;
   // Where: any tool that keeps the picture's size can work only where a map says (a mask: white = apply, black = leave)
-  const NO_MASK = new Set(['resize', 'crop', 'canvas', 'straighten', 'looks', 'text', 'trace', 'upscale', 'remaster', 'modern', 'depth', 'noisemap', 'stack', 'split', 'falsecolour', 'assess', 'repair', 'redeye', 'shadowlift', 'facerestore', 'colourise', 'process']);
+  const NO_MASK = new Set(['resize', 'crop', 'canvas', 'straighten', 'looks', 'text', 'trace', 'upscale', 'remaster', 'modern', 'depth', 'noisemap', 'stack', 'split', 'falsecolour', 'assess', 'repair', 'redeye', 'shadowlift', 'facerestore', 'colourise', 'process', 'regen', 'cloudkeys']);
   const maskable = (def) => !NO_MASK.has(def.id) && !def.viewOnly;
   const MASK_FIELDS = [
     { t: 'html', html: () => '<h3 style="margin:10px 0 0">Where</h3>' },
@@ -803,25 +817,64 @@
     if (isLive(tool)) schedule(0); else show();
   }
   // Ask AI (Ollama): connect, choose a model, look, then run the ticked steps one by one (each a step in History)
+  const lastDescription = new WeakMap(); // picture → its last Ask AI description (Regenerate starts from it)
+  function cloudKeysPanel(into) {
+    const CL = IC.cloud, d = document.createElement('div'); into.append(d);
+    d.innerHTML = `<p class="hint">Your own keys for Claude (Anthropic), Gemini (Google) and GPT (OpenAI). With them, <b>Ask AI</b> can have a cloud model look at a picture, and <b>Regenerate</b> can have Gemini or OpenAI redraw it. The keys are kept only in this browser on this computer and are sent only to their own company, with each request you make. Each use is billed to your account by that company.</p>
+      ${['anthropic', 'gemini', 'openai'].map((k) => `<label class="field"><span>${CL.NAMES[k]}${CL.has(k) ? ' · saved' : ''}</span><input class="input" type="password" autocomplete="off" spellcheck="false" data-k="${k}" placeholder="${CL.has(k) ? '•••••••• (saved; type to replace)' : 'paste the key here'}"></label>`).join('')}
+      <div class="btns"><button class="btn primary" type="button" data-a="save">Save the keys</button><button class="btn outline" type="button" data-a="test">Test them</button><button class="btn outline" type="button" data-a="forget">Forget all keys</button></div><div class="hint" id="ck-out"></div>`;
+    d.onclick = async (e) => {
+      const a = e.target.dataset.a; if (!a) return; const out = d.querySelector('#ck-out');
+      if (a === 'save') { d.querySelectorAll('[data-k]').forEach((i) => { if (i.value.trim()) CL.cfg.keys[i.dataset.k] = i.value.trim(); i.value = ''; }); CL.save(); toast('Keys saved in this browser.'); renderProps(); }
+      if (a === 'forget') { if (await ask('Forget the keys?', 'ImageCraft will forget all three keys in this browser. The keys themselves stay valid at each company.', 'Forget')) { CL.cfg.keys = { anthropic: '', gemini: '', openai: '' }; CL.save(); renderProps(); } }
+      if (a === 'test') { out.textContent = 'Testing…'; const lines = []; for (const k of ['anthropic', 'gemini', 'openai']) { if (!CL.has(k)) continue; try { const m = await CL.models(k); lines.push(`${CL.NAMES[k]}: works · ${m.filter((x) => x.see).length} models can look at pictures${m.some((x) => x.draw) ? `, ${m.filter((x) => x.draw).length} can draw` : ''}`); } catch (err) { lines.push(`${CL.NAMES[k]}: ${err.message}`); } } out.innerHTML = lines.map(esc).join('<br>') || 'No keys saved yet.'; }
+    };
+  }
+  const regenModels = {}; // provider → the models that can draw (asked once)
+  function regenPanel(into, t) {
+    const CL = IC.cloud, s = t.s, d = document.createElement('div'); into.append(d);
+    const provs = ['gemini', 'openai'].filter((k) => CL.has(k));
+    if (!provs.length) { d.innerHTML = '<p class="hint">Regenerate sends the picture to Gemini or OpenAI and gets back a redrawn, restored version. It needs your own key: add one in <b>View › Cloud AI keys</b>.</p>'; return; }
+    if (!provs.includes(s.provider)) s.provider = provs[0];
+    const ms = regenModels[s.provider];
+    if (!ms) { regenModels[s.provider] = 'loading'; CL.models(s.provider).then((m) => { regenModels[s.provider] = m.filter((x) => x.draw); if (tool === t) renderProps(); }, (e) => { regenModels[s.provider] = { err: e.message }; if (tool === t) renderProps(); }); }
+    const list = Array.isArray(ms) ? ms : []; if (list.length && !list.some((x) => x.id === s.model)) s.model = (list.find((x) => /flash-image|gpt-image-1\b/.test(x.id)) || list[0]).id;
+    d.innerHTML = `<p class="hint"><b>The whole picture is redrawn</b> by a cloud image model, guided by a description: tears, scratches, blur and fading are fixed, and missing parts are drawn in. It can look far better than any careful repair, but <b>everything in it is drawn by the AI</b>: faces and details can change. It opens as a new picture, the same size as the original, to compare with it or to blend parts back (Detail › Blend a version). <b>The picture is sent to ${esc(CL.NAMES[s.provider])}</b> and billed to your key.</p>
+      <div class="field"><span>Who redraws it</span><div class="seg">${provs.map((k) => `<button type="button" class="btn" data-rp="${k}" aria-pressed="${k === s.provider}">${CL.NAMES[k]}</button>`).join('')}</div></div>
+      <label class="field"><span>Model</span><select class="input" data-rm>${ms === 'loading' || !ms ? '<option>Asking which models can draw…</option>' : ms.err ? `<option>${esc(ms.err)}</option>` : list.length ? list.map((x) => `<option value="${esc(x.id)}" ${x.id === s.model ? 'selected' : ''}>${esc(x.name)}</option>`).join('') : '<option>This key has no models that can draw</option>'}</select></label>
+      <label class="field"><span>What it shows (helps it keep the right things; Ask AI fills this in)</span><textarea class="input" rows="3" data-rt>${esc(s.text)}</textarea></label>
+      <label class="check"><input type="checkbox" data-rc ${s.colour ? 'checked' : ''}> Give it natural colour (for black and white or sepia)</label><p class="hint">Press Preview.</p>`;
+    d.onclick = (e) => { const b = e.target.closest('[data-rp]'); if (b) { s.provider = b.dataset.rp; s.model = ''; renderProps(); } };
+    d.onchange = (e) => { if (e.target.matches('[data-rm]')) s.model = e.target.value; if (e.target.matches('[data-rc]')) s.colour = e.target.checked; t.stale = true; };
+    d.oninput = (e) => { if (e.target.matches('[data-rt]')) { s.text = e.target.value; t.stale = true; } };
+  }
   function assessPanel(into, t) {
-    const O = IC.ollama, st = (t.oll = t.oll || { status: 'checking' }), el = document.createElement('div'); into.append(el);
+    const O = IC.ollama, CL = IC.cloud, st = (t.oll = t.oll || { status: 'checking' }), el = document.createElement('div'); into.append(el);
     const again = () => { if (tool === t) renderProps(); };
-    if (st.status === 'checking' && !st.started) { st.started = true; O.models().then((m) => { st.models = m; st.status = m.length ? 'ok' : 'none'; if (!O.cfg.model || !m.some((x) => x.name === O.cfg.model)) O.cfg.model = m.length ? m[0].name : ''; again(); }, (e) => { st.status = e.blocked ? 'blocked' : 'error'; st.err = e.message; again(); }); }
+    const prov = O.cfg.provider && O.cfg.provider !== 'ollama' && CL.has(O.cfg.provider) ? O.cfg.provider : 'ollama', cloudKeys = ['anthropic', 'gemini', 'openai'].filter((k) => CL.has(k));
+    if (cloudKeys.length) { const d = document.createElement('div'); d.className = 'field'; d.innerHTML = `<span>Who looks at it</span><div class="seg">${[['ollama', 'Ollama'], ...cloudKeys.map((k) => [k, CL.NAMES[k].split(' ')[0]])].map(([k, l]) => `<button type="button" class="btn" data-pv="${k}" aria-pressed="${k === prov}">${l}</button>`).join('')}</div>`; d.onclick = (e) => { const b = e.target.closest('[data-pv]'); if (!b) return; O.cfg.provider = b.dataset.pv; O.save(); t.oll = { status: 'checking' }; again(); }; el.append(d); }
+    if (prov !== 'ollama') {
+      // a cloud service: its own list of models that can see pictures
+      if (st.status === 'checking' && !st.started) { st.started = true; CL.models(prov).then((m) => { st.models = m.filter((x) => x.see).map((x) => ({ name: x.id, label: x.name, cloud: true })); st.status = st.models.length ? 'ok' : 'none'; const want = CL.cfg.models[prov]; O.cfg.model = want && st.models.some((x) => x.name === want) ? want : (st.models.find((x) => /sonnet|flash|gpt-5|gpt-4o|4\.1/.test(x.name)) || st.models[0] || {}).name || ''; again(); }, (e) => { st.status = 'error'; st.err = e.message; again(); }); }
+    }
+    else if (st.status === 'checking' && !st.started) { st.started = true; O.models().then((m) => { st.models = m; st.status = m.length ? 'ok' : 'none'; if (!O.cfg.model || !m.some((x) => x.name === O.cfg.model)) O.cfg.model = m.length ? m[0].name : ''; again(); }, (e) => { st.status = e.blocked ? 'blocked' : 'error'; st.err = e.message; again(); }); }
     const p = (h) => { const d = document.createElement('div'); d.innerHTML = h; el.append(d); return d; };
-    p('<p class="hint">A vision model running in <b>Ollama</b> on this computer looks at the picture and says what it is and what is wrong with it. It only describes: ImageCraft’s own tools do the work, as steps you can undo. Nothing leaves this computer.</p>');
+    p(prov === 'ollama' ? '<p class="hint">A vision model running in <b>Ollama</b> on this computer looks at the picture and says what it is and what is wrong with it. It only describes: ImageCraft’s own tools do the work, as steps you can undo. Nothing leaves this computer (unless you allow Ollama’s cloud models).</p>' : `<p class="hint"><b>${esc(CL.NAMES[prov])}</b> looks at the picture and says what it is and what is wrong with it. <b>The picture is sent to ${esc(CL.NAMES[prov].replace(/.*\((.*)\)/, '$1'))}</b> with your key. It only describes: ImageCraft’s own tools do the work, as steps you can undo.</p>`);
     if (st.status === 'checking') { p('<p class="hint">Looking for Ollama…</p>'); return; }
     if (st.status === 'blocked') { p(`<p class="hint"><b>Could not reach Ollama</b> at ${esc(O.cfg.url)}. If it is not running, start it. If it is running:</p><p class="hint">${O.ORIGIN_HELP}</p>`); }
     if (st.status === 'error') p(`<p class="hint"><b>Ollama:</b> ${esc(st.err)}</p>`);
-    if (st.status === 'none') p('<p class="hint">Ollama is running, but none of its models can see pictures. In a command prompt: <code>ollama pull qwen3.5</code> (about 6.6 GB; good at counting faces and naming colours and materials) or <code>ollama pull gemma3</code> (3.3 GB, quicker).</p>');
+    if (st.status === 'none' && prov === 'ollama') p('<p class="hint">Ollama is running, but none of its models can see pictures. In a command prompt: <code>ollama pull qwen3.5</code> (about 6.6 GB; good at counting faces and naming colours and materials) or <code>ollama pull gemma3</code> (3.3 GB, quicker).</p>');
+    if (prov !== 'ollama' && st.status === 'none') p('<p class="hint">That key has no models that can look at pictures.</p>');
     if (st.status === 'blocked' || st.status === 'error' || st.status === 'none') {
       const b = p('<div class="btns"><button class="btn outline" type="button">Try again</button></div>'); b.querySelector('button').onclick = () => { t.oll = { status: 'checking' }; again(); }; return;
     }
     const lab = document.createElement('label'); lab.className = 'field'; lab.innerHTML = '<span>Model</span>'; const sel = document.createElement('select'); sel.className = 'input';
-    st.models.forEach((m) => sel.add(new Option(`${m.name} (${m.gb.toFixed(1)} GB)`, m.name))); sel.value = O.cfg.model; sel.onchange = () => { O.cfg.model = sel.value; O.save(); }; lab.append(sel); el.append(lab);
+    st.models.forEach((m) => sel.add(new Option(prov !== 'ollama' ? m.label || m.name : m.cloud ? `${m.name} (cloud: the picture is sent to Ollama)` : `${m.name} (${m.gb.toFixed(1)} GB)`, m.name))); sel.value = O.cfg.model; sel.onchange = () => { O.cfg.model = sel.value; if (prov !== 'ollama') { CL.cfg.models[prov] = sel.value; CL.save(); } O.save(); }; lab.append(sel); el.append(lab);
+    const cl = prov !== 'ollama' ? null : p(`<label class="check"><input type="checkbox" ${O.cfg.cloud ? 'checked' : ''}> Allow cloud models (bigger and sharper-eyed, but <b>the picture is sent to Ollama’s servers</b>; your Ollama cloud plan)</label>`); if (cl) cl.querySelector('input').onchange = (e) => { O.cfg.cloud = e.target.checked; O.save(); t.oll = { status: 'checking' }; again(); };
     const look = p('<div class="btns"><button class="btn primary" type="button">Look at the picture</button></div>').querySelector('button');
     look.onclick = async () => {
       const img = t.base; busyNow('Asking Ollama…');
-      try { st.result = await O.assess(img, { model: sel.value, onStep: (m) => { if (tool === t) busyNow(m); } }); st.steps = O.recipe(st.result, img); ICLOG.add('info', `Ask AI: ${st.result.model} took ${st.result.seconds.toFixed(0)} s`); }
+      try { if (prov !== 'ollama') busyNow(`${CL.NAMES[prov]} is looking at the picture…`); st.result = prov !== 'ollama' ? await CL.describe(img, prov, sel.value) : await O.assess(img, { model: sel.value, onStep: (m) => { if (tool === t) busyNow(m); } }); lastDescription.set(pic(), st.result); st.steps = O.recipe(st.result, img); ICLOG.add('info', `Ask AI: ${st.result.model} took ${st.result.seconds.toFixed(0)} s`); }
       catch (e) { ICLOG.error('Ask AI failed', e); toast(e.blocked ? 'Could not reach Ollama.' : e.message); if (e.blocked) st.status = 'blocked'; }
       busy(null); again();
     };
@@ -1399,6 +1452,7 @@
       ] },
       { id: 'clean', label: 'Clean up', hue: '#1e9e8a', groups: [
         ['Colour', [B('Colourise', IK.colour, T('colourise'), { big: true, title: 'AI gives a black-and-white or faded photo likely colours (only the colour is guessed)' })]],
+        ['Cloud', [B('Regenerate', IK.modern, T('regen'), { big: true, title: 'Gemini or OpenAI redraws the photo, restored (your key; the picture is sent to them)' })]],
         ['Repair', [B('Repair damage', IK.dust, T('repair'), { big: true, title: 'Find specks, scratches, tears and stamps (or paint over damage) and fill them in from around them' })]],
         ['Old photo', [B('Restore old photo', IK.modern, () => openTool('modern', { kind: 'photo', bigger: 1 }), { big: true, title: 'Dust, noise, blur, colour cast and fading fixed in one go, measured from the picture' }), B('Split subject and background', IK.cutout, T('split'), { big: true, title: 'The main subject and the background as two pictures (layers), each restored its own way' }), B('Ask AI what it needs', IK.modern, T('assess'), { big: true, title: 'A vision model in Ollama on this computer looks at the picture, says what it is and what is wrong, and ticks the tools to fix it' })]],
         ['Restore', [B('Remove noise', IK.denoise, T('nlm'), { big: true, title: 'Smart noise removal (non-local means): grain and colour blotches' }), B('Deblur', IK.sharpen, T('deblur'), { big: true, title: 'Undo soft focus, out of focus or camera shake (Wiener deconvolution)' }), B('Faded detail', IK.light, T('clahe'), { big: true, title: 'Adaptive contrast for faded photos (CLAHE)' }), { col: [B('Where the noise is', IK.grid, T('noisemap')), B('Rebuild colour detail', IK.colour, T('chroma'), { title: 'Colour blocks and smears (JPEG, old scans) made to follow the real brightness detail' })] }]],
@@ -1414,6 +1468,7 @@
       { id: 'view', label: 'View', hue: '#566078', groups: [
         ['Zoom', [B('Fit', I.fit, fitView, { big: true, key: '0' }), B('100%', I.actual, actual, { big: true, key: '1' }), { col: [B('Zoom in', I.zoomIn, () => zoomBy(1.25), { key: '+' }), B('Zoom out', I.zoomOut, () => zoomBy(0.8), { key: '−' })] }]],
         ['Show', [B('Compare', IK.compare, toggleCompare, { big: true, pressed: () => view.compare }), B('Pixel grid', IK.grid, () => { view.grid = !view.grid; layout(); if (view.grid && view.zoom < 6) toast('The grid shows from 600% zoom.'); }, { big: true, pressed: () => view.grid })]],
+        ['Cloud AI', [B('Cloud AI keys', IK.modern, () => { if (!pic()) return toast('Open a picture first: the keys box opens in the tool panel beside it.'); openTool('cloudkeys'); }, { big: true, always: true, title: 'Your own Claude, Gemini and OpenAI keys (kept in this browser only)' })]],
         ['Debug', [B('Debug log', I.console, () => openDebug(), { big: true, always: true, title: 'Errors and what happened (also the Debug tab on the left)' })]],
         ['Behind see-through', [{ col: [B('Checks', IK.grid, () => setBg('check'), { pressed: () => view.bg === 'check' }), B('White', I.sun, () => setBg('white'), { pressed: () => view.bg === 'white' }), B('Black', I.moon, () => setBg('black'), { pressed: () => view.bg === 'black' })] }]],
       ] },

@@ -21,6 +21,7 @@
       <div class="tabbody" id="tab-maps" hidden><p class="hint pad">Click a map to see it full size. Every tool can use any map as a mask (its <b>Where</b> section).</p><div class="maplist" id="maplist"></div></div>
       <div class="tabbody" id="tab-debug" hidden><div class="dbg-tools"><button class="btn outline" id="dbg-copy">Copy</button><button class="btn outline" id="dbg-save">Save…</button><button class="btn outline" id="dbg-clear">Clear</button></div><label class="check pad" style="padding-top:0"><input type="checkbox" id="dbg-errors"> Errors and warnings only</label><ol class="dbg" id="dbg-list"></ol></div>
       <div class="tabbody" id="tab-hist" hidden><ol class="hist" id="hist"></ol><p class="hint pad">Click a step to go back to it. Every step can be undone; nothing changes your file until you save.</p></div>
+      <div class="infobox" id="infobox" hidden></div>
     </aside>
 
     <section class="desk" id="desk" aria-label="Picture">
@@ -34,7 +35,6 @@
       </div>
       <div class="busy" id="busy" hidden></div>
       <div class="mapbar" id="mapbar" hidden></div>
-      <div class="infobox" id="infobox" hidden></div>
       <div class="welcome" id="welcome">
         <div class="welcome-in">
           <div class="logo" id="welcome-logo"></div>
@@ -94,6 +94,7 @@
 <script src="js/tracer.js"></script>
 <script src="js/craft-ai.js"></script>
 <script src="js/ollama.js"></script>
+<script src="js/cloudai.js"></script>
 <script src="js/process.js"></script>
 <script src="js/bgremove.js"></script>
 <script src="js/formats.js"></script>

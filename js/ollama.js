@@ -7,7 +7,7 @@
 (function () {
   const IC = (window.IC = window.IC || {});
   const KEY = 'imagecraft-ollama';
-  const cfg = { url: 'http://127.0.0.1:11434', model: '' };
+  const cfg = { url: 'http://127.0.0.1:11434', model: '', cloud: false }; // cloud: also offer Ollama's cloud models (the picture is sent to Ollama's servers)
   try { Object.assign(cfg, JSON.parse(localStorage.getItem(KEY) || '{}')); } catch (e) { /* blocked storage */ }
   const save = () => { try { localStorage.setItem(KEY, JSON.stringify(cfg)); } catch (e) { /* blocked storage */ } };
 
@@ -20,17 +20,17 @@
     let r;
     try { r = await fetch(cfg.url + path, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {}); }
     catch (e) { const err = new Error('Could not reach Ollama'); err.blocked = true; throw err; }
-    if (!r.ok) throw new Error(`Ollama said ${r.status}: ${(await r.text()).slice(0, 200)}`);
+    if (!r.ok) { const t = (await r.text()).slice(0, 300); throw new Error(/does not support image input/.test(t) ? 'That model cannot look at pictures: choose another (the ones that can include kimi-k3 in the cloud, qwen3.5 and gemma3 on this computer).' : `Ollama said ${r.status}: ${t}`); }
     return r.json();
   }
   async function models() {
     const tags = await api('/api/tags'), list = [];
     for (const m of tags.models || []) {
-      if (/:cloud$/.test(m.name) || !m.size) continue; // cloud models would send the picture away
+      if (/:cloud$/.test(m.name) || !m.size) { if (cfg.cloud) list.push({ name: m.name, gb: 0, cloud: true }); continue; } // cloud models send the picture away: only when allowed (Ollama does not say which can see; one that cannot says so when asked)
       let caps = []; try { caps = (await api('/api/show', { model: m.name })).capabilities || []; } catch (e) { /* skip */ }
       if (caps.includes('vision')) list.push({ name: m.name, gb: m.size / 1e9 });
     }
-    return list.sort((a, b) => rank(a.name) - rank(b.name) || a.gb - b.gb);
+    return list.sort((a, b) => (b.cloud && /^kimi/.test(b.name) ? 1 : 0) - (a.cloud && /^kimi/.test(a.name) ? 1 : 0) || rank(a.name) - rank(b.name) || a.gb - b.gb);
   }
 
   const PROBLEMS = ['noise or grain', 'blur', 'jpeg blocks', 'dust and specks', 'scratches', 'tears or missing parts', 'faded', 'colour cast', 'haze', 'too dark', 'too bright', 'low resolution', 'halftone dots', 'creases', 'stains'];
@@ -95,5 +95,5 @@
   const notYet = (a) => a.problems.filter((p) => ['scratches', 'tears or missing parts', 'creases', 'stains', 'halftone dots'].includes(p));
 
   const ORIGIN_HELP = 'Ollama only answers pages it trusts. A page opened from a file has no web address, so Ollama refuses it until it is told to allow it. In a Windows command prompt:<br><code>setx OLLAMA_ORIGINS *</code><br>then quit Ollama (its icon by the clock › Quit) and start it again. <b>*</b> lets any page use Ollama, including websites, so you may prefer to set it only while using ImageCraft.';
-  IC.ollama = { cfg, save, models, assess, recipe, notYet, PROBLEMS, ORIGIN_HELP };
+  IC.ollama = { cfg, save, models, assess, recipe, notYet, PROBLEMS, SCHEMA, PROMPT, ORIGIN_HELP };
 })();
