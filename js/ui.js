@@ -203,6 +203,26 @@
     if (view.compare && b) { if (v0.width !== b.width || v0.height !== b.height) { v0.width = b.width; v0.height = b.height; } v0.getContext('2d').putImageData(b, 0, 0); }
     layout();
   }
+  // the repair brush: paint marks damage (red over the picture), the right button or Alt takes it away
+  let repairPaint = null;
+  function paintAt(px, py, erase) {
+    const t = tool, b = t.base, W = b.width, H = b.height; if (!repairPaint || repairPaint.length !== W * H) repairPaint = new Uint8Array(W * H);
+    const r = Math.max(1, t.s.brush / 2), x0 = Math.max(0, Math.floor(px - r)), x1 = Math.min(W - 1, Math.ceil(px + r)), y0 = Math.max(0, Math.floor(py - r)), y1 = Math.min(H - 1, Math.ceil(py + r));
+    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) if ((x - px) ** 2 + (y - py) ** 2 <= r * r) repairPaint[y * W + x] = erase ? 0 : 1;
+    t.preview = markOver(b, repairDamage(b, t.s)); t.stale = true; show();
+  }
+  async function pickDamage(px, py, erase) {
+    const t = tool, b = t.base, W = b.width, H = b.height; busyNow('Outlining it (the first time downloads the picker)…');
+    try {
+      const c = X.canvasOf(b), r = await CRAFTAI.pick(c, [[px / W, py / H, 1]]); if (tool !== t) return;
+      if (!repairPaint || repairPaint.length !== W * H) repairPaint = new Uint8Array(W * H);
+      for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (r.a[Math.min(r.H - 1, Math.floor(((y + 0.5) * r.H) / H)) * r.W + Math.min(r.W - 1, Math.floor(((x + 0.5) * r.W) / W))] > 127) repairPaint[y * W + x] = erase ? 0 : 1;
+      t.preview = markOver(b, repairDamage(b, t.s)); t.stale = true; show();
+    } catch (e) { ICLOG.error('Picking failed', e); toast('Could not outline it: ' + e.message); }
+    busy(null);
+  }
+  const repairDamage = (img, s) => { let m = IC.maps.damage(img, s); if (repairPaint && repairPaint.length === m.length) m = m.map((v, i) => Math.max(v, repairPaint[i])); return IC.maps.grow(m, img.width, img.height, s.grow); };
+  const markOver = (img, m) => { const o = new ImageData(new Uint8ClampedArray(img.data), img.width, img.height), d = o.data; for (let p = 0; p < m.length; p++) if (m[p] > 0.5) { d[p * 4] = Math.round(d[p * 4] * 0.35 + 255 * 0.65); d[p * 4 + 1] = Math.round(d[p * 4 + 1] * 0.35); d[p * 4 + 2] = Math.round(d[p * 4 + 2] * 0.35 + 40); } return o; };
   // the picture compared against: before the open tool, or else the original
   const compareBase = () => (tool && tool.preview ? tool.base : pic() ? pic().steps[0].img : null);
   function layout() {
@@ -241,6 +261,8 @@
     if (e.target === $('split')) { drag = { kind: 'split' }; $('desk').setPointerCapture(e.pointerId); return; }
     const [px, py] = atPic(e), img = shown();
     if (e.button === 0 && tool && tool.def.pick && px >= 0 && py >= 0 && px < img.width && py < img.height) { const i = ((py | 0) * img.width + (px | 0)) * 4, d = (tool.base || img).data; tool.def.pick(tool.s, [d[i], d[i + 1], d[i + 2]], px / img.width, py / img.height); renderProps(); schedule(0); return; }
+    if ((e.button === 0 || e.button === 2) && tool && tool.def.paint && tool.s.mark === 'pick' && px >= 0 && py >= 0 && px < img.width && py < img.height) { pickDamage(px, py, e.button === 2 || e.altKey); return; }
+    if ((e.button === 0 || e.button === 2) && tool && tool.def.paint && px >= 0 && py >= 0 && px < img.width && py < img.height) { drag = { kind: 'paint', erase: e.button === 2 || e.altKey }; paintAt(px, py, drag.erase); $('desk').setPointerCapture(e.pointerId); return; }
     if (e.button === 0 && tool && tool.def.id === 'crop' && px >= 0 && py >= 0 && px < img.width && py < img.height) { drag = { kind: 'newcrop', x0: px, y0: py }; $('desk').setPointerCapture(e.pointerId); return; }
     if (e.button === 0 || e.button === 1) { e.preventDefault(); drag = { kind: 'pan', sx: e.clientX, sy: e.clientY, vx: view.x, vy: view.y }; $('desk').classList.add('panning'); $('desk').setPointerCapture(e.pointerId); }
   });
@@ -249,10 +271,12 @@
     if (img && !drag) { const [px, py] = atPic(e); hover = px >= 0 && py >= 0 && px < img.width && py < img.height ? [px | 0, py | 0] : null; statusHover(); }
     if (!drag) return;
     if (drag.kind === 'pan') { view.x = drag.vx + e.clientX - drag.sx; view.y = drag.vy + e.clientY - drag.sy; view.fit = false; layout(); }
+    else if (drag.kind === 'paint') { const [px, py] = atPic(e); paintAt(px, py, drag.erase); }
     else if (drag.kind === 'split') { const r = $('stage').getBoundingClientRect(); view.split = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)); layout(); }
     else if (drag.kind === 'newcrop') { const [px, py] = atPic(e), s = tool.s; s.x = Math.max(0, Math.min(drag.x0, px)); s.y = Math.max(0, Math.min(drag.y0, py)); s.w = Math.min(img.width, Math.max(drag.x0, px)) - s.x; s.h = Math.min(img.height, Math.max(drag.y0, py)) - s.y; cropRatio(s, 'se'); placeCrop(); syncCropFields(); }
   });
-  $('desk').addEventListener('pointerup', () => { if (drag && drag.kind === 'newcrop') renderProps(); drag = null; $('desk').classList.remove('panning'); });
+  $('desk').addEventListener('contextmenu', (e) => { if (tool && tool.def.paint) e.preventDefault(); });
+  $('desk').addEventListener('pointerup', () => { if (drag && drag.kind === 'paint') renderProps(); if (drag && drag.kind === 'newcrop') renderProps(); drag = null; $('desk').classList.remove('panning'); });
   $('desk').addEventListener('pointerleave', () => { hover = null; statusHover(); });
   $('desk').addEventListener('auxclick', (e) => { if (e.button === 1) e.preventDefault(); });
 
@@ -408,6 +432,26 @@
       fields: [note('A JPEG keeps the brightness in full but the colour at half size, in 8 × 8 blocks; old prints and scans smear colour more than brightness too. Colour edges almost always sit on brightness edges, so the colour is made to follow the brightness detail that is really there. Nothing is invented and the brightness is not touched.'),
         range('size', 'Block size to smooth over', 2, 16), range('strength', 'Strength %', 0, 100), note('4 is best for most JPEGs (tested: colour error 2.2 dB lower on a heavily compressed one). Raise it when False colour shows big colour blocks.')],
       run: (img, s) => X.chromaRebuild(img, s) },
+    repair: { title: 'Repair damage', icon: IK.dust, live: false, paint: true, s: { specks: true, flecks: false, stamp: false, level: 50, grow: 2, how: 'ai', mark: 'paint', brush: 14 },
+      fields: [note('Marks the damage, then fills it in from what is around it. Specks are found by themselves; <b>mark tears, flaking and stains yourself</b>: paint over them with the left mouse button, or click one and the AI outlines it. The right button takes marks away; the middle button moves the picture. Red shows what will be filled.'),
+        seg('mark', 'Mark by', [['paint', 'Painting'], ['pick', 'Clicking (AI outlines it)']]),
+        chk('specks', 'Specks and dust (found by themselves)'), chk('flecks', 'White or black flecks and thin scratches (can catch thin white things such as poles: check the red)'), chk('stamp', 'Date stamp (orange numbers near the bottom)'),
+        range('level', 'Sensitivity', 0, 100), range('grow', 'Take a little more round each mark (pixels)', 0, 8), range('brush', 'Brush size (pixels)', 2, 80, 1, (s) => s.mark === 'paint'),
+        seg('how', 'Fill with', [['ai', 'AI (MI-GAN): best for anything bigger than a speck'], ['smooth', 'Smooth fill: specks and thin cracks']]),
+        { t: 'btns', buttons: [{ label: 'Show what will be filled', run: () => { if (!tool) return; tool.preview = markOver(tool.base, repairDamage(tool.base, tool.s)); tool.stale = true; show(); } }, { label: 'Clear the painting', run: () => { repairPaint = null; if (tool) { tool.preview = null; show(); } } }] },
+        { t: 'out' }, note('The AI draws what is missing from what is around it; check faces closely. The first use downloads it (about 28 MB). Press Preview.')],
+      report: () => (tool && tool.holePct != null ? `<p class="hint"><b>${tool.holePct < 0.1 ? tool.holePct.toFixed(2) : tool.holePct.toFixed(1)}%</b> of the picture filled.${tool.holePct > 15 && tool.s.how === 'ai' ? ' <b>That is a lot:</b> over large areas the AI invents what is there (it can draw odd things); it works best on specks, scratches and tears of moderate size. Check closely, or mark less.' : ''}</p>` : ''),
+      run: async (img, s, say) => {
+        const hole = repairDamage(img, s); let n = 0; for (let i = 0; i < hole.length; i++) n += hole[i] > 0.5; if (tool) tool.holePct = (100 * n) / hole.length;
+        if (!n) throw new Error('Nothing is marked: paint over the damage or click it, or tick a kind of damage.');
+        let out;
+        if (s.how === 'ai') { say && say('Filling in the damage (AI; the first time downloads it)…'); out = await CRAFTAI.inpaint(img, IC.maps.grow(hole, img.width, img.height, 2)); } // the model keeps a thin ring at a hole's edge, so it gets the hole 2 pixels wider
+        else out = IC.maps.fillGap(img, hole);
+        // only the marked parts change (feathered by a pixel), so the rest stays exactly the original
+        const soft = IC.maps.box(hole, img.width, img.height, 1), o = new ImageData(new Uint8ClampedArray(img.data), img.width, img.height), d = o.data, a = out.data;
+        for (let p = 0; p < soft.length; p++) { const k = Math.max(hole[p], soft[p]); if (k > 0) for (let c = 0; c < 3; c++) d[p * 4 + c] = Math.round(d[p * 4 + c] + (a[p * 4 + c] - d[p * 4 + c]) * k); }
+        return o;
+      } },
     falsecolour: { title: 'False colour', icon: IK.colour, toNew: 'false colour', applyLabel: 'Open as a new picture', s: { amount: 100 },
       fields: [note('Each colour separation (cyan, magenta, yellow) is stretched to its own full range and inked again, so differences of a few percent become strong colours. On a black-and-white or sepia print it shows stains, uneven toning, fading and retouching; on a faded colour print, which dye layer has gone. For looking and for masks: it is not the real colour.'), range('amount', 'Amount %', 0, 100), { t: 'out' }],
       report: () => (tool && tool.out && tool.out.ranges ? `<p class="hint">How much of each ink this picture really holds: ${['cyan', 'magenta', 'yellow'].map((n, i) => `${n} ${Math.round(tool.out.ranges[i][0] * 100)}–${Math.round(tool.out.ranges[i][1] * 100)}%`).join(', ')}.</p>` : ''),
@@ -530,12 +574,14 @@
       } },
     modern: { title: 'Modernise', icon: IK.modern, live: false, s: (img) => ({ kind: img.width * img.height < 90000 ? 'pixel' : 'photo', bigger: 2, useAi: false }),
       fields: [seg('kind', 'What kind of picture', [['pixel', 'Pixel art'], ['screen', 'Dithered screen'], ['photo', 'Old photo or scan'], ['jpeg', 'Blocky JPEG']]), seg('bigger', 'Make it bigger', [[1, 'No'], [2, '2×'], [4, '4×']]), chk('useAi', 'Use AI upscaling (slower; downloads a model once)', (s) => s.kind !== 'pixel' && +s.bigger > 1),
-        note('Pixel art: grown with smooth, rounded edges. Dithered screen: dots blended to smooth colour. Old photo: dust, smart noise removal, a gentle deblur, colour cast, levels and faded detail. Blocky JPEG: blocks smoothed.'), note('Press Preview to see it first.')],
+        note('Pixel art: grown with smooth, rounded edges. Dithered screen: dots blended to smooth colour. Old photo: JPEG blocks (when there are any), dust, smart noise removal, a gentle deblur, colour cast, levels and faded detail. Blocky JPEG: blocks smoothed.'), note('Press Preview to see it first.')],
       run: async (img, s, say) => {
         const k = +s.bigger; let o = img;
         if (s.kind === 'pixel') { if (k > 1) o = X.resize(img, { width: img.width * k, height: img.height * k, method: 'smoothpixel' }); return X.sharpen(o, { amount: 30, radius: 1 }); }
         if (s.kind === 'screen') { say && say('Blending the dots…'); o = X.undither(o, { strength: 65 }); }
         // old photo, in the usual restoration order: dust, noise (grain and colour separately), a little deblur, then tone
+        // JPEG blocks first (a photo passed round online is often heavily compressed): measured, so a clean scan is left alone
+        if (s.kind === 'photo') { const bl = IC.restore.blockiness(o); if (bl.luma > 1.3) { say && say('Smoothing the JPEG blocks…'); o = X.deblock(o, { strength: 50 }); } if (bl.colour > 2) o = X.chromaRebuild(o, { size: 8 }); }
         if (s.kind === 'photo') { say && say('Dust and noise…'); o = IC.restore.impulse(o, { threshold: 30 }); const n = IC.restore.noiseLevel(o); if (n.luma > 1 || n.chroma > 1) o = IC.restore.nlm(o, nlmFor(n)); say && say('Sharpness and tone…'); const m = IC.restore.measure(o); if (m && m.radius > 0.8) o = IC.restore.deblur(o, { kind: 'gauss', radius: Math.min(3, m.radius * 0.7), noise: kFor(IC.restore.noiseLevel(o).luma) + 20, strength: 60 }); const toned = X.isToned(o) || undefined, hz = X.hazeLevel(o); if (hz > 0.22) o = X.dehaze(o, { strength: Math.min(80, (hz - 0.15) * 300), keepSome: 0.15 }); o = X.clarity(X.autoColour(X.shadowRecover(o, { shadows: 40, highlights: 15, detail: 5, maxGain: 2.5 }), { strength: 100, keepTone: toned ? true : 'auto' }), { amount: 30 }); }
         if (s.kind === 'jpeg') { say && say('Smoothing the blocks…'); o = X.deblock(o, { strength: 60 }); }
         if (k > 1) o = s.useAi ? await upscaleWith(o, s.kind === 'jpeg' || s.kind === 'photo' ? (k === 2 ? 'ai-esrgan2' : 'ai-esrgan') : 'ai-sharp', k, say) : X.resize(o, { width: o.width * k, height: o.height * k });
@@ -659,7 +705,7 @@
   // ------------------------------------------------------------------ running a tool
   let tool = null, token = 0, timer = null;
   // Where: any tool that keeps the picture's size can work only where a map says (a mask: white = apply, black = leave)
-  const NO_MASK = new Set(['resize', 'crop', 'canvas', 'straighten', 'looks', 'text', 'trace', 'upscale', 'remaster', 'modern', 'depth', 'noisemap', 'stack', 'split', 'falsecolour', 'assess']);
+  const NO_MASK = new Set(['resize', 'crop', 'canvas', 'straighten', 'looks', 'text', 'trace', 'upscale', 'remaster', 'modern', 'depth', 'noisemap', 'stack', 'split', 'falsecolour', 'assess', 'repair']);
   const maskable = (def) => !NO_MASK.has(def.id) && !def.viewOnly;
   const MASK_FIELDS = [
     { t: 'html', html: () => '<h3 style="margin:10px 0 0">Where</h3>' },
@@ -674,6 +720,7 @@
   const isLive = (t) => (typeof t.def.live === 'function' ? t.def.live(t.s) : t.def.live !== false);
   function openTool(id, preset) {
     if (!pic()) { toast('Open a picture first.'); return; }
+    if (id === 'repair') repairPaint = null; // a fresh painting each time
     if (tool) closeTool(true);
     const def = TOOLS[id], base = now();
     tool = { def, base, s: { ...JSON.parse(JSON.stringify(typeof def.s === 'function' ? def.s(base) : def.s)), ...(preset || {}) }, preview: null };
@@ -701,7 +748,7 @@
     const look = p('<div class="btns"><button class="btn primary" type="button">Look at the picture</button></div>').querySelector('button');
     look.onclick = async () => {
       const img = t.base; busyNow('Asking Ollama…');
-      try { st.result = await O.assess(img, { model: sel.value, onStep: (m) => { if (tool === t) busyNow(m); } }); st.steps = O.recipe(st.result); ICLOG.add('info', `Ask AI: ${st.result.model} took ${st.result.seconds.toFixed(0)} s`); }
+      try { st.result = await O.assess(img, { model: sel.value, onStep: (m) => { if (tool === t) busyNow(m); } }); st.steps = O.recipe(st.result, img); ICLOG.add('info', `Ask AI: ${st.result.model} took ${st.result.seconds.toFixed(0)} s`); }
       catch (e) { ICLOG.error('Ask AI failed', e); toast(e.blocked ? 'Could not reach Ollama.' : e.message); if (e.blocked) st.status = 'blocked'; }
       busy(null); again();
     };
@@ -1181,6 +1228,7 @@
         ['See-through', [{ col: [B('Make a colour see-through', IK.clearC, T('clear')), B('Fill see-through parts', IK.canvas, T('flatten')), B('Remove background', IK.cutout, T('cutout'))] }]],
       ] },
       { id: 'clean', label: 'Clean up', hue: '#1e9e8a', groups: [
+        ['Repair', [B('Repair damage', IK.dust, T('repair'), { big: true, title: 'Find specks, scratches, tears and stamps (or paint over damage) and fill them in from around them' })]],
         ['Old photo', [B('Restore old photo', IK.modern, () => openTool('modern', { kind: 'photo', bigger: 1 }), { big: true, title: 'Dust, noise, blur, colour cast and fading fixed in one go, measured from the picture' }), B('Split subject and background', IK.cutout, T('split'), { big: true, title: 'The main subject and the background as two pictures (layers), each restored its own way' }), B('Ask AI what it needs', IK.modern, T('assess'), { big: true, title: 'A vision model in Ollama on this computer looks at the picture, says what it is and what is wrong, and ticks the tools to fix it' })]],
         ['Restore', [B('Remove noise', IK.denoise, T('nlm'), { big: true, title: 'Smart noise removal (non-local means): grain and colour blotches' }), B('Deblur', IK.sharpen, T('deblur'), { big: true, title: 'Undo soft focus, out of focus or camera shake (Wiener deconvolution)' }), B('Faded detail', IK.light, T('clahe'), { big: true, title: 'Adaptive contrast for faded photos (CLAHE)' }), { col: [B('Where the noise is', IK.grid, T('noisemap')), B('Rebuild colour detail', IK.colour, T('chroma'), { title: 'Colour blocks and smears (JPEG, old scans) made to follow the real brightness detail' })] }]],
         ['Clean', [B('Smooth out noise', IK.denoise, T('denoise'), { big: true }), B('Dust and scratches', IK.dust, T('despeckle'), { big: true }), B('JPEG blocks', IK.jpeg, T('deblock'), { big: true, title: 'Remove JPEG blocks and smudges' }), B('Undither', IK.undither, T('undither'), { big: true, title: 'Blend dithering dots back into smooth colour' }), B('Banding', IK.undither, T('deband'), { big: true, title: 'Smooth out stripes in skies and shadows (banding)' })]],

@@ -71,11 +71,14 @@
   }
 
   // what to do about it: ImageCraft's own tools, in the order a restorer would use them
-  function recipe(a) {
+  function recipe(a, img) {
     const has = (p) => a.problems.includes(p), toned = a.colour === 'sepia or toned' || a.colour === 'black and white', photo = /photo|print/.test(a.kind), out = [];
     const add = (id, why, on = true, s = {}) => out.push({ id, why, on, s });
     if (has('dust and specks')) add('despeckle', 'dust and specks');
-    if (has('jpeg blocks')) add('deblock', 'JPEG blocks');
+    // blocks are measured too (models rarely notice them)
+    const bl = img && IC.restore ? IC.restore.blockiness(img) : null;
+    if (has('jpeg blocks') || (bl && bl.luma > 1.3)) add('deblock', bl && bl.luma > 1.3 ? `JPEG blocks (measured ${bl.luma.toFixed(1)}× at the block edges)` : 'JPEG blocks');
+    if (bl && bl.colour > 2) add('chroma', `blocky colour (measured ${bl.colour.toFixed(1)}×)`, true, { size: 8 });
     if (has('noise or grain')) add('nlm', 'noise or grain');
     if (has('blur')) add('deblur', 'blur');
     if (has('haze')) add('dehaze', 'haze');

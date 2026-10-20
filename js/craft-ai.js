@@ -6,6 +6,7 @@
                                                                            or BEN2 (MIT) for the best quality (slower)
      pick(src, pts)         → { W, H, a }  pts = [[u, v, 1 keep | 0 not]]  SlimSAM (Apache-2.0)
      find(src, words)       → { w, h, maps: [Float32Array 0–1] } one map per word or phrase   CLIPSeg (Apache-2.0)
+     inpaint(img, hole)     → ImageData with the hole (Float32Array, 1 = fill) drawn in      MI-GAN (MIT)
      upscale(src, kind)     → canvas, 2× or 4× bigger                       Swin2SR (Apache-2.0): 'sharp' 2×, 'photo' 4×
                                                                            (real-world photos: noise and blur), 'jpeg' 4×
    The models come from huggingface.co; the library (Transformers.js, Apache-2.0) is lib/craft-ai-libs.js. */
@@ -21,9 +22,10 @@
     esrgan: { raw: 'https://huggingface.co/SceneWorks/real-esrgan-onnx/resolve/main/real_esrgan_x4.onnx', name: 'Upscale 4× (Real-ESRGAN, real photos)', what: 'The standard for real-world photos: four times bigger, with crisp edges and natural texture in grass, gravel, fabric and leaves; also cleans JPEG blocks and noise.', mb: { gpu: 67, cpu: 67 }, licence: 'BSD-3-Clause', scale: 4 },
     esrgan2: { raw: 'https://huggingface.co/SceneWorks/real-esrgan-onnx/resolve/main/real_esrgan_x2.onnx', name: 'Upscale 2× (Real-ESRGAN)', what: 'Real-ESRGAN at twice the size, for photos that only need a little more.', mb: { gpu: 67, cpu: 67 }, licence: 'BSD-3-Clause', scale: 2 },
     find: { id: 'Xenova/clipseg-rd64-refined', name: 'Find things by name', what: 'Finds sky, grass, trees, people, clothes, buildings and anything you name in a picture, by what they are rather than by their colour, so it works on sepia and faded prints too. (About 15 seconds a picture on the processor.)', mb: { gpu: 139, cpu: 139 }, licence: 'Apache-2.0' },
+    inpaint: { raw: 'https://huggingface.co/andraniksargsyan/migan/resolve/main/migan_pipeline_v2.onnx', name: 'Repair (fill in damage)', what: 'Fills tears, scratches, holes and stamps from what is around them (MI-GAN, Picsart). It invents what is missing, so use it where the original is lost.', mb: { gpu: 28, cpu: 28 }, licence: 'MIT' },
     pick: { id: 'Xenova/slimsam-77-uniform', name: 'Pick an object', what: 'Click an object in a picture and it is outlined for you, to keep or take out.', mb: { gpu: 21, cpu: 14 }, licence: 'Apache-2.0' },
   };
-  const DEFAULTS = { on: true, gpu: null, use: { cutout: true, best: false, sharp: true, photo: true, jpeg: true, esrgan: true, esrgan2: true, find: true, pick: true } };
+  const DEFAULTS = { on: true, gpu: null, use: { cutout: true, best: false, sharp: true, photo: true, jpeg: true, esrgan: true, esrgan2: true, find: true, inpaint: true, pick: true } };
   let settings = DEFAULTS;
   try { settings = { ...DEFAULTS, ...JSON.parse(localStorage.getItem(KEY) || '{}') }; settings.use = { ...DEFAULTS.use, ...(settings.use || {}) }; } catch (e) { /* ignore */ }
   const save = () => { try { localStorage.setItem(KEY, JSON.stringify(settings)); } catch (e) { /* ignore */ } };
@@ -254,6 +256,17 @@
       return { w, h, maps };
     });
   }
+  // Fill in damage (MI-GAN): the picture (8-bit, channels first) and a mask (255 = keep, 0 = fill) in; the picture
+  // back with the gaps drawn from their surroundings (the model's own pipeline file crops, resizes and blends)
+  async function inpaint(img, hole) {
+    const T = await lib(), W = img.width, H = img.height, N = W * H, s = img.data, im = new Uint8Array(3 * N), mk = new Uint8Array(N);
+    for (let p = 0; p < N; p++) { for (let c = 0; c < 3; c++) im[c * N + p] = s[p * 4 + c]; mk[p] = hole[p] > 0.5 ? 0 : 255; }
+    const o = await run('inpaint', (ses) => ses.run({ [ses.inputNames[0]]: new T.ort.Tensor('uint8', im, [1, 3, H, W]), [ses.inputNames[1]]: new T.ort.Tensor('uint8', mk, [1, 1, H, W]) }).then((x) => x[ses.outputNames[0]]));
+    const d = o.data, oh = o.dims[o.dims.length - 2], ow = o.dims[o.dims.length - 1]; if (oh !== H || ow !== W) throw new Error(`The repair model gave ${ow} × ${oh} for ${W} × ${H}.`);
+    const out = new ImageData(W, H), od = out.data, f = d instanceof Float32Array ? (v) => Math.round(Math.max(0, Math.min(255, v))) : (v) => v;
+    for (let p = 0; p < N; p++) { for (let c = 0; c < 3; c++) od[p * 4 + c] = f(d[c * N + p]); od[p * 4 + 3] = s[p * 4 + 3]; }
+    return out;
+  }
   function pick(src, pts) {
     return remember('pick:' + keyOf(src) + JSON.stringify(pts), (async () => {
       const T = await lib(), c = await canvasOf(src, 1024), image = await rawOf(T, c);
@@ -330,5 +343,5 @@
     };
   }
 
-  window.CRAFTAI = { find, sizeOf, probe: () => probed, found: () => found, settings: () => settings, enabled, ready, cutout, pick, upscale, onProgress, downloaded, forget, openSettings, MODELS };
+  window.CRAFTAI = { inpaint, find, sizeOf, probe: () => probed, found: () => found, settings: () => settings, enabled, ready, cutout, pick, upscale, onProgress, downloaded, forget, openSettings, MODELS };
 })();

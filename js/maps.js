@@ -221,5 +221,30 @@
     for (let p = 0; p < n; p++) { const o = p * 4, kk = 1 - 0.5 * K[p]; for (let c = 0; c < 3; c++) d[o + c] = Math.round(s[o + c] * (1 - k) + 255 * (1 - sep[c][p]) * kk * k); d[o + 3] = s[o + 3]; }
     out.ranges = ranges; return out;
   }
-  IC.maps = { fillGap, addFind, known, share, castRatio, colourBlind, stretch, falseColour, LIST, make, heat, grey, mask, apply, box, combined, OPS, prepare };
+  // ------------------------------------------------------------------ damage, found for repair
+  // Found automatically only where it can be told from detail with confidence (on test photos a looser finder marked
+  // 20–67% of the picture, hair and faces included): specks (the speck finder: isolated pixels beyond all but one of
+  // their neighbours), white or black flecks and thin scratches (pure, colourless, and narrower than 7 pixels: what a
+  // small opening or closing takes away), and an orange date stamp near the bottom. Tears and flaking are marked by
+  // hand (paint, or click and the AI outlines them).
+  function minMax(A, W, H, r, isMax) {
+    const t = new Float32Array(A.length), o = new Float32Array(A.length);
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { let m = isMax ? -1e9 : 1e9; for (let i = Math.max(0, x - r); i <= Math.min(W - 1, x + r); i++) { const v = A[y * W + i]; m = isMax ? Math.max(m, v) : Math.min(m, v); } t[y * W + x] = m; }
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { let m = isMax ? -1e9 : 1e9; for (let j = Math.max(0, y - r); j <= Math.min(H - 1, y + r); j++) { const v = t[j * W + x]; m = isMax ? Math.max(m, v) : Math.min(m, v); } o[y * W + x] = m; }
+    return o;
+  }
+  function damage(img, { specks = true, flecks = false, stamp = false, level = 50 } = {}) {
+    const W = img.width, H = img.height, n = W * H, d = img.data, o = new Float32Array(n), k = 1.6 - level / 100;
+    if (specks) { const f = IC.restore.impulse(img, { threshold: Math.round(30 * k + 5) }).data; for (let p = 0; p < n; p++) if (Math.abs(f[p * 4] - d[p * 4]) + Math.abs(f[p * 4 + 1] - d[p * 4 + 1]) + Math.abs(f[p * 4 + 2] - d[p * 4 + 2]) > 6) o[p] = 1; }
+    if (flecks) {
+      const L = new Float32Array(n), C = new Float32Array(n); for (let p = 0; p < n; p++) { const r = d[p * 4], g = d[p * 4 + 1], b = d[p * 4 + 2]; L[p] = 0.299 * r + 0.587 * g + 0.114 * b; C[p] = Math.max(r, g, b) - Math.min(r, g, b); }
+      const nz = IC.restore.noiseLevel ? IC.restore.noiseLevel(img).luma : 3, t = Math.max(30, nz * 6) * k, open = minMax(minMax(L, W, H, 3, false), W, H, 3, true), close = minMax(minMax(L, W, H, 3, true), W, H, 3, false);
+      for (let p = 0; p < n; p++) if (C[p] < 35 && ((L[p] > 205 && L[p] - open[p] > t) || (L[p] < 45 && close[p] - L[p] > t))) o[p] = 1;
+    }
+    if (stamp) for (let y = Math.floor(H * 0.65); y < H; y++) for (let x = 0; x < W; x++) { const p = y * W + x, r = d[p * 4] / 255, g = d[p * 4 + 1] / 255, b = d[p * 4 + 2] / 255, mx = Math.max(r, g, b), mn = Math.min(r, g, b); if (mx < 0.5 || mx - mn < 0.5 * mx) continue; let h = mx === r ? ((g - b) / (mx - mn)) * 60 : mx === g ? (2 + (b - r) / (mx - mn)) * 60 : (4 + (r - g) / (mx - mn)) * 60; if (h < 0) h += 360; if (h < 45 || h > 330) o[p] = 1; }
+    return o;
+  }
+  // a mask grown by r pixels (anything near a marked pixel is marked)
+  const grow = (M, W, H, r) => (r > 0 ? box(M, W, H, r).map((v) => (v > 0.001 ? 1 : 0)) : M);
+    IC.maps = { damage, grow, fillGap, addFind, known, share, castRatio, colourBlind, stretch, falseColour, LIST, make, heat, grey, mask, apply, box, combined, OPS, prepare };
 })();

@@ -90,6 +90,14 @@ Every picture is expanded to full colour when it opens, so a palette never limit
 - **Smooth jagged edges**: an edge check marks staircase edges in red and smooth ones in green; smoothing works along each edge, never across it. Also in Resize, Make bigger, and in **Save as**, which checks the edges of what is about to be saved and suggests smoothing when they are jagged.
 - **Remaster shapes**: the picture's shapes are recognised as clean outlines (near-circles and ellipses become perfect ones, near-polygons get straight sides), drawn again crisply at the new size, then blended with the enlarged original band by band (multi-band pyramid blending), at the edges only (keeping the original's texture) or everywhere. For logos, clip art, icons, pixel art and drawings.
 
+### Repair damage
+
+**Clean up › Repair › Repair damage** marks the damage and fills it in from what is around it.
+- **Found by themselves**: specks and dust (from the speck finder), and optionally white or black flecks and thin scratches, and an orange date stamp near the bottom. On test photos the automatic marks cover about 0.2% of the picture. An earlier, looser finder marked 20–67% (hair and faces too), so it was made strict.
+- **Marked by you**: tears, flaking and stains. **Paint** over them (left button; the right button takes marks away), or **click** one and the AI picker outlines it. Red shows what will be filled.
+- **Fill with**: **AI** (MI-GAN, MIT, about 28 MB the first time, a few seconds on a graphics card), or **Smooth fill** for specks and thin cracks. Only the marked pixels change. Over large areas the AI invents what is there, so ImageCraft warns when more than 15% is marked.
+- **JPEG blocks**: photos passed round online are often heavily compressed. Modernise › Old photo and Ask AI now measure the 8 × 8 blocks (edges across the block borders against edges elsewhere: about 1 for a clean picture, 1.8–2.4 on the test photos, colour 6) and smooth them first, back to 1.1–1.3.
+
 ### Clean up and modernise
 
 - **Smooth out noise** (edges stay sharp), **Dust and scratches**, **Remove JPEG blocks**, **Undither** (blends dithering dots back into smooth colour).
@@ -160,6 +168,7 @@ Open-source libraries it uses are listed with their licences in Credits.
 - [ImageTracer](https://github.com/jankovicsandras/imagetracerjs) (public domain / Unlicense) for SVG outlines.
 - [Transformers.js](https://github.com/huggingface/transformers.js) and ONNX Runtime Web (Apache-2.0) for the AI helpers, in `lib/craft-ai-libs.js`. Models: U²-Net (Apache-2.0), BEN2 (MIT), SlimSAM (Apache-2.0), Swin2SR (Apache-2.0), Real-ESRGAN (BSD-3-Clause; the ONNX export by SceneWorks).
 - [CLIPSeg](https://huggingface.co/CIDAS/clipseg-rd64-refined) (Apache-2.0), run through Transformers.js, finds things by name.
+- [MI-GAN](https://github.com/Picsart-AI-Research/MI-GAN) (MIT) fills in damage; the ONNX pipeline file is from huggingface.co/andraniksargsyan/migan.
 - [MediaPipe Tasks Vision](https://github.com/google-ai-edge/mediapipe) and its Face Landmarker model (Apache-2.0), bundled as `lib/craft-face-libs.js` (built from `lib/face-build`).
 - Smart sharpen follows AMD FidelityFX CAS (MIT); the method was re-written here from its published description, not copied.
 - [Instrument Sans](https://github.com/Instrument/instrument-sans) (SIL Open Font License) for the interface.
