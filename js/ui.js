@@ -109,7 +109,7 @@
     cur = i; view.fit = true; renderPics(); renderHist(); renderProps(); show(); fitView(); status();
     $('welcome').hidden = !!pic(); $('stage').hidden = !pic();
     if (fresh) colourCount();
-    renderInfo();
+    renderInfo(); renderMaps(); // the Maps tab, if it is showing, follows the picture
   }
   function push(label, img, deep, how) {
     const p = pic(); p.steps.length = p.at + 1; p.steps.push({ label, img, deep: deep || undefined, how: how || undefined });
@@ -280,7 +280,7 @@
   });
   $('desk').addEventListener('pointermove', (e) => {
     const img = shown();
-    if (img && !drag) { const [px, py] = atPic(e); hover = px >= 0 && py >= 0 && px < img.width && py < img.height ? [px | 0, py | 0] : null; statusHover(); }
+    if (img && !drag) { const [px, py] = atPic(e); hover = px >= 0 && py >= 0 && px < img.width && py < img.height ? [px | 0, py | 0] : null; hoverAt = hover ? [e.clientX, e.clientY] : null; if (!hover && $('loupe')) $('loupe').hidden = true; statusHover(); }
     if (!drag) return;
     if (drag.kind === 'pan') { view.x = drag.vx + e.clientX - drag.sx; view.y = drag.vy + e.clientY - drag.sy; view.fit = false; layout(); }
     else if (drag.kind === 'paint') { const [px, py] = atPic(e); paintAt(px, py, drag.erase); }
@@ -289,7 +289,7 @@
   });
   $('desk').addEventListener('contextmenu', (e) => { if (tool && tool.def.paint) e.preventDefault(); });
   $('desk').addEventListener('pointerup', () => { if (drag && drag.kind === 'paint') renderProps(); if (drag && drag.kind === 'newcrop') renderProps(); drag = null; $('desk').classList.remove('panning'); });
-  $('desk').addEventListener('pointerleave', () => { hover = null; statusHover(); });
+  $('desk').addEventListener('pointerleave', () => { hover = null; hoverAt = null; if ($('loupe')) $('loupe').hidden = true; }); // the last colour stays in the status bar, to click and copy
   $('desk').addEventListener('auxclick', (e) => { if (e.button === 1) e.preventDefault(); });
 
   // ------------------------------------------------------------------ crop box
@@ -429,7 +429,11 @@
         range('amount', 'Amount %', 0, 100), note('Use Where to bring the version back only in some places: the sharper version on the texture, the smoother one on the sky.')],
       run: (img, s) => { const src = s.from === 'pic' ? pics[s.other] && pics[s.other].steps[pics[s.other].at].img : pic().steps[s.step] && pic().steps[s.step].img; if (!src) throw new Error(s.from === 'pic' ? 'Open another picture first (for example a cut-out you repaired).' : 'Choose a version.'); return IC.detail.blend(img, src, { mode: s.mode, amount: s.amount }); } },
     process: { title: 'Process a photo', icon: IK.auto, viewOnly: true, s: {}, run: (img) => img, fields: [{ t: 'custom', render: (into, t) => processPanel(into, t) }] },
-    cloudkeys: { title: 'Cloud AI keys', icon: IK.modern, viewOnly: true, s: {}, run: (img) => img, fields: [{ t: 'custom', render: (into) => cloudKeysPanel(into) }] },
+    compare: { title: 'Compare', icon: IK.compare, viewOnly: true, s: () => ({ mode: 'side', at: 50, gain: 4, slots: [`${cur}:0`, `${cur}:${pic().at}`, '', ''] }),
+      fields: [{ t: 'custom', render: (into, t) => comparePanel(into, t) }, { t: 'out' }],
+      report: () => (tool && tool.cmpInfo ? `<p class="hint">${tool.cmpInfo}</p>` : ''),
+      run: (img, s) => compareView(s) },
+    cloudkeys: { title: 'Cloud AI keys', icon: IK.modern, viewOnly: true, noPic: true, live: false, s: {}, run: (img) => img, fields: [{ t: 'custom', render: (into) => cloudKeysPanel(into) }] },
     regen: { title: 'Regenerate (cloud AI)', icon: IK.modern, live: false, toNew: 'regenerated', applyLabel: 'Open as a new picture', s: () => ({ provider: IC.cloud.has('gemini') ? 'gemini' : 'openai', model: '', colour: false, text: (lastDescription.get(pic()) && `${lastDescription.get(pic()).subject}. ${lastDescription.get(pic()).materials}`) || '' }),
       fields: [{ t: 'custom', render: (into, t) => regenPanel(into, t) }, { t: 'out' }],
       report: () => (tool && tool.regenInfo ? `<p class="hint">${esc(tool.regenInfo)}</p>` : ''),
@@ -792,7 +796,7 @@
   // ------------------------------------------------------------------ running a tool
   let tool = null, token = 0, timer = null;
   // Where: any tool that keeps the picture's size can work only where a map says (a mask: white = apply, black = leave)
-  const NO_MASK = new Set(['resize', 'crop', 'canvas', 'straighten', 'looks', 'text', 'trace', 'upscale', 'remaster', 'modern', 'depth', 'noisemap', 'stack', 'split', 'falsecolour', 'assess', 'repair', 'redeye', 'shadowlift', 'facerestore', 'colourise', 'process', 'regen', 'cloudkeys']);
+  const NO_MASK = new Set(['resize', 'crop', 'canvas', 'straighten', 'looks', 'text', 'trace', 'upscale', 'remaster', 'modern', 'depth', 'noisemap', 'stack', 'split', 'falsecolour', 'assess', 'repair', 'redeye', 'shadowlift', 'facerestore', 'colourise', 'process', 'regen', 'cloudkeys', 'compare']);
   const maskable = (def) => !NO_MASK.has(def.id) && !def.viewOnly;
   const MASK_FIELDS = [
     { t: 'html', html: () => '<h3 style="margin:10px 0 0">Where</h3>' },
@@ -806,7 +810,7 @@
   const masked = (t, r) => (t.s.wMap && r.width === t.base.width && r.height === t.base.height ? IC.maps.apply(t.base, r, maskOf(t)) : r);
   const isLive = (t) => (typeof t.def.live === 'function' ? t.def.live(t.s) : t.def.live !== false);
   function openTool(id, preset) {
-    if (!pic()) { toast('Open a picture first.'); return; }
+    if (!pic() && !(TOOLS[id] && TOOLS[id].noPic)) { toast('Open a picture first.'); return; }
     if (id === 'repair' || id === 'shadowlift') repairPaint = null; // a fresh painting each time
     if (tool) closeTool(true);
     const def = TOOLS[id], base = now();
@@ -817,17 +821,91 @@
     if (isLive(tool)) schedule(0); else show();
   }
   // Ask AI (Ollama): connect, choose a model, look, then run the ticked steps one by one (each a step in History)
+  // ------------------------------------------------------------------ compare: versions side by side
+  // Each slot is "picture:step" (any open picture, any step in its History). They are drawn into one picture (side by
+  // side, a grid, a split or the differences), so zooming and moving the view moves them all together.
+  const slotImg = (k) => { if (!k) return null; const [i, j] = k.split(':').map(Number); const p = pics[i]; return p && p.steps[j] ? p.steps[j].img : null; };
+  const slotName = (k) => { const [i, j] = k.split(':').map(Number), p = pics[i]; return p ? `${baseName(p.name)} · ${j === 0 ? 'original' : `${j}. ${p.steps[j].label}`}` : ''; };
+  function compareView(s) {
+    const ks = s.slots.filter((k) => slotImg(k)), n = s.mode === 'grid' ? Math.min(4, ks.length) : Math.min(2, ks.length); if (n < 1) throw new Error('Choose what to compare.');
+    if (s.mode !== 'grid' && n < 2) throw new Error('Choose two versions to compare.');
+    const a0 = slotImg(ks[0]), k = Math.min(1, Math.sqrt(4e6 / (a0.width * a0.height))), W = Math.max(1, Math.round(a0.width * k)), H = Math.max(1, Math.round(a0.height * k)); // each at most about 4 megapixels
+    const fit = (im) => (im.width === W && im.height === H ? im : X.resize(im, { width: W, height: H }));
+    const ims = ks.slice(0, n).map((q) => fit(slotImg(q))), lab = ks.slice(0, n).map(slotName);
+    if (tool) tool.cmpInfo = a0.width !== W ? `Shown at ${W} × ${H} (scaled down to keep it quick).` : ims.some((im, i) => slotImg(ks[i]).width !== W) ? 'Versions of a different size are scaled to the first one’s size.' : '';
+    const G = s.mode === 'side' ? 8 : 0, cols = s.mode === 'side' ? 2 : s.mode === 'grid' ? (n > 1 ? 2 : 1) : 1, rows = s.mode === 'grid' ? Math.ceil(n / 2) : 1;
+    const c = document.createElement('canvas'); c.width = cols * W + (cols - 1) * (s.mode === 'grid' ? 8 : G); c.height = rows * H + (rows - 1) * (s.mode === 'grid' ? 8 : 0); const x = c.getContext('2d'); x.fillStyle = '#16171c'; x.fillRect(0, 0, c.width, c.height);
+    const put = (im, dx, dy) => { const t = document.createElement('canvas'); t.width = W; t.height = H; t.getContext('2d').putImageData(im, 0, 0); x.drawImage(t, dx, dy); };
+    const tag = (text, dx, dy) => { const f = Math.max(14, Math.round(Math.min(W, H) / 22)); x.font = `600 ${f}px system-ui, sans-serif`; const w = x.measureText(text).width + f; x.fillStyle = 'rgba(0,0,0,0.62)'; x.fillRect(dx + f / 2, dy + f / 2, w, f * 1.6); x.fillStyle = '#fff'; x.fillText(text, dx + f, dy + f * 1.55); };
+    if (s.mode === 'side' || s.mode === 'grid') ims.forEach((im, i) => { const cx = (i % cols) * (W + 8), cy = Math.floor(i / cols) * (H + 8); put(im, cx, cy); tag(lab[i], cx, cy); });
+    else if (s.mode === 'split') { put(ims[1], 0, 0); const cut = Math.round((W * s.at) / 100), t = document.createElement('canvas'); t.width = W; t.height = H; t.getContext('2d').putImageData(ims[0], 0, 0); x.drawImage(t, 0, 0, cut, H, 0, 0, cut, H); x.fillStyle = '#fff'; x.fillRect(cut - 1, 0, 2, H); tag(lab[0], 0, 0); const f = Math.max(14, Math.round(Math.min(W, H) / 22)); x.font = `600 ${f}px system-ui, sans-serif`; tag(lab[1], W - x.measureText(lab[1]).width - f * 2, 0); }
+    else { // differences: how much each pixel changed, as heat over the first version (gain makes small changes visible)
+      const a = ims[0].data, b = ims[1].data, m = new Float32Array(W * H); let sum = 0;
+      for (let p = 0; p < W * H; p++) { const dd = (Math.abs(a[p * 4] - b[p * 4]) + Math.abs(a[p * 4 + 1] - b[p * 4 + 1]) + Math.abs(a[p * 4 + 2] - b[p * 4 + 2])) / 3; sum += dd; m[p] = Math.min(1, (dd * s.gain) / 255); }
+      put(IC.maps.heat(m, ims[0]), 0, 0); tag(`Changes: ${lab[0]} → ${lab[1]}`, 0, 0); if (tool) tool.cmpInfo = `On average each pixel changed by ${(sum / (W * H)).toFixed(1)} levels (of 255). Bright = changed most.`;
+    }
+    return x.getImageData(0, 0, c.width, c.height);
+  }
+  function comparePanel(into, t) {
+    const s = t.s, d = document.createElement('div'); into.append(d);
+    const opts = pics.map((p, i) => p.steps.map((st, j) => `<option value="${i}:${j}">${esc(baseName(p.name))} · ${j === 0 ? 'original' : `${j}. ${esc(st.label)}`}</option>`).join('')).join('');
+    const n = s.mode === 'grid' ? 4 : 2, names = s.mode === 'diff' ? ['Before', 'After'] : s.mode === 'split' ? ['Left', 'Right'] : s.mode === 'side' ? ['Left', 'Right'] : ['Top left', 'Top right', 'Bottom left', 'Bottom right'];
+    d.innerHTML = `<p class="hint">Any versions together: the original, any step in History, or another open picture (use <b>Duplicate picture</b> to try a different set of steps on a copy). Zoom and move the view as usual: they all follow.</p>
+      <div class="field"><span>How</span><div class="seg">${[['side', 'Side by side'], ['grid', 'Grid (up to 4)'], ['split', 'Split'], ['diff', 'Differences']].map(([k, l]) => `<button type="button" class="btn" data-cm="${k}" aria-pressed="${k === s.mode}">${l}</button>`).join('')}</div></div>
+      ${names.slice(0, n).map((nm, i) => `<label class="field"><span>${nm}</span><select class="input" data-slot="${i}"><option value="">(none)</option>${opts}</select></label>`).join('')}
+      ${s.mode === 'split' ? `<label class="field"><span>Where the line is (%)</span><input class="input" type="range" min="0" max="100" value="${s.at}" data-at></label>` : ''}
+      ${s.mode === 'diff' ? `<label class="field"><span>Make small changes stand out (×${s.gain})</span><input class="input" type="range" min="1" max="20" value="${s.gain}" data-gain></label>` : ''}`;
+    d.querySelectorAll('[data-slot]').forEach((sel) => { sel.value = s.slots[+sel.dataset.slot] || ''; });
+    const redo = () => { t.stale = true; schedule(0); };
+    d.onclick = (e) => { const b = e.target.closest('[data-cm]'); if (!b) return; s.mode = b.dataset.cm; renderProps(); redo(); };
+    d.onchange = (e) => { if (e.target.dataset.slot != null) { s.slots[+e.target.dataset.slot] = e.target.value; redo(); } };
+    d.oninput = (e) => { if (e.target.dataset.at != null) { s.at = +e.target.value; redo(); } if (e.target.dataset.gain != null) { s.gain = +e.target.value; e.target.previousElementSibling.textContent = `Make small changes stand out (×${s.gain})`; redo(); } };
+  }
+  // a copy of the picture as it is now, to try a different set of steps on (then Compare the two)
+  function duplicatePic() { const p = pic(); if (!p) return toast('Open a picture first.'); const st = p.steps[p.at]; addPic(`${baseName(p.name)} (copy).png`, st.img, { ...p.info, format: `copy of ${p.info.format || 'picture'}` }, 0, st.deep); toast('A copy is open: try different steps on it, then View › Compare the two.'); }
+  // ------------------------------------------------------------------ AI settings (the AI chip in the status bar)
+  let ollamaSeen = null; // what Ollama said last time: null (not asked), { ok, n } or { blocked }
+  async function aiChip() {
+    const el = $('st-ai'); if (!el) return; const f = window.CRAFTAI && CRAFTAI.found(), cl = ['anthropic', 'gemini', 'openai'].filter((k) => IC.cloud.has(k)).map((k) => IC.cloud.NAMES[k].split(' ')[0]);
+    if (ollamaSeen === null) { ollamaSeen = 'asking'; IC.ollama.models().then((m) => { ollamaSeen = { ok: true, n: m.length }; aiChip(); }, (e) => { ollamaSeen = { blocked: !!e.blocked }; aiChip(); }); }
+    const parts = [f ? (f.webgpu ? 'graphics card' : 'processor') : 'built-in', ollamaSeen && ollamaSeen.ok ? 'Ollama ✓' : ollamaSeen && ollamaSeen.blocked ? 'Ollama ✗' : 'Ollama …', cl.length ? `Cloud: ${cl.join(', ')}` : 'no cloud keys'];
+    el.textContent = `AI: ${parts.join(' · ')}`;
+  }
+  let aiTab = 'local';
+  async function openAI(tab) {
+    if (tab) aiTab = tab; let back = $('aisettings'); if (!back) { back = document.createElement('div'); back.className = 'backdrop'; back.id = 'aisettings'; document.body.append(back); }
+    const f = (await CRAFTAI.probe()) || {}, O = IC.ollama, CL = IC.cloud;
+    back.innerHTML = `<div class="dialog wide" role="dialog" aria-modal="true" aria-labelledby="ais-title"><h2 id="ais-title">AI settings</h2>
+      <div class="ai-tabs" role="tablist"><button type="button" data-tab="local" aria-selected="${aiTab === 'local'}">Local AI (this computer)</button><button type="button" data-tab="cloud" aria-selected="${aiTab === 'cloud'}">Cloud AI (your keys)</button></div><div id="ais-body"></div>
+      <div class="dialog-actions"><button class="btn primary" type="button" data-act="close">Close</button></div></div>`;
+    const body = back.querySelector('#ais-body');
+    if (aiTab === 'local') {
+      body.innerHTML = `<div class="ai-card"><h3>Built-in AI (runs inside ImageCraft)</h3><p class="hint">Upscaling, cut-outs, repair, scratches, colourising, faces, finding things by name. Each model downloads once when first used, then works offline; nothing is sent anywhere. This computer: ${f.webgpu ? `graphics card <b>${esc(f.gpu || '')}</b>` : 'no graphics card the browser can use (the processor is used, slower)'}.</p><div class="btns"><button class="btn outline" type="button" data-act="models">Models: download, switch on or off…</button></div></div>
+        <div class="ai-card"><h3>Ollama (AI models you run yourself)</h3><p class="hint" id="ais-oll">Looking for Ollama at ${esc(O.cfg.url)}…</p>
+          <label class="check"><input type="checkbox" data-oc ${O.cfg.cloud ? 'checked' : ''}> Also offer Ollama’s cloud models in Ask AI (the picture is sent to Ollama’s servers)</label>
+          <label class="field"><span>Address</span><input class="input" data-ou value="${esc(O.cfg.url)}"></label></div>`;
+      O.models().then((m) => { ollamaSeen = { ok: true, n: m.length }; aiChip(); const el = body.querySelector('#ais-oll'); if (el) el.innerHTML = m.length ? `<b>Connected.</b> Models that can look at pictures: ${m.map((x) => esc(x.name) + (x.cloud ? ' (cloud)' : '')).join(', ')}. Ask AI (Clean up) uses them.` : '<b>Connected</b>, but none of its models can look at pictures. In a command prompt: <code>ollama pull qwen3.5</code>.'; }, (e) => { ollamaSeen = { blocked: !!e.blocked }; aiChip(); const el = body.querySelector('#ais-oll'); if (el) el.innerHTML = `<b>Not reachable.</b> If Ollama is not running, start it. If it is: ${O.ORIGIN_HELP}`; });
+    } else cloudKeysPanel(body);
+    back.hidden = false;
+    back.onclick = (e) => {
+      const tb = e.target.closest('[data-tab]'); if (tb) { openAI(tb.dataset.tab); return; }
+      const a = e.target.closest('[data-act]'); if (!a) return;
+      if (a.dataset.act === 'close') { back.hidden = true; aiChip(); if (tool && /assess|regen/.test(tool.def.id)) { if (tool.oll) tool.oll = { status: 'checking' }; renderProps(); } }
+      if (a.dataset.act === 'models') { back.hidden = true; CRAFTAI.openSettings(); }
+    };
+    back.onchange = (e) => { if (e.target.matches('[data-oc]')) { O.cfg.cloud = e.target.checked; O.save(); } if (e.target.matches('[data-ou]')) { O.cfg.url = e.target.value.trim().replace(/\/+$/, '') || 'http://127.0.0.1:11434'; O.save(); ollamaSeen = null; openAI('local'); } };
+  }
   const lastDescription = new WeakMap(); // picture → its last Ask AI description (Regenerate starts from it)
   function cloudKeysPanel(into) {
     const CL = IC.cloud, d = document.createElement('div'); into.append(d);
     d.innerHTML = `<p class="hint">Your own keys for Claude (Anthropic), Gemini (Google) and GPT (OpenAI). With them, <b>Ask AI</b> can have a cloud model look at a picture, and <b>Regenerate</b> can have Gemini or OpenAI redraw it. The keys are kept only in this browser on this computer and are sent only to their own company, with each request you make. Each use is billed to your account by that company.</p>
-      ${['anthropic', 'gemini', 'openai'].map((k) => `<label class="field"><span>${CL.NAMES[k]}${CL.has(k) ? ' · saved' : ''}</span><input class="input" type="password" autocomplete="off" spellcheck="false" data-k="${k}" placeholder="${CL.has(k) ? '•••••••• (saved; type to replace)' : 'paste the key here'}"></label>`).join('')}
+      ${['anthropic', 'gemini', 'openai'].map((k) => `<label class="field"><span>${CL.NAMES[k]}${CL.has(k) ? ' · saved' : ''}</span><input class="input" type="password" autocomplete="off" spellcheck="false" data-k="${k}" placeholder="${CL.has(k) ? '•••••••• (saved; type to replace)' : 'paste the key here'}"></label>${k === 'anthropic' ? `<label class="field"><span>Claude workspace ID (only if Anthropic asks for it)</span><input class="input" autocomplete="off" spellcheck="false" data-ws value="${esc(CL.cfg.workspace || '')}" placeholder="wrkspc_…"></label>` : ''}`).join('')}
       <div class="btns"><button class="btn primary" type="button" data-a="save">Save the keys</button><button class="btn outline" type="button" data-a="test">Test them</button><button class="btn outline" type="button" data-a="forget">Forget all keys</button></div><div class="hint" id="ck-out"></div>`;
     d.onclick = async (e) => {
       const a = e.target.dataset.a; if (!a) return; const out = d.querySelector('#ck-out');
-      if (a === 'save') { d.querySelectorAll('[data-k]').forEach((i) => { if (i.value.trim()) CL.cfg.keys[i.dataset.k] = i.value.trim(); i.value = ''; }); CL.save(); toast('Keys saved in this browser.'); renderProps(); }
-      if (a === 'forget') { if (await ask('Forget the keys?', 'ImageCraft will forget all three keys in this browser. The keys themselves stay valid at each company.', 'Forget')) { CL.cfg.keys = { anthropic: '', gemini: '', openai: '' }; CL.save(); renderProps(); } }
-      if (a === 'test') { out.textContent = 'Testing…'; const lines = []; for (const k of ['anthropic', 'gemini', 'openai']) { if (!CL.has(k)) continue; try { const m = await CL.models(k); lines.push(`${CL.NAMES[k]}: works · ${m.filter((x) => x.see).length} models can look at pictures${m.some((x) => x.draw) ? `, ${m.filter((x) => x.draw).length} can draw` : ''}`); } catch (err) { lines.push(`${CL.NAMES[k]}: ${err.message}`); } } out.innerHTML = lines.map(esc).join('<br>') || 'No keys saved yet.'; }
+      if (a === 'save') { d.querySelectorAll('[data-k]').forEach((i) => { if (i.value.trim()) CL.cfg.keys[i.dataset.k] = i.value.trim(); i.value = ''; }); const ws = d.querySelector('[data-ws]'); if (ws) CL.cfg.workspace = ws.value.trim(); CL.save(); toast('Keys saved in this browser.'); aiChip(); if ($('aisettings') && !$('aisettings').hidden) openAI('cloud'); else renderProps(); }
+      if (a === 'forget') { if (await ask('Forget the keys?', 'ImageCraft will forget all three keys in this browser. The keys themselves stay valid at each company.', 'Forget')) { CL.cfg.keys = { anthropic: '', gemini: '', openai: '' }; CL.save(); aiChip(); if ($('aisettings') && !$('aisettings').hidden) openAI('cloud'); else renderProps(); } }
+      if (a === 'test') { out.textContent = 'Testing…'; const lines = []; for (const k of ['anthropic', 'gemini', 'openai']) { if (!CL.has(k)) continue; try { const m = await CL.models(k); lines.push(`${CL.NAMES[k]}: works · ${m.filter((x) => x.see).length} models can look at pictures${m.some((x) => x.draw) ? `, ${m.filter((x) => x.draw).length} can draw` : ''}`); } catch (err) { lines.push(err.message.startsWith(CL.NAMES[k]) ? err.message : `${CL.NAMES[k]}: ${err.message}`); } } out.innerHTML = lines.map(esc).join('<br>') || 'No keys saved yet.'; }
     };
   }
   const regenModels = {}; // provider → the models that can draw (asked once)
@@ -1215,12 +1293,25 @@
   // ------------------------------------------------------------------ status bar
   let hover = null;
   const statusEl = $('status');
-  statusEl.innerHTML = `<button class="st-err" id="st-err" hidden title="Errors were logged: open the Debug tab"></button><span id="st-size"></span><span id="st-cols"></span><span id="st-at"></span><span class="grow"></span><span class="zoombox"><button class="btn" id="st-out" title="Zoom out" aria-label="Zoom out">−</button><input type="range" id="st-zoom" min="-100" max="100" value="0" aria-label="Zoom" data-rt-skip><button class="btn" id="st-in" title="Zoom in" aria-label="Zoom in">+</button><button class="btn" id="st-pct" title="Fit the picture (click) or 100% (double-click)">100%</button></span>`;
+  statusEl.innerHTML = `<button class="st-ai" id="st-ai" type="button" title="AI settings: the built-in models, Ollama, and your cloud keys">AI</button><button class="st-err" id="st-err" hidden title="Errors were logged: open the Debug tab"></button><span id="st-size"></span><span id="st-cols"></span><span id="st-at"></span><span class="grow"></span><span class="zoombox"><button class="btn" id="st-out" title="Zoom out" aria-label="Zoom out">−</button><input type="range" id="st-zoom" min="-100" max="100" value="0" aria-label="Zoom" data-rt-skip><button class="btn" id="st-in" title="Zoom in" aria-label="Zoom in">+</button><button class="btn" id="st-pct" title="Fit the picture (click) or 100% (double-click)">100%</button></span>`;
   // the zoom slider: 100% in the middle, 2% at the left, 6400% at the right
   const zToS = (z) => Math.round(z >= 1 ? (Math.log(z) / Math.log(64)) * 100 : (Math.log(z) / Math.log(50)) * 100), sToZ = (s) => (s >= 0 ? Math.pow(64, s / 100) : Math.pow(50, s / 100));
   $('st-zoom').oninput = (e) => setZoom(sToZ(+e.target.value));
   $('st-err').onclick = openDebug;
-  $('st-in').onclick = () => zoomBy(1.25); $('st-out').onclick = () => zoomBy(0.8); $('st-pct').onclick = () => fitView(); $('st-pct').ondblclick = () => actual();
+  $('st-ai').onclick = () => openAI(); aiChip();
+  $('st-at').onclick = () => { const h = $('st-at').dataset.hex; if (h) navigator.clipboard.writeText(h).then(() => toast(`${h} copied.`), () => toast('Could not copy.')); };
+  $('st-in').onclick = () => zoomBy(1.25); $('st-out').onclick = () => zoomBy(0.8); $('st-pct').title = 'Zoom: choose a size, or type one'; $('st-pct').onclick = (e) => { e.stopPropagation(); zoomMenu(); };
+  // the zoom menu (click the percentage in the status bar): fit, the usual sizes, or type one
+  function zoomMenu() {
+    let m = $('zoommenu'); if (m) { m.remove(); return; }
+    m = document.createElement('div'); m.id = 'zoommenu'; m.className = 'zoommenu';
+    m.innerHTML = `<button type="button" data-z="fit">Fit</button>${[25, 50, 100, 200, 400, 800].map((z) => `<button type="button" data-z="${z}"${Math.round(view.zoom * 100) === z ? ' aria-pressed="true"' : ''}>${z}%</button>`).join('')}<label>Type <input type="number" min="1" max="6400" step="1" value="${Math.round(view.zoom * 100)}"> %</label>`;
+    document.body.append(m); const b = $('st-pct').getBoundingClientRect(); m.style.left = Math.min(innerWidth - m.offsetWidth - 8, b.left) + 'px'; m.style.top = b.top - m.offsetHeight - 6 + 'px';
+    const close = () => { m.remove(); document.removeEventListener('pointerdown', away, true); }, away = (e) => { if (!m.contains(e.target)) close(); };
+    setTimeout(() => document.addEventListener('pointerdown', away, true), 0);
+    m.onclick = (e) => { const z = e.target.closest('[data-z]'); if (!z) return; if (z.dataset.z === 'fit') fitView(); else setZoom(+z.dataset.z / 100); close(); };
+    const inp = m.querySelector('input'); inp.onkeydown = (e) => { if (e.key === 'Enter') { const v = +inp.value; if (v > 0) setZoom(v / 100); close(); } if (e.key === 'Escape') close(); };
+  }
   function zoomUI() { $('st-pct').textContent = Math.round(view.zoom * 100) + '%'; if (document.activeElement !== $('st-zoom')) $('st-zoom').value = zToS(view.zoom); }
   function status() {
     const img = now(), st = pic() && pic().steps[pic().at];
@@ -1229,10 +1320,27 @@
     $('st-cols').innerHTML = st && st.colours != null ? (st.colours < 0 ? 'Many colours' : `<b>${fmtN(st.colours)}</b> colour${st.colours === 1 ? '' : 's'}`) : '';
     statusHover();
   }
+  // the colour under the mouse, as a colour cell: HEX, RGB, CMYK, HSL, Lab and the nearest CSS colour name (Pantone's
+  // values are licensed, so no Pantone table can come with ImageCraft; the Lab values match any swatch book). Click copies.
+  let hoverAt = null; try { view.loupe = localStorage.getItem('imagecraft-loupe') !== 'off'; } catch (e) { view.loupe = true; }
+  const CSS_NAMES = 'aliceblue:f0f8ff,antiquewhite:faebd7,aquamarine:7fffd4,azure:f0ffff,beige:f5f5dc,bisque:ffe4c4,black:000000,blanchedalmond:ffebcd,blue:0000ff,blueviolet:8a2be2,brown:a52a2a,burlywood:deb887,cadetblue:5f9ea0,chartreuse:7fff00,chocolate:d2691e,coral:ff7f50,cornflowerblue:6495ed,cornsilk:fff8dc,crimson:dc143c,cyan:00ffff,darkblue:00008b,darkcyan:008b8b,darkgoldenrod:b8860b,darkgray:a9a9a9,darkgreen:006400,darkkhaki:bdb76b,darkmagenta:8b008b,darkolivegreen:556b2f,darkorange:ff8c00,darkorchid:9932cc,darkred:8b0000,darksalmon:e9967a,darkseagreen:8fbc8f,darkslateblue:483d8b,darkslategray:2f4f4f,darkturquoise:00ced1,darkviolet:9400d3,deeppink:ff1493,deepskyblue:00bfff,dimgray:696969,dodgerblue:1e90ff,firebrick:b22222,floralwhite:fffaf0,forestgreen:228b22,gainsboro:dcdcdc,ghostwhite:f8f8ff,gold:ffd700,goldenrod:daa520,gray:808080,green:008000,greenyellow:adff2f,honeydew:f0fff0,hotpink:ff69b4,indianred:cd5c5c,indigo:4b0082,ivory:fffff0,khaki:f0e68c,lavender:e6e6fa,lavenderblush:fff0f5,lawngreen:7cfc00,lemonchiffon:fffacd,lightblue:add8e6,lightcoral:f08080,lightcyan:e0ffff,lightgoldenrodyellow:fafad2,lightgray:d3d3d3,lightgreen:90ee90,lightpink:ffb6c1,lightsalmon:ffa07a,lightseagreen:20b2aa,lightskyblue:87cefa,lightslategray:778899,lightsteelblue:b0c4de,lightyellow:ffffe0,lime:00ff00,limegreen:32cd32,linen:faf0e6,magenta:ff00ff,maroon:800000,mediumaquamarine:66cdaa,mediumblue:0000cd,mediumorchid:ba55d3,mediumpurple:9370db,mediumseagreen:3cb371,mediumslateblue:7b68ee,mediumspringgreen:00fa9a,mediumturquoise:48d1cc,mediumvioletred:c71585,midnightblue:191970,mintcream:f5fffa,mistyrose:ffe4e1,moccasin:ffe4b5,navajowhite:ffdead,navy:000080,oldlace:fdf5e6,olive:808000,olivedrab:6b8e23,orange:ffa500,orangered:ff4500,orchid:da70d6,palegoldenrod:eee8aa,palegreen:98fb98,paleturquoise:afeeee,palevioletred:db7093,papayawhip:ffefd5,peachpuff:ffdab9,peru:cd853f,pink:ffc0cb,plum:dda0dd,powderblue:b0e0e6,purple:800080,rebeccapurple:663399,red:ff0000,rosybrown:bc8f8f,royalblue:4169e1,saddlebrown:8b4513,salmon:fa8072,sandybrown:f4a460,seagreen:2e8b57,seashell:fff5ee,sienna:a0522d,silver:c0c0c0,skyblue:87ceeb,slateblue:6a5acd,slategray:708090,snow:fffafa,springgreen:00ff7f,steelblue:4682b4,tan:d2b48c,teal:008080,thistle:d8bfd8,tomato:ff6347,turquoise:40e0d0,violet:ee82ee,wheat:f5deb3,white:ffffff,whitesmoke:f5f5f5,yellow:ffff00,yellowgreen:9acd32'.split(',').map((e) => { const [n, h] = e.split(':'); return [n, parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4), 16)]; });
+  const labOf = (r, g, b) => { const L = (v) => { v /= 255; return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); }, R = L(r), G = L(g), B = L(b), f = (t) => (t > 0.008856 ? Math.cbrt(t) : 7.787 * t + 16 / 116), X = f((0.4124 * R + 0.3576 * G + 0.1805 * B) / 0.95047), Y = f(0.2126 * R + 0.7152 * G + 0.0722 * B), Z = f((0.0193 * R + 0.1192 * G + 0.9505 * B) / 1.08883); return [116 * Y - 16, 500 * (X - Y), 200 * (Y - Z)]; };
+  const CSS_LAB = CSS_NAMES.map(([n, r, g, b]) => [n, labOf(r, g, b)]);
+  function colourFacts(r, g, b) {
+    const hex = '#' + [r, g, b].map((v) => v.toString(16).padStart(2, '0')).join('').toUpperCase(), k = 1 - Math.max(r, g, b) / 255, cm = (v) => (k >= 1 ? 0 : Math.round(((1 - v / 255 - k) / (1 - k)) * 100));
+    const mx = Math.max(r, g, b) / 255, mn = Math.min(r, g, b) / 255, l = (mx + mn) / 2, dl = mx - mn, sat = dl ? dl / (1 - Math.abs(2 * l - 1)) : 0; let h = 0; if (dl) { const R = r / 255, G = g / 255, B = b / 255; h = mx === R ? ((G - B) / dl) % 6 : mx === G ? (B - R) / dl + 2 : (R - G) / dl + 4; h = Math.round(h * 60); if (h < 0) h += 360; }
+    const lab = labOf(r, g, b); let best = null, bd = 1e9; for (const [n, q] of CSS_LAB) { const dd = (q[0] - lab[0]) ** 2 + (q[1] - lab[1]) ** 2 + (q[2] - lab[2]) ** 2; if (dd < bd) { bd = dd; best = n; } }
+    return { hex, rgb: `${r}, ${g}, ${b}`, cmyk: `${cm(r)}, ${cm(g)}, ${cm(b)}, ${Math.round(k * 100)}%`, hsl: `${h}°, ${Math.round(sat * 100)}%, ${Math.round(l * 100)}%`, lab: lab.map((v) => Math.round(v)).join(', '), name: best, near: Math.sqrt(bd) < 3 };
+  }
   function statusHover() {
-    const img = shown(); if (!hover || !img) { $('st-at').textContent = ''; return; }
-    const i = (hover[1] * img.width + hover[0]) * 4, d = img.data, c = [d[i], d[i + 1], d[i + 2]];
-    $('st-at').innerHTML = `${hover[0]}, ${hover[1]} · <span class="sw" style="background:${hexOf(c)}"></span>${hexOf(c)}${d[i + 3] < 255 ? ` · ${Math.round((d[i + 3] / 255) * 100)}% solid` : ''}`;
+    const img = shown(), el = $('st-at'); if (!img) { el.textContent = ''; return; } if (!hover) return;
+    const i = (hover[1] * img.width + hover[0]) * 4, d = img.data, f = colourFacts(d[i], d[i + 1], d[i + 2]);
+    el.innerHTML = `${hover[0]}, ${hover[1]} <span class="ccell" title="RGB ${f.rgb} · CMYK ${f.cmyk} · HSL ${f.hsl} · Lab ${f.lab} · ${f.name}. Click to copy ${f.hex}"><span class="sw" style="background:${f.hex}"></span><b>${f.hex}</b> · ${f.name}</span>${d[i + 3] < 255 ? ` · ${Math.round((d[i + 3] / 255) * 100)}% solid` : ''}`;
+    el.dataset.hex = f.hex;
+    // the colour table beside the mouse
+    const lp = $('loupe'); if (!lp) return; if (!view.loupe || !hoverAt) { lp.hidden = true; return; }
+    lp.innerHTML = `<div class="lp-sw" style="background:${f.hex}"></div><table><tr><th>HEX</th><td>${f.hex}</td></tr><tr><th>RGB</th><td>${f.rgb}</td></tr><tr><th>CMYK</th><td>${f.cmyk}</td></tr><tr><th>HSL</th><td>${f.hsl}</td></tr><tr><th>Lab</th><td>${f.lab}</td></tr><tr><th>Name</th><td>${f.near ? '' : '≈ '}${f.name}</td></tr>${d[i + 3] < 255 ? `<tr><th>Solid</th><td>${Math.round((d[i + 3] / 255) * 100)}%</td></tr>` : ''}</table>`;
+    lp.hidden = false; const dr = $('desk').getBoundingClientRect(), w = lp.offsetWidth, h = lp.offsetHeight; let x = hoverAt[0] - dr.left + 18, y = hoverAt[1] - dr.top + 18; if (x + w > dr.width - 6) x = hoverAt[0] - dr.left - w - 14; if (y + h > dr.height - 6) y = hoverAt[1] - dr.top - h - 14; lp.style.left = x + 'px'; lp.style.top = y + 'px';
   }
 
   // ------------------------------------------------------------------ Save as
@@ -1467,8 +1575,8 @@
       ] },
       { id: 'view', label: 'View', hue: '#566078', groups: [
         ['Zoom', [B('Fit', I.fit, fitView, { big: true, key: '0' }), B('100%', I.actual, actual, { big: true, key: '1' }), { col: [B('Zoom in', I.zoomIn, () => zoomBy(1.25), { key: '+' }), B('Zoom out', I.zoomOut, () => zoomBy(0.8), { key: '−' })] }]],
-        ['Show', [B('Compare', IK.compare, toggleCompare, { big: true, pressed: () => view.compare }), B('Pixel grid', IK.grid, () => { view.grid = !view.grid; layout(); if (view.grid && view.zoom < 6) toast('The grid shows from 600% zoom.'); }, { big: true, pressed: () => view.grid })]],
-        ['Cloud AI', [B('Cloud AI keys', IK.modern, () => { if (!pic()) return toast('Open a picture first: the keys box opens in the tool panel beside it.'); openTool('cloudkeys'); }, { big: true, always: true, title: 'Your own Claude, Gemini and OpenAI keys (kept in this browser only)' })]],
+        ['Show', [B('Compare', IK.compare, () => openTool('compare'), { big: true, title: 'Versions together: side by side, a grid of up to four, a split, or the differences (any picture, any step)' }), B('Before / after', IK.compare, toggleCompare, { pressed: () => view.compare, title: 'The dragging line between the picture and its original (or before the open tool)' }), B('Duplicate picture', I.folder, duplicatePic, { title: 'A copy of the picture as it is now, to try different steps on' }), B('Colour info', IK.colour, () => { view.loupe = !view.loupe; try { localStorage.setItem('imagecraft-loupe', view.loupe ? 'on' : 'off'); } catch (e) { /* blocked storage */ } if (!view.loupe && $('loupe')) $('loupe').hidden = true; }, { pressed: () => view.loupe, title: 'A small table beside the mouse: the colour under it in HEX, RGB, CMYK, HSL, Lab and its nearest name' }), B('Pixel grid', IK.grid, () => { view.grid = !view.grid; layout(); if (view.grid && view.zoom < 6) toast('The grid shows from 600% zoom.'); }, { big: true, pressed: () => view.grid })]],
+        ['AI', [B('AI settings', IK.modern, () => openAI(), { big: true, always: true, title: 'Built-in AI models, Ollama, and your own Claude, Gemini and OpenAI keys (also the AI button in the status bar)' })]],
         ['Debug', [B('Debug log', I.console, () => openDebug(), { big: true, always: true, title: 'Errors and what happened (also the Debug tab on the left)' })]],
         ['Behind see-through', [{ col: [B('Checks', IK.grid, () => setBg('check'), { pressed: () => view.bg === 'check' }), B('White', I.sun, () => setBg('white'), { pressed: () => view.bg === 'white' }), B('Black', I.moon, () => setBg('black'), { pressed: () => view.bg === 'black' })] }]],
       ] },

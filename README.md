@@ -34,9 +34,25 @@ Classic formats fit the picture to that machine's screen and colours for you (th
 - **Dithering**: Floyd–Steinberg, Atkinson, Jarvis, Stucki, Burkes, Sierra, Sierra Lite, ordered 2 × 2 / 4 × 4 / 8 × 8, and noise, with a strength slider.
 - **Computer looks**: Atari ST, Amiga, Commodore 64, ZX Spectrum, Amstrad CPC, CGA, EGA, VGA, Macintosh, Game Boy, Apple II, PICO-8 and Teletext, at the real screen size (with tall or wide pixels where the machine had them) or kept at your picture's size.
 
+### Compare (View › Compare) and Duplicate picture
+
+Any versions together, chosen from any open picture and any step in its History: **Side by side**, a **Grid** of up to four (for example the original, CodeFormer, GFPGAN and Regenerate), a **Split** with a movable line, or **Differences** (how much each pixel changed, as heat, with a slider to make small changes stand out, and the average change in levels). They are drawn as one picture, so zooming and moving the view moves them all together. **Duplicate picture** opens a copy of the picture as it is now, to try a different set of steps on and then compare the two flows. (Before / after is the quick dragging line between the picture and its original.)
+
+### Zoom
+
+Click the zoom percentage in the status bar for a menu: Fit, 25% to 800%, or type any size and press Enter.
+
+### Colour under the mouse
+
+A small table beside the mouse shows the colour under it in **HEX, RGB, CMYK, HSL and Lab**, with the nearest CSS colour name (View › Colour info turns it on or off). The status bar keeps the swatch, HEX and name of the last colour pointed at; click it to copy the HEX. Pantone's colour values are licensed by Pantone, so no Pantone table can come with ImageCraft; the Lab values match any swatch book.
+
+### AI settings (the AI button in the status bar)
+
+The **AI** button at the left of the status bar shows what is available (e.g. "AI: graphics card · Ollama ✓ · Cloud: Gemini") and opens **AI settings**: **Local AI** (the built-in models: download, switch on or off; Ollama: connected or not, its picture models, the address, and whether its cloud models are offered) and **Cloud AI** (your keys). Also View › AI settings.
+
 ### Cloud AI (your own keys; optional)
 
-**View › Cloud AI keys** takes your own Claude (Anthropic), Gemini (Google) and OpenAI keys. They are kept only in this browser and sent only to their own company, with each request you make (billed to your account there). **Test them** shows how many of each service's models can look at pictures and how many can draw.
+**AI settings › Cloud AI** (the AI button in the status bar, or View › AI settings) takes your own Claude (Anthropic), Gemini (Google) and OpenAI keys (and, for a Claude key not tied to one workspace, its workspace ID from the Anthropic Console). They are kept only in this browser and sent only to their own company, with each request you make (billed to your account there). **Test them** shows how many of each service's models can look at pictures and how many can draw.
 - **Ask AI** can then use Claude, Gemini or GPT (or Ollama's cloud models, such as kimi-k3, when you allow them) to describe a photo instead of a local model. The panel says where the picture is sent.
 - **Regenerate** (Clean up › Cloud) sends the photo, with the description, to Gemini's or OpenAI's image model and gets back a redrawn, restored version: tears, scratches, blur and fading fixed, missing parts drawn in. **Everything in it is drawn by the AI**, so faces and details can change. It opens as a new picture at the original's size, to compare or to blend parts back with Detail › Blend a version.
 - Checked without real keys: all three services answer a page opened as a file, and a wrong key gives a clear message.

@@ -8,16 +8,17 @@
   'use strict';
   const IC = (window.IC = window.IC || {});
   const KEY = 'imagecraft-cloud';
-  let cfg = { keys: { anthropic: '', gemini: '', openai: '' }, models: {} };
-  try { const s = JSON.parse(localStorage.getItem(KEY) || 'null'); if (s) cfg = { keys: { ...cfg.keys, ...(s.keys || {}) }, models: s.models || {} }; } catch (e) { /* blocked storage */ }
+  let cfg = { keys: { anthropic: '', gemini: '', openai: '' }, models: {}, workspace: '' }; // workspace: Anthropic workspace ID, for keys not tied to one workspace
+  try { const s = JSON.parse(localStorage.getItem(KEY) || 'null'); if (s) cfg = { keys: { ...cfg.keys, ...(s.keys || {}) }, models: s.models || {}, workspace: s.workspace || '' }; } catch (e) { /* blocked storage */ }
   const save = () => { try { localStorage.setItem(KEY, JSON.stringify(cfg)); } catch (e) { /* blocked storage */ } };
   const NAMES = { anthropic: 'Claude (Anthropic)', gemini: 'Gemini (Google)', openai: 'GPT (OpenAI)' };
   const has = (p) => !!(cfg.keys[p] || '').trim();
 
+  const anthHeaders = (k, json) => ({ ...(json ? { 'content-type': 'application/json' } : {}), 'x-api-key': k, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true', ...(cfg.workspace.trim() ? { 'anthropic-workspace-id': cfg.workspace.trim() } : {}) });
   async function call(url, opts, who) {
     let r; try { r = await fetch(url, opts); } catch (e) { throw new Error(`${NAMES[who]} could not be reached (no internet, or the browser blocked it).`); }
     const t = await r.text(); let j = null; try { j = JSON.parse(t); } catch (e) { /* not JSON */ }
-    if (!r.ok) { const m = (j && (j.error && (j.error.message || j.error.type))) || t.slice(0, 200); throw new Error(`${NAMES[who]}: ${r.status === 401 || r.status === 403 ? 'the key was refused (check it in Cloud AI keys). ' : ''}${m}`); }
+    if (!r.ok) { const m = (j && (j.error && (j.error.message || j.error.type))) || t.slice(0, 200); throw new Error(`${NAMES[who]}: ${/workspace/i.test(m) ? 'this key is not tied to one workspace: add the Workspace ID (Anthropic Console › Settings › Workspaces) under the Claude key, or use a key made inside a workspace. ' : r.status === 401 || r.status === 403 ? 'the key was refused (check it in AI settings › Cloud AI). ' : ''}${m}`); }
     return j;
   }
   // a JPEG of at most `max` pixels across (what the services take; smaller is quicker and cheaper)
@@ -32,7 +33,7 @@
   // ------------------------------------------------------------------ which models a key can use
   async function models(p) {
     const k = cfg.keys[p].trim(); if (!k) return [];
-    if (p === 'anthropic') { const j = await call('https://api.anthropic.com/v1/models?limit=100', { headers: { 'x-api-key': k, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' } }, p); return (j.data || []).map((m) => ({ id: m.id, name: m.display_name || m.id, see: true })); }
+    if (p === 'anthropic') { const j = await call('https://api.anthropic.com/v1/models?limit=100', { headers: anthHeaders(k) }, p); return (j.data || []).map((m) => ({ id: m.id, name: m.display_name || m.id, see: true })); }
     if (p === 'gemini') { const j = await call(`https://generativelanguage.googleapis.com/v1beta/models?pageSize=200&key=${encodeURIComponent(k)}`, {}, p); return (j.models || []).filter((m) => (m.supportedGenerationMethods || []).includes('generateContent')).map((m) => ({ id: m.name.replace(/^models\//, ''), name: m.displayName || m.name, see: !/embedding|aqa|tts/i.test(m.name), draw: /image/i.test(m.name) })); }
     const j = await call('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${k}` } }, p);
     return (j.data || []).map((m) => ({ id: m.id, name: m.id, see: /^(gpt-4o|gpt-4\.1|gpt-5|o3|o4)/.test(m.id) && !/audio|realtime|transcribe|tts|search/.test(m.id), draw: /^(gpt-image|dall-e)/.test(m.id) })).filter((m) => m.see || m.draw);
@@ -43,7 +44,7 @@
     const k = cfg.keys[p].trim(); if (!k) throw new Error(`No ${NAMES[p]} key yet: add it in View › Cloud AI keys.`);
     const O = IC.ollama, schema = O.SCHEMA, prompt = O.PROMPT + ' Answer with JSON only, matching this schema: ' + JSON.stringify(schema), b64 = jpeg(img, 1280); let text = '';
     if (p === 'anthropic') {
-      const j = await call('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': k, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' }, body: JSON.stringify({ model, max_tokens: 1500, messages: [{ role: 'user', content: [{ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: b64 } }, { type: 'text', text: prompt }] }] }) }, p);
+      const j = await call('https://api.anthropic.com/v1/messages', { method: 'POST', headers: anthHeaders(k, true), body: JSON.stringify({ model, max_tokens: 1500, messages: [{ role: 'user', content: [{ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: b64 } }, { type: 'text', text: prompt }] }] }) }, p);
       text = (j.content || []).map((c) => c.text || '').join('');
     } else if (p === 'gemini') {
       const j = await call(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(k)}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ contents: [{ parts: [{ inline_data: { mime_type: 'image/jpeg', data: b64 } }, { text: prompt }] }], generationConfig: { temperature: 0.2, responseMimeType: 'application/json' } }) }, p);
