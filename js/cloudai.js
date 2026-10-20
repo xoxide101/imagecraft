@@ -8,10 +8,21 @@
   'use strict';
   const IC = (window.IC = window.IC || {});
   const KEY = 'imagecraft-cloud';
-  let cfg = { keys: { anthropic: '', gemini: '', openai: '' }, models: {}, workspace: '' }; // workspace: Anthropic workspace ID, for keys not tied to one workspace
+  let cfg = { keys: { anthropic: '', gemini: '', openai: '', openrouter: '' }, models: {}, workspace: '' }; // workspace: Anthropic workspace ID, for keys not tied to one workspace
   try { const s = JSON.parse(localStorage.getItem(KEY) || 'null'); if (s) cfg = { keys: { ...cfg.keys, ...(s.keys || {}) }, models: s.models || {}, workspace: s.workspace || '' }; } catch (e) { /* blocked storage */ }
   const save = () => { try { localStorage.setItem(KEY, JSON.stringify(cfg)); } catch (e) { /* blocked storage */ } };
-  const NAMES = { anthropic: 'Claude (Anthropic)', gemini: 'Gemini (Google)', openai: 'GPT (OpenAI)' };
+  const NAMES = { anthropic: 'Claude (Anthropic)', gemini: 'Gemini (Google)', openai: 'GPT (OpenAI)', openrouter: 'OpenRouter (many models)' };
+  const PROVIDERS = ['anthropic', 'gemini', 'openai', 'openrouter'];
+  // OpenRouter: one key for many companies' models, in OpenAI's form. Text answers come from chat; pictures from /images.
+  const OR = 'https://openrouter.ai/api/v1', orHead = (k) => ({ 'content-type': 'application/json', Authorization: `Bearer ${k}`, 'X-Title': 'ImageCraft' });
+  async function orChat(k, model, b64, prompt, json) {
+    const j = await call(`${OR}/chat/completions`, { method: 'POST', headers: orHead(k), body: JSON.stringify({ model, ...(json ? { response_format: { type: 'json_object' } } : {}), messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: `data:image/jpeg;base64,${b64}` } }, { type: 'text', text: prompt }] }] }) }, 'openrouter');
+    return j.choices?.[0]?.message?.content || '';
+  }
+  async function orImage(k, model, prompt, dataUrl) {
+    const j = await call(`${OR}/images`, { method: 'POST', headers: orHead(k), body: JSON.stringify({ model, prompt, ...(dataUrl ? { input_references: [{ type: 'image_url', image_url: { url: dataUrl } }] } : {}) }) }, 'openrouter');
+    const d = j.data?.[0]; if (!d || !d.b64_json) throw new Error('OpenRouter sent no picture back (choose a model that makes pictures).'); return toImageData(d.b64_json, d.media_type || 'image/png');
+  }
   const has = (p) => !!(cfg.keys[p] || '').trim();
 
   const anthHeaders = (k, json) => ({ ...(json ? { 'content-type': 'application/json' } : {}), 'x-api-key': k, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true', ...(cfg.workspace.trim() ? { 'anthropic-workspace-id': cfg.workspace.trim() } : {}) });
@@ -70,6 +81,7 @@
     const k = cfg.keys[p].trim(); if (!k) return [];
     if (p === 'anthropic') { const j = await call('https://api.anthropic.com/v1/models?limit=100', { headers: anthHeaders(k) }, p); return (j.data || []).map((m) => ({ id: m.id, name: m.display_name || m.id, see: true })); }
     if (p === 'gemini') { const j = await call(`https://generativelanguage.googleapis.com/v1beta/models?pageSize=200&key=${encodeURIComponent(k)}`, {}, p); return (j.models || []).filter((m) => (m.supportedGenerationMethods || []).includes('generateContent')).map((m) => ({ id: m.name.replace(/^models\//, ''), name: m.displayName || m.name, see: !/embedding|aqa|tts/i.test(m.name), draw: /image/i.test(m.name) })); }
+    if (p === 'openrouter') { const [a, b] = await Promise.all([call(`${OR}/models`, { headers: orHead(k) }, p), call(`${OR}/models?output_modalities=image`, { headers: orHead(k) }, p).catch(() => ({ data: [] }))]); const seen = new Set(); return [...(a.data || []), ...(b.data || [])].filter((m) => !seen.has(m.id) && seen.add(m.id)).map((m) => { const inp = m.architecture?.input_modalities || [], outp = m.architecture?.output_modalities || []; return { id: m.id, name: m.name || m.id, see: inp.includes('image') && outp.includes('text') && !outp.includes('image'), draw: outp.includes('image') }; }).filter((m) => m.see || m.draw); }
     const j = await call('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${k}` } }, p);
     return (j.data || []).map((m) => ({ id: m.id, name: m.id, see: /^(gpt-4o|gpt-4\.1|gpt-5|o3|o4)/.test(m.id) && !/audio|realtime|transcribe|tts|search/.test(m.id), draw: /^(gpt-image|dall-e)/.test(m.id) })).filter((m) => m.see || m.draw);
   }
@@ -84,6 +96,7 @@
     } else if (p === 'gemini') {
       const j = await call(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(k)}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ contents: [{ parts: [{ inline_data: { mime_type: 'image/jpeg', data: b64 } }, { text: prompt }] }], generationConfig: { temperature: 0.2, responseMimeType: 'application/json' } }) }, p);
       text = ((j.candidates || [])[0]?.content?.parts || []).map((x) => x.text || '').join('');
+    } else if (p === 'openrouter') { text = await orChat(k, model, b64, prompt, false);
     } else {
       const j = await call('https://api.openai.com/v1/chat/completions', { method: 'POST', headers: { 'content-type': 'application/json', Authorization: `Bearer ${k}` }, body: JSON.stringify({ model, response_format: { type: 'json_object' }, messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: `data:image/jpeg;base64,${b64}` } }, { type: 'text', text: prompt }] }] }) }, p);
       text = j.choices?.[0]?.message?.content || '';
@@ -97,6 +110,7 @@
   async function regenerate(img, p, model, text = '', { colour = false } = {}) {
     const k = cfg.keys[p].trim(); if (!k) throw new Error(`No ${NAMES[p]} key yet: add it in AI settings › Cloud AI (the AI button in the status bar).`);
     const prompt = REGEN + (colour ? ' Give it natural, realistic colour.' : ' Keep its own colours (or its black and white or sepia tone).') + (text ? ' What it shows: ' + text : ''), b64 = jpeg(img, 1536);
+    if (p === 'openrouter') return orImage(k, model, prompt, `data:image/jpeg;base64,${b64}`);
     if (p === 'gemini') {
       const j = await call(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(k)}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ contents: [{ parts: [{ inline_data: { mime_type: 'image/jpeg', data: b64 } }, { text: prompt }] }], generationConfig: { responseModalities: ['IMAGE', 'TEXT'] } }) }, p);
       const part = ((j.candidates || [])[0]?.content?.parts || []).find((x) => x.inline_data || x.inlineData), d = part && (part.inline_data || part.inlineData);
@@ -127,7 +141,8 @@
       const j = await call(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(k)}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ contents: [{ parts: [{ inline_data: { mime_type: 'image/png', data: await b64Of(await pngOf(img)) } }, { text: prompt }] }], generationConfig: { responseModalities: ['IMAGE', 'TEXT'] } }) }, p);
       const part = ((j.candidates || [])[0]?.content?.parts || []).find((x) => x.inline_data || x.inlineData), d = part && (part.inline_data || part.inlineData);
       if (!d) throw new Error(`${NAMES[p]} sent no picture back (choose a model with "image" in its name).`); out = await toImageData(d.data, d.mime_type || d.mimeType || 'image/png');
-    } else throw new Error('Claude describes pictures but does not draw them: choose Gemini or OpenAI.');
+    } else if (p === 'openrouter') { const c = document.createElement('canvas'); c.width = img.width; c.height = img.height; c.getContext('2d').putImageData(img, 0, 0); out = await orImage(k, model, prompt, c.toDataURL('image/png'));
+    } else throw new Error('Claude describes pictures but does not draw them: choose Gemini, OpenAI or OpenRouter.');
     return out.width === img.width && out.height === img.height ? out : scaled(out, img.width, img.height);
   }
 
@@ -198,12 +213,14 @@
   // Gemini answers with a box (0–1000) and a small PNG mask for each thing it finds; they are laid into one map 0–1.
   async function segment(img, words, model) { const r = await segmentMany(img, [words], model); return r[words]; }
   // one call, several things: { label: map }. Each answer goes to the asked-for label it names (or the only one asked)
-  async function segmentMany(img, labels, model) {
-    const k = cfg.keys.gemini.trim(); if (!k) throw new Error('No Gemini key yet.');
+  async function segmentMany(img, labels, model, p = 'gemini') {
+    const k = (cfg.keys[p] || '').trim(); if (!k) throw new Error(`No ${NAMES[p]} key yet.`);
     const W = img.width, H = img.height, b64 = jpeg(img, 1024), maps = {}; labels.forEach((l) => { maps[l] = new Float32Array(W * H); });
     const prompt = `Give the segmentation masks for: ${labels.map((l) => `"${l}"`).join(', ')}. Output a JSON list of masks where each entry contains the 2D bounding box in the key "box_2d", the segmentation mask in key "mask", and the text label in the key "label"${labels.length > 1 ? ', which must be exactly one of the names given' : ''}. Several entries may share a label. Leave out anything not in the picture.`;
-    const j = await call(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(k)}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ contents: [{ parts: [{ inline_data: { mime_type: 'image/jpeg', data: b64 } }, { text: prompt }] }], generationConfig: { temperature: 0.2 } }) }, 'gemini');
-    const text = ((j.candidates || [])[0]?.content?.parts || []).map((x) => x.text || '').join(''), m = text.match(/\[[\s\S]*\]/); if (!m) throw new Error('Gemini did not answer with masks.');
+    let text = '';
+    if (p === 'openrouter') text = await orChat(k, model, b64, prompt, false);
+    else { const j = await call(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(k)}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ contents: [{ parts: [{ inline_data: { mime_type: 'image/jpeg', data: b64 } }, { text: prompt }] }], generationConfig: { temperature: 0.2 } }) }, 'gemini'); text = ((j.candidates || [])[0]?.content?.parts || []).map((x) => x.text || '').join(''); }
+    const m = text.match(/\[[\s\S]*\]/); if (!m) throw new Error(`${NAMES[p]} did not answer with masks.`);
     const items = JSON.parse(m[0]), norm = (s) => String(s || '').toLowerCase().replace(/[^a-z ]/g, '').trim();
     for (const it of items) {
       const [ya, xa, yb, xb] = it.box_2d || []; if (!it.mask || !(xb > xa) || !(yb > ya)) continue;
@@ -224,6 +241,7 @@
     const b64 = jpeg(img, 1024), prompt = `For each of these: ${labels.map((l) => `"${l}"`).join(', ')}, find every area of the picture that shows it. Answer with JSON only: {"found":[{"label":"<exactly one of the names given>","box_2d":[ymin,xmin,ymax,xmax],"points":[[y,x],[y,x],[y,x]]}]} with all numbers from 0 to 1000 across the picture. The points must lie well inside that thing (not on its edge), spread over it. Several entries may share a label (two people, two patches of sky). Leave out anything not in the picture.`;
     let text = '';
     if (p === 'anthropic') { const j = await call('https://api.anthropic.com/v1/messages', { method: 'POST', headers: anthHeaders(k, true), body: JSON.stringify({ model, max_tokens: 2000, messages: [{ role: 'user', content: [{ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: b64 } }, { type: 'text', text: prompt }] }] }) }, p); text = (j.content || []).map((c) => c.text || '').join(''); }
+    else if (p === 'openrouter') text = await orChat(k, model, b64, prompt, false);
     else { const j = await call('https://api.openai.com/v1/chat/completions', { method: 'POST', headers: { 'content-type': 'application/json', Authorization: `Bearer ${k}` }, body: JSON.stringify({ model, response_format: { type: 'json_object' }, messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: `data:image/jpeg;base64,${b64}` } }, { type: 'text', text: prompt }] }] }) }, p); text = j.choices?.[0]?.message?.content || ''; }
     const m = text.match(/\{[\s\S]*\}/); if (!m) throw new Error(`${NAMES[p]} did not answer in the expected form.`);
     const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z ]/g, '').trim();
@@ -234,7 +252,7 @@
   const face = (crop, p, model) => edit(crop, p, model, 'Restore this old, blurred or damaged face photo so it looks sharp and natural, like a modern photo of the same person. Keep the identity, expression, pose, hair, age and framing exactly the same. Do not change the background or the crop.');
 
   // which services can do a job, given the keys; which of their models to use (the person's choice, or a good default)
-  const engines = (job) => lastIn(({ fill: ['openai', 'gemini'], colour: ['gemini', 'openai'], masks: ['gemini'], edit: ['openai', 'gemini'], locate: ['openai', 'anthropic'], face: ['gemini', 'openai'] }[job] || []).filter(has));
+  const engines = (job) => lastIn(({ fill: ['openai', 'gemini', 'openrouter'], colour: ['gemini', 'openai', 'openrouter'], masks: ['gemini', 'openrouter'], edit: ['openai', 'gemini', 'openrouter'], locate: ['openai', 'openrouter', 'anthropic'], face: ['gemini', 'openai', 'openrouter'] }[job] || []).filter(has));
   // the newest model that fits (by the version numbers in its name), so retired models (gemini-2.5-flash) are never chosen
   const ver = (id) => (String(id).match(/\d+(?:\.\d+)?/g) || []).map(Number);
   const newest = (ms) => ms.slice().sort((a, b) => { const x = ver(a.id), y = ver(b.id); for (let i = 0; i < Math.max(x.length, y.length); i++) { const d = (y[i] || 0) - (x[i] || 0); if (d) return d; } return a.id.length - b.id.length; })[0];
@@ -247,5 +265,5 @@
   async function tryEach(list, fn) { list = lastIn(list); let last = null; for (const p of list) { try { return await fn(p); } catch (e) { last = e; if (/paid credit|quota/i.test(e.message)) unpaid.add(p); if (!passable(e) || p === list[list.length - 1]) throw e; if (window.ICLOG) ICLOG.add('info', `Cloud: ${NAMES[p]} could not do it (${e.message.slice(0, 120)}); trying ${NAMES[list[list.indexOf(p) + 1]]}`); } } throw last; }
   // a job with this service first, then the others that can do it
   const orderFrom = (job, first) => { const l = engines(job); return first && l.includes(first) ? [first, ...l.filter((x) => x !== first)] : l; };
-  IC.cloud = { JOBS, job, tryEach, orderFrom, log, onLog, task: setTask, cfg, save, has, NAMES, models, describe, regenerate, edit, fill, layBack, colourise, segment, segmentMany, locate, face, engines, drawModel, seeModel };
+  IC.cloud = { PROVIDERS, JOBS, job, tryEach, orderFrom, log, onLog, task: setTask, cfg, save, has, NAMES, models, describe, regenerate, edit, fill, layBack, colourise, segment, segmentMany, locate, face, engines, drawModel, seeModel };
 })();
