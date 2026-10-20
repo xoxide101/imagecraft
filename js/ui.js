@@ -431,7 +431,7 @@
       fields: [seg('show', 'Show', [['result', 'The result'], ['check', 'Edge check (map)']]), range('amount', 'Smoothing (%)', 0, 100), range('threshold', 'Only edges stronger than', 8, 120), { t: 'out' },
         note('Edge check marks slanted edges in red where they are hard steps (a staircase) and in green where they are already smooth. Smoothing works along each edge, never across it, so edges stay sharp.')],
       report: () => { const a = X.aliasCheck(tool.base), b = tool.after ? X.aliasCheck(tool.after) : null; return `<p class="hint">Jagged: <b>${Math.round(a.ratio * 100)}%</b> of slanted edges before${b ? `, <b>${Math.round(b.ratio * 100)}%</b> after` : ''}.</p>`; },
-      run: (img, s) => { const r = X.antialias(img, s); tool.after = r; return s.show === 'check' ? X.aliasCheck(r).map : r; }, final: (img, s) => X.antialias(img, s) },
+      run: (img, s) => { const r = X.antialias(img, s); if (tool) tool.after = r; return s.show === 'check' ? X.aliasCheck(r).map : r; }, final: (img, s) => X.antialias(img, s) },
     straighten: { title: 'Straighten', icon: IK.straighten, s: { angle: 0, crop: true }, fields: [range('angle', 'Turn (degrees)', -45, 45, 0.1), chk('crop', 'Cut off the turned corners'), note('Line up the horizon or a wall with the edge of the picture.')],
       run: (img, s) => X.rotate(img, { angle: s.angle, crop: s.crop }) },
     light: { title: 'Brightness and contrast', icon: IK.light, s: { brightness: 0, contrast: 0, gamma: 1, shadows: 0, highlights: 0 },
@@ -746,14 +746,14 @@
         say && say('Recognising the shapes…'); await wait(20);
         // the tracer looks at a smoothly enlarged copy (about 900 pixels across), so small pictures give true curves and keep their small parts
         const m = Math.max(1, Math.min(8, Math.floor(900 / Math.max(img.width, img.height)))), src = m > 1 ? X.resize(img, { width: img.width * m, height: img.height * m, method: img.width * img.height < 90000 ? 'smoothpixel' : 'auto' }) : img;
-        const few = F.countColours(img, 17), tr = await CraftTracer.trace(X.canvasOf(src).toDataURL('image/png'), { colors: s.colours === 'auto' ? (few <= 16 ? few : 'auto') : +s.colours, detail: s.detail, smooth: s.smooth, max: Math.max(src.width, src.height) });
+        const few = F.countColours(img, 17), tr = await CraftTracer.trace(X.canvasOf(src).toDataURL('image/png'), { colors: s.colours === 'auto' ? (few <= 16 ? few : 'auto') : s.colours === 'rich' ? 'rich' : +s.colours, detail: s.detail, smooth: s.smooth, max: Math.max(src.width, src.height) });
         // each traced colour set to the picture's own most common colour near it (the tracer's averages take in the soft
         // edge pixels and come out a shade off)
         { const hist = new Map(), d0 = img.data; for (let i = 0; i < d0.length; i += 4) { if (d0[i + 3] < 128) continue; const key = (d0[i] << 16) | (d0[i + 1] << 8) | d0[i + 2]; hist.set(key, (hist.get(key) || 0) + 1); }
           const top = [...hist.entries()].sort((a, b) => b[1] - a[1]).slice(0, 4000);
           tr.svg = tr.svg.replace(/fill="rgb\((\d+),(\d+),(\d+)\)"/g, (m0, r0, g0, b0) => { let best = null, bs = -1; for (const [key, n] of top) { const dd = Math.hypot((key >> 16) - r0, ((key >> 8) & 255) - g0, (key & 255) - b0); if (dd < 40) { const sc = n / (1 + dd * dd * 0.05); if (sc > bs) { bs = sc; best = key; } } } return best == null ? m0 : `fill="rgb(${best >> 16},${(best >> 8) & 255},${best & 255})"`; }); }
         if (s.perfect) { const sn = snapShapes(tr.svg); tr.svg = sn.svg; tr.snapped = sn.snapped; }
-        tool.shapes = tr;
+        if (tool) tool.shapes = tr;
         say && say('Drawing them again…');
         // drawn over the enlarged original: where a perfected shape is smaller than the hole left for it, the picture shows, not a gap
         const base = X.resize(img, { width: W, height: H, method: k > 1 && img.width * img.height < 90000 ? 'smoothpixel' : 'auto' }), vec = await svgToImg(tr.svg, W, H, base), b = +s.blend / 100;
@@ -768,12 +768,12 @@
         const o = X.pyramidBlend(base, vec, mk, 5);
         return o;
       } },
-    trace: { title: 'To SVG outlines', icon: IK.svg, s: { how: 'outlines', colours: 'rich', detail: 6, smooth: 1, removeBg: false },
-      fields: [seg('how', 'Kind', [['outlines', 'Smooth outlines'], ['pixels', 'Exact pixels (pixel art)']]), sel('colours', 'Colours', [['auto', 'Best match'], ...[2, 3, 4, 6, 8, 12, 16, 24, 32].map((n) => [String(n), `${n} colours`])], (s) => s.how === 'outlines'),
-        range('detail', 'Detail', 1, 10, 1, (s) => s.how === 'outlines'), range('smooth', 'Smoothing', 0, 5, 1, (s) => s.how === 'outlines'), chk('removeBg', 'Leave out the background (also inside letters and shapes; clean edges)', (s) => s.how === 'outlines'), { t: 'out' },
+    trace: { title: 'To SVG outlines', icon: IK.svg, s: { how: 'outlines', colours: 'rich', detail: 6, smooth: 1, removeBg: false, precise: true },
+      fields: [seg('how', 'Kind', [['outlines', 'Smooth outlines'], ['pixels', 'Exact pixels (pixel art)']]), sel('colours', 'Colours', [['rich', 'Rich: shades and gradients (6 to 12)'], ['auto', 'Best match (fewest)'], ...[2, 3, 4, 6, 8, 12, 16, 24, 32].map((n) => [String(n), `${n} colours`])], (s) => s.how === 'outlines'),
+        range('detail', 'Detail', 1, 10, 1, (s) => s.how === 'outlines'), range('smooth', 'Smoothing', 0, 5, 1, (s) => s.how === 'outlines'), chk('removeBg', 'Leave out the background (also inside letters and shapes; clean edges)', (s) => s.how === 'outlines'), chk('precise', 'Precise, for artwork: traced at twice the size, finest detail, small shapes and shades kept (slower)', (s) => s.how === 'outlines'), { t: 'out' },
         { t: 'btns', buttons: [{ label: 'Save SVG…', primary: true, run: () => saveTrace() }, { label: 'Copy SVG', run: () => copyTrace() }] }],
       applyLabel: 'Use as the picture',
-      run: async (img, s, say) => { say && say('Tracing…'); let src0 = img; if (s.how !== 'pixels' && s.removeBg) { const bg = X.cornerBg(img); src0 = X.defringe(X.makeClear(img, { rgb: bg, tolerance: 14 }), bg, { reach: 2 }); } const svg = s.how === 'pixels' ? pixelSVG(img) : (await CraftTracer.trace(X.canvasOf(src0).toDataURL('image/png'), { colors: s.colours === 'auto' || s.colours === 'rich' ? s.colours : +s.colours, detail: s.detail, smooth: s.smooth, removeBg: s.removeBg })).svg; tool.svg = svg; return svgToImg(svg, img.width, img.height); },
+      run: async (img, s, say) => { say && say('Tracing…'); let src0 = img; if (s.how !== 'pixels' && s.removeBg) { const bg = X.cornerBg(img); src0 = X.defringe(X.makeClear(img, { rgb: bg, tolerance: 14 }), bg, { reach: 2 }); } const precise = s.how !== 'pixels' && s.precise; if (precise) { const m = Math.max(1, Math.min(2, 2400 / Math.max(img.width, img.height))); if (m > 1) src0 = X.resize(src0, { width: Math.round(img.width * m), height: Math.round(img.height * m), method: 'smooth' }); } const svg = s.how === 'pixels' ? pixelSVG(img) : (await CraftTracer.trace(X.canvasOf(src0).toDataURL('image/png'), { colors: s.colours === 'auto' || s.colours === 'rich' ? s.colours : +s.colours, detail: precise ? 10 : s.detail, smooth: precise ? 0 : s.smooth, removeBg: s.removeBg, precise, max: precise ? Math.max(src0.width, src0.height) : undefined })).svg; if (tool) tool.svg = svg; return svgToImg(svg, img.width, img.height); },
       report: () => (tool && tool.svg ? `<p class="hint">SVG: <b>${kb(tool.svg.length)}</b>, ${fmtN((tool.svg.match(/<(path|rect)/g) || []).length)} shapes.</p>` : '') },
     text: { title: 'To text art (ASCII / ANSI)', icon: IK.ascii, s: { mode: 'chars', columns: 80, ramp: 'standard', colour: 'none', dark: true, contrast: 0 },
       fields: [seg('mode', 'Made of', [['chars', 'Characters'], ['shade', 'Shades ░▒▓'], ['halfblock', 'Half blocks ▀']]), range('columns', 'Characters across', 16, 240), sel('ramp', 'Characters', [['standard', 'Standard  .:-=+*#%@'], ['detailed', 'Detailed (70)'], ['simple', 'Simple  .oO@'], ['blocks', 'Blocks ░▒▓█'], ['dots', 'Braille dots ⣿']], (s) => s.mode === 'chars'),
@@ -781,7 +781,7 @@
         { t: 'btns', buttons: [{ label: 'Save text (.txt)', run: () => saveText('txt') }, { label: 'Save ANSI (.ans)', run: () => saveText('ans') }, { label: 'ANSI for terminals', run: () => saveText('ansutf8') }, { label: 'Save web page', run: () => saveText('html') }, { label: 'Copy text', run: () => saveText('copy') }] },
         note('Classic .ANS files use the DOS characters and 16 colours, with a SAUCE record, for ANSI viewers and BBSes. “ANSI for terminals” is UTF-8 with 256 or true colour, for showing with cat or type.')],
       applyLabel: 'Use as the picture',
-      run: (img, s) => { const r = A.make(img, { columns: s.columns, mode: s.mode, ramp: s.ramp, colour: s.colour, dark: s.dark, contrast: s.contrast }); tool.art = r; const c = A.render(r); return c.getContext('2d').getImageData(0, 0, c.width, c.height); } },
+      run: (img, s) => { const r = A.make(img, { columns: s.columns, mode: s.mode, ramp: s.ramp, colour: s.colour, dark: s.dark, contrast: s.contrast }); if (tool) tool.art = r; const c = A.render(r); return c.getContext('2d').getImageData(0, 0, c.width, c.height); } },
   };
   Object.entries(TOOLS).forEach(([id, d]) => { d.id = id; });
 
@@ -937,14 +937,14 @@
   // ------------------------------------------------------------------ kinds of picture: one pipeline each
   // Each picture has a kind (guessed when it opens; the person can change it). Tools that would harm that kind are greyed
   // out, unless "Show all tools" is on; Process a photo and Fix everything plan for the kind.
-  const KINDS = [['photo', 'Photo'], ['painting', 'Painting'], ['drawing', 'Drawing'], ['vector', 'Vector art'], ['pixel', 'Pixel art']];
+  const KINDS = [['photo', 'Photo'], ['painting', 'Painting'], ['drawing', 'Drawing'], ['logo', 'Logo'], ['vector', 'Clip art'], ['pixel', 'Pixel art']];
   const KIND_NAME = Object.fromEntries(KINDS);
   const ONLY = { // tools for some kinds only (the rest are for every kind)
     facerestore: 'photo', facerefine: 'photo', redeye: 'photo', colourise: 'photo', deblur: 'photo', stack: 'photo', assess: 'photo painting', regen: 'photo painting',
     nlm: 'photo painting', denoise: 'photo painting', noisemap: 'photo painting', dehaze: 'photo painting', shadows: 'photo painting', shadowlift: 'photo painting', chroma: 'photo painting',
     equalizer: 'photo painting', gradient: 'photo painting', diffuse: 'photo painting', clarity: 'photo painting drawing', clahe: 'photo painting drawing', sepia: 'photo painting drawing',
-    repair: 'photo painting drawing', despeckle: 'photo painting drawing', descreen: 'photo painting drawing', deband: 'photo painting vector', paper: 'drawing painting',
-    remaster: 'vector pixel drawing', dots: 'drawing vector pixel',
+    repair: 'photo painting drawing', despeckle: 'photo painting drawing', descreen: 'photo painting drawing', deband: 'photo painting vector logo', paper: 'drawing painting',
+    remaster: 'vector pixel drawing', dots: 'drawing vector pixel logo',
   };
   let allTools = false; try { allTools = localStorage.getItem('imagecraft-alltools') === '1'; } catch (e) { /* blocked storage */ }
   function kindOf(p) { p = p || pic(); if (!p) return 'photo'; if (!p.kind) { const g = IC.process.guessKind(p.steps[0].img); p.kind = g.kind; p.kindWhy = g.why; p.kindGuessed = true; } return p.kind; }
@@ -953,13 +953,14 @@
   // After a picture opens: a tile for each kind, each showing this picture as that pipeline would start to treat it.
   // A click sets the kind and opens its pipeline (Process); Not now keeps the guess. Can be switched off.
   let askKind = true; try { askKind = localStorage.getItem('imagecraft-askkind') !== '0'; } catch (e) { /* blocked storage */ }
-  const KIND_WHAT = { photo: 'repair, noise, light and colour, faces', painting: 'colour and cracks, keeping the brushwork', drawing: 'white paper, clean lines', vector: 'solid colours, clean edges, SVG', pixel: 'every pixel kept' };
+  const KIND_WHAT = { photo: 'repair, noise, light and colour, faces', painting: 'colour and cracks, keeping the brushwork', drawing: 'white paper, clean lines', logo: 'exact lettering and colours; see-through, clean edges; precise SVG', vector: 'clip art: shapes rebuilt in solid colours, SVG', pixel: 'every pixel kept' };
   function kindPreview(k, sm) {
     try {
       if (k === 'photo') return X.autoColour(sm);
       if (k === 'painting') return X.autoLevels(sm);
       if (k === 'drawing') return X.paperClean(sm, { strength: 85, deepen: 30, keepColour: true });
       if (k === 'vector') return C.reduce(sm, { colours: 8, dither: 'none' });
+      if (k === 'logo') { const bg = X.cornerBg(sm); return X.defringe(X.makeClear(sm, { rgb: bg, tolerance: 14 }), bg, { reach: 1 }); }
       if (k === 'pixel') { const w = Math.max(8, Math.round(sm.width / 6)), h = Math.max(6, Math.round(sm.height / 6)); return X.resize(X.resize(sm, { width: w, height: h, method: 'nearest' }), { width: sm.width, height: sm.height, method: 'nearest' }); }
     } catch (e) { /* the plain picture */ }
     return sm;
@@ -1535,11 +1536,11 @@
     const fc = add(`<label class="check"><input type="checkbox" ${S.faces ? 'checked' : ''}> Look for faces too (the first time downloads the face finder, about 4 MB)</label>`); fc.querySelector('input').onchange = (e) => { S.faces = e.target.checked; };
     S.auto = S.auto || { faces: true, colourise: true }; S.passes = S.passes || 3; el.append(kindField());
     const fx = add(`<div class="ai-card fix-all"><h3>Fix everything</h3><p class="hint">One click: measures the photo, runs the whole plan (damage found automatically, nothing left for you), then touch-up passes that measure the result again and fix only what still needs it. Each step runs Local, Cloud or Both as the status bar switch and AI settings › Steps say.</p>
-      ${kindOf() === 'photo' ? `<label class="check"><input type="checkbox" data-fa="faces" ${S.auto.faces ? 'checked' : ''}> Restore faces (they are redrawn)</label><label class="check"><input type="checkbox" data-fa="colourise" ${S.auto.colourise ? 'checked' : ''}> Colourise if black and white or sepia</label>` : `<p class="hint">Plan for ${KIND_NAME[kindOf()].toLowerCase()}: ${({ painting: 'repair, light and colour, keeping the brushwork', drawing: 'the paper cleaned, stray dots, crisp lines', vector: 'JPEG blocks, then the shapes rebuilt with solid colours', pixel: 'made bigger with the pixels kept' })[kindOf()]}.</p>`}
+      ${kindOf() === 'photo' ? `<label class="check"><input type="checkbox" data-fa="faces" ${S.auto.faces ? 'checked' : ''}> Restore faces (they are redrawn)</label><label class="check"><input type="checkbox" data-fa="colourise" ${S.auto.colourise ? 'checked' : ''}> Colourise if black and white or sepia</label>` : `${kindOf() === 'logo' ? `<label class="check"><input type="checkbox" data-fa="transparent" ${S.auto.transparent !== false ? 'checked' : ''}> Make the background see-through (inside the letters too, no white rim)</label>` : ''}${kindOf() === 'vector' ? `<label class="field"><span>Colours to keep</span><select class="input" data-fv>${[['rich', 'Rich: shades and gradients (6 to 12)'], ...[4, 6, 8, 12, 16, 24, 32].map((n) => [String(n), `${n} colours`]), ['keep', 'Keep all colours (edges cleaned only)']].map(([v, l]) => `<option value="${v}" ${(S.auto.vcolours || 'keep') === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label><label class="check"><input type="checkbox" data-fa="transparent" ${S.auto.transparent !== false ? 'checked' : ''}> Make the background see-through (inside the shapes too, no white rim)</label>` : ''}<p class="hint">Plan for ${KIND_NAME[kindOf()].toLowerCase()}: ${({ painting: 'repair, light and colour, keeping the brushwork', drawing: 'the paper cleaned, stray dots, crisp lines', vector: 'JPEG blocks, the shapes rebuilt with solid colours, the background taken away (if ticked), then the edges smoothed', logo: 'nothing redrawn: JPEG blocks out, the background and its white edge blend taken away (if ticked), then the edges smoothed. For an SVG, use To SVG outlines (Precise)', pixel: 'made bigger with the pixels kept' })[kindOf()]}.</p>`}
       <label class="field"><span>Passes, at most</span><select class="input" data-fp style="width:auto">${[[1, '1 (no touch-up)'], [2, '2 (one touch-up)'], [3, '3 (two touch-ups)'], [4, '4']].map(([v, l]) => `<option value="${v}" ${S.passes === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
       <div class="btns"><button class="btn primary" type="button" data-fx="all">Fix everything</button><button class="btn outline" type="button" data-fx="touch" title="Measure the picture as it is now (with any changes you made yourself) and fix only what still needs it">${S.report ? 'Touch up again' : 'Touch up'}</button></div>
       ${S.report ? `<div class="fix-report">${S.report.map((r) => `<div><b>${r.steps.length ? `Pass ${r.pass}${r.pass > 1 ? ' (touch-up)' : ''}` : 'Then'}</b>${r.steps.length ? ` · ${r.steps.length} step${r.steps.length === 1 ? '' : 's'} · ${fmtTime(r.secs)}${r.stopped ? ' · <b>stopped</b>' : ''}<ul>${r.steps.map((x) => `<li>${esc(x.label)} <span class="where${x.where !== 'local' ? ' cloud' : ''}">${x.where === 'local' ? 'Local' : x.where === 'cloud' ? 'Cloud' : 'Both'}</span><small class="hint"> ${esc(x.why)}</small></li>`).join('')}</ul>` : `<p class="hint">${esc(r.note)}</p>`}</div>`).join('')}</div>` : ''}</div>`);
-    fx.onchange = (e) => { const a = e.target.dataset.fa; if (a) S.auto[a] = e.target.checked; if (e.target.matches('[data-fp]')) S.passes = +e.target.value; };
+    fx.onchange = (e) => { if (e.target.matches('[data-fv]')) S.auto.vcolours = e.target.value; const a = e.target.dataset.fa; if (a) S.auto[a] = e.target.checked; if (e.target.matches('[data-fp]')) S.passes = +e.target.value; };
     fx.onclick = (e) => { const b = e.target.closest('[data-fx]'); if (!b) return; if (b.dataset.fx === 'touch') { const keep = S.passes; S.passes = 1; S.touchOnly = true; fixTouch(S).finally(() => { S.passes = keep; S.touchOnly = false; }); } else fixEverything(S); };
     add('<p class="hint" style="margin-top:10px"><b>Or step by step:</b> look at the photo, then choose the steps yourself.</p>');
     const look = add('<div class="btns"><button class="btn outline" type="button">Look at the photo</button></div>').querySelector('button');

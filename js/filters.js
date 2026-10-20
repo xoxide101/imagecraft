@@ -493,7 +493,26 @@
   }
   // smoothing: on edge pixels only, a blend with points along the edge (never across it), so steps become a smooth
   // slope while the edge stays sharp. amount 0–100; level and upright edges are left as they are.
-  function antialias(img, { amount = 60, threshold = 32, reach = 0 } = {}) {
+  // see-through pixels take the colour of the shape next to them (spread out a few pixels), so any later blending at an
+  // edge mixes in the shape's own colour, never the white (or black) that was behind
+  function bleedColour(img, steps = 6) {
+    const W = img.width, H = img.height, o = copy(img), d = o.data, n = W * H; let known = new Uint8Array(n); for (let p = 0; p < n; p++) known[p] = d[p * 4 + 3] >= 128 ? 1 : 0;
+    for (let s = 0; s < steps; s++) { const next = known.slice(); let any = false;
+      for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { const p = y * W + x; if (known[p]) continue; let r = 0, g = 0, b = 0, m = 0;
+        for (let j = -1; j <= 1; j++) for (let i = -1; i <= 1; i++) { const xx = x + i, yy = y + j; if (xx < 0 || yy < 0 || xx >= W || yy >= H) continue; const q = yy * W + xx; if (known[q]) { r += d[q * 4]; g += d[q * 4 + 1]; b += d[q * 4 + 2]; m++; } }
+        if (m) { d[p * 4] = r / m; d[p * 4 + 1] = g / m; d[p * 4 + 2] = b / m; next[p] = 1; any = true; } }
+      known = next; if (!any) break; }
+    return o;
+  }
+  // smoothing a picture with see-through parts: colours bled first, then the colours smoothed, then the see-through
+  // edge itself smoothed (as a grey picture), so no white creeps back along the edges
+  function antialiasClear(img, o2) {
+    const W = img.width, H = img.height, b = bleedColour(img), sm = antialias1(b, o2), A = new ImageData(W, H);
+    for (let p = 0; p < W * H; p++) { const a = img.data[p * 4 + 3]; A.data[p * 4] = A.data[p * 4 + 1] = A.data[p * 4 + 2] = a; A.data[p * 4 + 3] = 255; }
+    const As = antialias1(A, o2), out = sm; for (let p = 0; p < W * H; p++) out.data[p * 4 + 3] = As.data[p * 4]; return out;
+  }
+  function antialias(img, o2 = {}) { for (let i = 3; i < img.data.length; i += 4) if (img.data[i] < 250) return antialiasClear(img, o2); return antialias1(img, o2); }
+  function antialias1(img, { amount = 60, threshold = 32, reach = 0 } = {}) {
     // how far to reach along an edge: about the length of a step (pictures grown with square pixels have long steps)
     let R = reach; if (!R) { const a = aliasCheck(img, { threshold }); R = a.ratio > 0.25 ? 4 : a.ratio > 0.12 ? 3 : 2; }
     const E = edgeInfo(img, threshold, Math.max(2, R)), { W, H } = E, s = img.data, o = copy(img), d = o.data, k = amount / 100;
@@ -723,5 +742,5 @@
     return o;
   }
 
-  IC.filters = { cornerBg, defringe, dotsOff, paperClean, toneFrom, colourFrom, colourise, mmpx, deband, chromaRebuild, guidedBy, cas, dehaze, hazeLevel, isToned, shadowRecover, guided, autoColour, clarity, pyramidBlend, aliasCheck, antialias, light, colour, autoLevels, autoFix, whiteBalance, greyscale, sepia, invert, threshold, posterize, blur, sharpen, denoise, median, despeckle, deblock, undither, pixelate, resize, scale2x, scale3x, rotate: rotateAny, rotate90: rotate, flip, crop, trimBox, canvasSize, makeClear, flatten, copy, canvasOf };
+  IC.filters = { bleedColour, cornerBg, defringe, dotsOff, paperClean, toneFrom, colourFrom, colourise, mmpx, deband, chromaRebuild, guidedBy, cas, dehaze, hazeLevel, isToned, shadowRecover, guided, autoColour, clarity, pyramidBlend, aliasCheck, antialias, light, colour, autoLevels, autoFix, whiteBalance, greyscale, sepia, invert, threshold, posterize, blur, sharpen, denoise, median, despeckle, deblock, undither, pixelate, resize, scale2x, scale3x, rotate: rotateAny, rotate90: rotate, flip, crop, trimBox, canvasSize, makeClear, flatten, copy, canvasOf };
 })();

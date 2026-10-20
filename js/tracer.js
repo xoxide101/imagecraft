@@ -30,7 +30,7 @@
     const px = solidPixels(data); if (px.length < 8) return [[0, 0, 0]];
     if (want === 'rich') { let r = null; for (let k = 6; k <= 12; k++) { r = kmeans(px, k); if (r.err < 3) break; } const cs = r.cs.filter((c, j) => r.count[j] / px.length >= 0.004), out = []; for (const c of cs) if (!out.some((e) => Math.hypot(e[0] - c[0], e[1] - c[1], e[2] - c[2]) < 10)) out.push(c); return out; }
     const keep = (r) => r.cs.filter((c, j) => r.count[j] / px.length >= 0.025);
-    if (want && want !== 'auto') return keep(kmeans(px, want)).slice(0, want);
+    if (want && want !== 'auto') { const r = kmeans(px, want); return r.cs.filter((c, j) => r.count[j] / px.length >= 0.003).slice(0, want); } // a number asked for: shades kept down to 0.3%
     let prev = kmeans(px, 2);
     for (let k = 3; k <= 16; k++) { const r = kmeans(px, k); if (prev.err < 8 || (prev.err - r.err) / prev.err < 0.18) return keep(prev); prev = r; }
     return keep(prev);
@@ -46,7 +46,7 @@
     const x = c.getContext('2d', { willReadFrequently: true }); x.drawImage(img, 0, 0, w, h);
     const id = x.getImageData(0, 0, w, h);
     // the colours, from a small copy (quick), then every pixel is snapped to the nearest one so soft edges do not make slivers
-    const sm = document.createElement('canvas'), sk = Math.min(1, (o.colors === 'rich' ? 200 : 96) / Math.max(w, h)); sm.width = Math.max(4, Math.round(w * sk)); sm.height = Math.max(4, Math.round(h * sk));
+    const sm = document.createElement('canvas'), sk = Math.min(1, (o.precise ? 320 : o.colors === 'rich' ? 200 : 96) / Math.max(w, h)); sm.width = Math.max(4, Math.round(w * sk)); sm.height = Math.max(4, Math.round(h * sk));
     const smx = sm.getContext('2d', { willReadFrequently: true }); smx.imageSmoothingEnabled = false; smx.drawImage(img, 0, 0, sm.width, sm.height); // no blending: soft edges stay rare
     const pal = palette(smx.getImageData(0, 0, sm.width, sm.height).data, o.colors === 'auto' || !o.colors ? 'auto' : o.colors === 'rich' ? 'rich' : Math.max(2, Math.min(32, o.colors | 0)));
     const d = id.data;

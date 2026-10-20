@@ -49,7 +49,7 @@
       const j = i + 4, l = i + W * 4; if (Math.abs(d[j] - r) + Math.abs(d[j + 1] - g) + Math.abs(d[j + 2] - b) < 6 && Math.abs(d[l] - r) + Math.abs(d[l + 1] - g) + Math.abs(d[l + 2] - b) < 6) { flat++; if (!(L > 200 && mx - mn < 40)) inkFlat++; } }
     const fc = cols.size, pf = paper / k, df = dark / k, cm = chroma / k / 255, ff = flat / k, ic = ink ? inkC / ink / 255 : 0, iff = ink ? inkFlat / ink : 0; // ic: how colourful the marks are (not the paper)
     if (fc <= 64 && n < 600000) return { kind: 'pixel', why: `${fc} colours, small` };
-    if (pf > 0.3 && ic > 0.25 && iff > 0.45) return { kind: 'vector', why: `strong solid colours on a plain background (${Math.round(iff * 100)}% of the marks flat)` };
+    if (pf > 0.3 && ic > 0.25 && iff > 0.45) return { kind: 'logo', why: `strong solid colours on a plain background (${Math.round(iff * 100)}% of the marks flat)` };
     if (pf > 0.5 && df < 0.3 && ic < 0.18) return { kind: 'drawing', why: `${Math.round(pf * 100)}% plain paper, grey or dark marks` };
     if (ff > 0.6 && q5.size < 1500) return { kind: 'vector', why: `${Math.round(ff * 100)}% flat colour areas, ${q5.size < 300 ? 'few' : 'a limited number of'} colours` };
     return { kind: 'photo', why: 'continuous tones' };
@@ -68,7 +68,7 @@
     return L;
   }
   // rough time for a step on this picture (ms), from tested speeds; the AI ones from this computer's own timings when known
-  const PER_MP = { dots: 600, paper: 300, remaster: 4000, descreen: 400, deblock: 300, chroma: 400, repair: 600, nlm: 6000, deblur: 9000, autocolour: 400, balance: 200, shadows: 900, dehaze: 900, clahe: 500, light: 100, sharpen: 200, deband: 1500, resize: 600 };
+  const PER_MP = { cutout: 400, aa: 800, dots: 600, paper: 300, remaster: 4000, descreen: 400, deblock: 300, chroma: 400, repair: 600, nlm: 6000, deblur: 9000, autocolour: 400, balance: 200, shadows: 900, dehaze: 900, clahe: 500, light: 100, sharpen: 200, deband: 1500, resize: 600 };
   function estimate(step, f, speed) {
     const sp = speed || {};
     if (step.id === 'upscale') { const sq = Math.ceil(f.W / 160) * Math.ceil(f.H / 160); return sq * (sp['esrgan3'] || 150) + 500; }
@@ -98,7 +98,13 @@
       if (!touchup) add('sharpen', 'Crisp lines', 'a light finish on the lines', { how: 'smart', cas: 25 }, true);
     } else if (K === 'vector') {
       if (f.blocks.luma > (touchup ? 1.4 : 1.1)) add('deblock', 'Remove JPEG blocks', `blocks ${f.blocks.luma.toFixed(1)}× around the flat colours`, { strength: 70 });
-      if (!touchup && (goals.repair || goals.colour || goals.bigger)) add('remaster', `Rebuild the shapes${goals.bigger ? ` ${factor}× bigger` : ''}`, 'flat colours made solid, edges redrawn clean (no new colours)', { scale: goals.bigger ? Math.min(4, factor) : 1, colours: 'auto', where: 'all', blend: 100 });
+      if (!touchup && (goals.repair || goals.colour || goals.bigger)) { const vc = (o.also && o.also.vcolours) || 'keep'; if (vc !== 'keep') add('remaster', `Rebuild the shapes${goals.bigger ? ` ${factor}× bigger` : ''} (${vc === 'rich' ? 'rich colours' : vc + ' colours'})`, vc === 'rich' ? 'clean shapes, keeping the shades and gradients (6 to 12 colours)' : `clean shapes in ${vc} colours`, { scale: goals.bigger ? Math.min(4, factor) : 1, colours: vc, where: 'all', blend: 100 }); else if (goals.bigger) add('resize', `Make bigger ${factor}× (Splat)`, 'all colours kept: edge-following, no halos', { w: W2, h: H2, method: 'splat' });
+        // then the background away (inside the shapes too) with the white blend taken off the edges, and only then the edges smoothed
+        add('cutout', 'Take the background away (see-through)', 'the background colour, inside the shapes too; the white blend taken off the edges', { mode: 'edges', tolerance: 40, inside: true, defringe: true, points: [] }, o.also ? o.also.transparent !== false : true);
+        add('aa', 'Smooth the edges', 'last, after the background and its white edge blend are gone, so no white creeps back', { amount: 60, threshold: 32, show: 'result' }); }
+    } else if (K === 'logo') { // precision first: nothing redrawn or flattened
+      if (f.blocks.luma > (touchup ? 1.4 : 1.1)) add('deblock', 'Remove JPEG blocks', `blocks ${f.blocks.luma.toFixed(1)}× around the colours`, { strength: 60 });
+      if (!touchup) { if (goals.bigger) add('resize', `Make bigger ${factor}× (Splat)`, 'edge-following: lettering stays crisp, no halos', { w: W2, h: H2, method: 'splat' }); add('cutout', 'Take the background away (see-through)', 'the background colour, inside the letters too; the white blend taken off the edges', { mode: 'edges', tolerance: 40, inside: true, defringe: true, points: [] }, o.also ? o.also.transparent !== false : true); add('aa', 'Smooth the edges', 'last, after the background and its white edge blend are gone', { amount: 50, threshold: 32, show: 'result' }); }
     } else if (K === 'pixel') {
       if (goals.bigger && !touchup) add('resize', `Make bigger ${factor}× (pixel art, MMPX)`, 'shapes and dithering kept, no new colours', { w: W2, h: H2, method: 'mmpx' });
     }
