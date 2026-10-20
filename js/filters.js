@@ -427,6 +427,27 @@
 
   // ------------------------------------------------------------------ see-through
   // a colour (and those close to it) made see-through; connected: only the area touching the picked point (or edges)
+  // the background colour: the most common of the four corners (a logo on white: white)
+  function cornerBg(img) { const W = img.width, H = img.height, d = img.data, cs = [[0, 0], [W - 1, 0], [0, H - 1], [W - 1, H - 1]].map(([x, y]) => { const i = (y * W + x) * 4; return [d[i], d[i + 1], d[i + 2]]; }); let best = cs[0], bn = -1; for (const c of cs) { const n = cs.filter((e) => Math.abs(e[0] - c[0]) + Math.abs(e[1] - c[1]) + Math.abs(e[2] - c[2]) < 30).length; if (n > bn) { bn = n; best = c; } } return best; }
+  // Defringe: the soft edge pixels next to what was taken away are part background colour (a white rim). Each gets its
+  // true colour back (the strongest colour near it, inside the shape) and becomes as see-through as it was background.
+  function defringe(img, bg, { reach = 2 } = {}) {
+    const W = img.width, H = img.height, d = img.data, o = copy(img), od = o.data, n = W * H, clear = new Uint8Array(n);
+    for (let p = 0; p < n; p++) clear[p] = d[p * 4 + 3] < 16 ? 1 : 0;
+    const dist = (i) => Math.hypot(d[i] - bg[0], d[i + 1] - bg[1], d[i + 2] - bg[2]);
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const p = y * W + x; if (clear[p]) continue; let near = false;
+      for (let j = -reach; j <= reach && !near; j++) for (let i = -reach; i <= reach; i++) { const xx = x + i, yy = y + j; if (xx >= 0 && yy >= 0 && xx < W && yy < H && clear[yy * W + xx]) { near = true; break; } }
+      if (!near) continue;
+      let F = -1, fd = 0; const R = reach + 2; for (let j = -R; j <= R; j++) for (let i = -R; i <= R; i++) { const xx = x + i, yy = y + j; if (xx < 0 || yy < 0 || xx >= W || yy >= H) continue; const q = (yy * W + xx) * 4; if (d[q + 3] < 240) continue; const e = dist(q); if (e > fd) { fd = e; F = q; } }
+      if (F < 0 || fd < 24) continue;
+      const q = p * 4, a = Math.max(0, Math.min(1, dist(q) / fd));
+      if (a < 0.06) { od[q + 3] = 0; continue; }
+      for (let c = 0; c < 3; c++) od[q + c] = Math.max(0, Math.min(255, Math.round(bg[c] + (d[q + c] - bg[c]) / a)));
+      od[q + 3] = Math.round(Math.min(d[q + 3], a * 255));
+    }
+    return o;
+  }
   function makeClear(img, { rgb, tolerance = 30, soft = 0 } = {}) {
     const o = copy(img), d = o.data, t = tolerance * 3, sf = soft * 3;
     for (let i = 0; i < d.length; i += 4) { const e = Math.abs(d[i] - rgb[0]) + Math.abs(d[i + 1] - rgb[1]) + Math.abs(d[i + 2] - rgb[2]); if (e <= t) d[i + 3] = 0; else if (sf && e <= t + sf) d[i + 3] = Math.min(d[i + 3], ((e - t) / sf) * 255); }
@@ -702,5 +723,5 @@
     return o;
   }
 
-  IC.filters = { dotsOff, paperClean, toneFrom, colourFrom, colourise, mmpx, deband, chromaRebuild, guidedBy, cas, dehaze, hazeLevel, isToned, shadowRecover, guided, autoColour, clarity, pyramidBlend, aliasCheck, antialias, light, colour, autoLevels, autoFix, whiteBalance, greyscale, sepia, invert, threshold, posterize, blur, sharpen, denoise, median, despeckle, deblock, undither, pixelate, resize, scale2x, scale3x, rotate: rotateAny, rotate90: rotate, flip, crop, trimBox, canvasSize, makeClear, flatten, copy, canvasOf };
+  IC.filters = { cornerBg, defringe, dotsOff, paperClean, toneFrom, colourFrom, colourise, mmpx, deband, chromaRebuild, guidedBy, cas, dehaze, hazeLevel, isToned, shadowRecover, guided, autoColour, clarity, pyramidBlend, aliasCheck, antialias, light, colour, autoLevels, autoFix, whiteBalance, greyscale, sepia, invert, threshold, posterize, blur, sharpen, denoise, median, despeckle, deblock, undither, pixelate, resize, scale2x, scale3x, rotate: rotateAny, rotate90: rotate, flip, crop, trimBox, canvasSize, makeClear, flatten, copy, canvasOf };
 })();
