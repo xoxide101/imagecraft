@@ -1291,28 +1291,49 @@
   // Each layer is saved as this picture's corrected map (p.mapFix), so Where, the maps, Process a photo and the face tools all use it, offline.
   const CLOUD_LAYERS = [['sky', 'the sky', 'sky'], ['skin', "people's skin (faces, necks, arms, hands)", 'skin'], ['green', 'grass, trees and plants', 'green'], ['subject', 'the main subject (the people or thing the photo is of)', 'subject'], ['hair', 'hair', 'cl:hair', 'Hair'], ['clothing', 'clothing', 'cl:clothing', 'Clothing'], ['damage', 'tears, scratches, stains and missing parts of the old print', 'cl:damage', 'Damage to the print']];
   CLOUD_LAYERS.forEach((l) => { if (l[3]) IC.maps.addLayer(l[2], l[3], `${l[3]}, as the cloud AI outlined it (Mapped by the cloud, in the Maps tab).`); });
+  // the cloud outlines things: Gemini draws them; OpenAI or Claude say where, and the built-in outliner (SlimSAM) traces the edges
+  async function cloudOutline(img, labels, engine, what) {
+    const CL = IC.cloud, W = img.width, H = img.height;
+    if (engine === 'gemini') { busyNow(`Gemini is outlining ${what}… (10 to 40 seconds; the picture is sent)`); return CL.segmentMany(img, labels, await CL.seeModel('gemini')); }
+    busyNow(`${CL.NAMES[engine]} is finding ${what}… (10 to 40 seconds; the picture is sent)`);
+    const found = await CL.locate(img, labels, engine, await CL.seeModel(engine)), got = {}; labels.forEach((l) => { got[l] = new Float32Array(W * H); });
+    let n = 0;
+    for (const f of found) {
+      busyNow(`Tracing the edges on this computer (${++n} of ${found.length}; the first time downloads the outliner, about 30 MB)…`);
+      const [ya, xa, yb, xb] = f.box_2d.map(Number), map = got[f.label];
+      const pts = (f.points || []).filter((q) => q && q.length === 2).map(([y, x]) => [x / 1000, y / 1000, 1]); if (!pts.length) pts.push([(xa + xb) / 2000, (ya + yb) / 2000, 1]);
+      const gx = (xb - xa) * 0.04, gy = (yb - ya) * 0.04, X0 = Math.max(0, Math.floor(((xa - gx) / 1000) * W)), X1 = Math.min(W, Math.ceil(((xb + gx) / 1000) * W)), Y0 = Math.max(0, Math.floor(((ya - gy) / 1000) * H)), Y1 = Math.min(H, Math.ceil(((yb + gy) / 1000) * H));
+      let r = null; try { r = /tears|scratch|damage/.test(f.label) ? null : await CRAFTAI.pick(X.canvasOf(img), pts); } catch (e) { logFail('Outlining failed', e); }
+      for (let y = Y0; y < Y1; y++) for (let x = X0; x < X1; x++) { const v = r ? (r.a[Math.min(r.H - 1, Math.floor(((y + 0.5) * r.H) / H)) * r.W + Math.min(r.W - 1, Math.floor(((x + 0.5) * r.W) / W))] > 127 ? 1 : 0) : 1; if (v > map[y * W + x]) map[y * W + x] = v; }
+    }
+    return got;
+  }
+  // which services can outline, best first; a service whose account is unpaid or whose model is retired is passed over for the next
+  const outliners = () => ['gemini', 'openai', 'anthropic'].filter((k) => IC.cloud.has(k));
+  async function withOutliner(fn, first) {
+    const list = outliners(); if (first) list.sort((a, b) => (b === first) - (a === first)); let last = null;
+    for (const eng of list) { try { return await fn(eng); } catch (e) { last = e; if (!/paid credit|quota|no longer available|not found|could not be reached|did not answer/i.test(e.message)) throw e; ICLOG.add('info', `Cloud: ${IC.cloud.NAMES[eng]} could not do it (${e.message.slice(0, 120)}); trying the next service`); } }
+    throw last || new Error('No cloud key that can outline: add one in AI settings › Cloud AI.');
+  }
+  // with the switch on Cloud AI, the maps that would download a built-in AI finder ask the cloud instead (once per picture and map)
+  IC.maps.setCloudPrep(async (id, img, words) => {
+    if (IC.aiMode() !== 'cloud') return false;
+    if (!outliners().length) throw new Error('The switch is on Cloud AI, but no cloud key is saved: add one in AI settings › Cloud AI, or switch to Both or Local AI to use the built-in finder.');
+    const p = pics.find((q) => q.steps.some((st) => st.img === img)) || pic(); p.mapFix = p.mapFix || {};
+    IC.cloud.task(`Map: ${words}`);
+    const r = await withOutliner((eng) => cloudOutline(img, [words], eng, `“${words}”`).then((m) => ({ m: m[words], eng })));
+    p.mapFix[id] = { W: img.width, H: img.height, data: r.m, by: r.eng };
+    if (id === 'subject' || id === 'background') { const o = id === 'subject' ? 'background' : 'subject'; if (!p.mapFix[o]) p.mapFix[o] = { W: img.width, H: img.height, data: r.m.map((v) => 1 - v), by: r.eng }; }
+    return true;
+  });
   async function cloudMapPhoto(engine) {
     const p = pic(), img = now(), CL = IC.cloud, t0 = performance.now(), W = img.width, H = img.height, got = {};
     const labels = CLOUD_LAYERS.map((l) => l[1]);
     IC.cloud.task('Map this photo');
-    if (engine === 'gemini') {
-      busyNow('Gemini is outlining the sky, skin, greenery, subject, hair, clothing and damage… (10 to 40 seconds)');
-      const r = await CL.segmentMany(img, labels, await CL.seeModel('gemini')); CLOUD_LAYERS.forEach((l) => { got[l[0]] = r[l[1]]; });
-    } else {
-      busyNow(`${CL.NAMES[engine]} is finding where each layer is… (10 to 40 seconds)`);
-      const found = await CL.locate(img, labels, engine, await CL.seeModel(engine)); CLOUD_LAYERS.forEach((l) => { got[l[0]] = new Float32Array(W * H); });
-      let n = 0;
-      for (const f of found) {
-        busyNow(`Tracing the edges on this computer (${++n} of ${found.length}; the first time downloads the outliner)…`);
-        const key = CLOUD_LAYERS.find((l) => l[1] === f.label)[0], [ya, xa, yb, xb] = f.box_2d.map(Number), map = got[key];
-        const pts = (f.points || []).filter((q) => q && q.length === 2).map(([y, x]) => [x / 1000, y / 1000, 1]); if (!pts.length) pts.push([(xa + xb) / 2000, (ya + yb) / 2000, 1]);
-        const gx = (xb - xa) * 0.04, gy = (yb - ya) * 0.04, X0 = Math.max(0, Math.floor(((xa - gx) / 1000) * W)), X1 = Math.min(W, Math.ceil(((xb + gx) / 1000) * W)), Y0 = Math.max(0, Math.floor(((ya - gy) / 1000) * H)), Y1 = Math.min(H, Math.ceil(((yb + gy) / 1000) * H));
-        let r = null; try { r = key === 'damage' ? null : await CRAFTAI.pick(X.canvasOf(img), pts); } catch (e) { logFail('Outlining failed', e); }
-        for (let y = Y0; y < Y1; y++) for (let x = X0; x < X1; x++) { const v = r ? (r.a[Math.min(r.H - 1, Math.floor(((y + 0.5) * r.H) / H)) * r.W + Math.min(r.W - 1, Math.floor(((x + 0.5) * r.W) / W))] > 127 ? 1 : 0) : 1; if (v > map[y * W + x]) map[y * W + x] = v; }
-      }
-    }
+    const r = await cloudOutline(img, labels, engine, 'the sky, skin, greenery, subject, hair, clothing and damage'); CLOUD_LAYERS.forEach((l) => { got[l[0]] = r[l[1]]; });
     if (!got.subject.some((v) => v > 0.5)) delete got.subject; else got.background = got.subject.map((v) => 1 - v);
     p.mapFix = p.mapFix || {}; const done = [];
+    for (const [k, sid] of [['sky', 's_sky'], ['hair', 's_hair'], ['clothing', 's_clothes']]) if (got[k] && got[k].some((v) => v > 0.5)) p.mapFix[sid] = { W, H, data: got[k], by: engine };
     for (const l of CLOUD_LAYERS) { const m = got[l[0]]; if (!m) continue; const share = m.reduce((a, v) => a + (v > 0.5 ? 1 : 0), 0) / m.length; if (share <= 0) { if (p.mapFix[l[2]]) delete p.mapFix[l[2]]; continue; } p.mapFix[l[2]] = { W, H, data: m, by: engine }; done.push(`${l[3] || { sky: 'Sky', skin: 'Skin', green: 'Greenery', subject: 'Main subject' }[l[0]]} ${(share * 100).toFixed(share < 0.01 ? 1 : 0)}%`); }
     if (got.background) { p.mapFix.background = { W, H, data: got.background, by: engine }; }
     p.cloudMapped = { by: engine, when: Date.now(), secs: (performance.now() - t0) / 1000, layers: done };
@@ -1332,7 +1353,7 @@
     if (cm.length) { const box = document.createElement('div'); box.className = 'row'; box.style.cssText = 'gap:6px;margin:0 0 8px;flex-wrap:wrap'; const done = pic().cloudMapped;
       box.innerHTML = `<button class="btn outline" type="button" data-cmap style="flex:1" title="The cloud AI outlines the sky, skin, greenery, main subject, hair, clothing and damage once. They are kept as this picture's maps, so every built-in tool uses them, offline. The picture is sent once.">${done ? 'Map it again with the cloud' : 'Let the cloud map this photo'}</button>${cm.length > 1 ? `<select class="input" data-cmeng style="width:auto" aria-label="Which cloud service maps it">${cm.map((k) => `<option value="${k}">${esc(IC.cloud.NAMES[k].split(' ')[0])}${k === 'gemini' ? ' (outlines)' : ' (+ built-in outliner)'}</option>`).join('')}</select>` : ''}${done ? `<small class="hint" style="flex-basis:100%">Mapped by ${esc(IC.cloud.NAMES[done.by].split(' ')[0])}: ${esc(done.layers.join(', '))}.</small><button class="btn outline" type="button" data-cmp style="flex:1">Compare built-in and cloud</button><button class="btn outline" type="button" data-clog>What was sent</button>` : ''}`;
       if (done) { box.querySelector('[data-cmp]').onclick = () => openLayerCompare(); box.querySelector('[data-clog]').onclick = () => openCloudLog(); }
-      box.querySelector('[data-cmap]').onclick = async () => { const sel = box.querySelector('[data-cmeng]'), eng = sel ? sel.value : cm[0]; try { await cloudMapPhoto(eng); } catch (e) { busy(null); logFail('Cloud mapping failed', e); toast(e.message); } };
+      box.querySelector('[data-cmap]').onclick = async () => { const sel = box.querySelector('[data-cmeng]'), eng = sel ? sel.value : cm[0]; try { await withOutliner((e2) => cloudMapPhoto(e2), eng); } catch (e) { busy(null); logFail('Cloud mapping failed', e); toast(e.message); } };
       L.append(box); }
     if (IC.maps.colourBlind(img)) L.insertAdjacentHTML('beforeend', '<p class="hint">This picture’s colours all lean one way (sepia, toned or a strong cast), so the colour-based Skin, Greenery and Sky maps mark the wrong things. Use <b>Scene (AI)</b> and <b>Skin (learned from the faces)</b> instead.</p>');
     IC.maps.LIST.forEach((m) => {
@@ -1350,7 +1371,7 @@
   function openMap(id, mode) {
     const img = now(); if (!img) return; if (tool) closeTool(true);
     const m = IC.maps.LIST.find((x) => x.id === id); mode = mode || (m.grey ? 'grey' : 'heat');
-    busyNow(m.needsCloud && !IC.maps.known(id, img) ? 'Asking Gemini to outline it…' : m.needsFaces && !IC.faces.known(img) ? 'Finding faces (the first time downloads the face finder)…' : m.needsFind && !IC.maps.known(id, img) ? 'Recognising what is in the picture (the first time downloads the finder, about 139 MB)…' : `Measuring: ${m.name}…`);
+    busyNow((m.needsFind || m.needsCut) && aiMode === 'cloud' && !IC.maps.known(id, img) ? 'Asking the cloud to outline it…' : m.needsCloud && !IC.maps.known(id, img) ? 'Asking Gemini to outline it…' : m.needsFaces && !IC.faces.known(img) ? 'Finding faces (the first time downloads the face finder)…' : m.needsFind && !IC.maps.known(id, img) ? 'Recognising what is in the picture (the first time downloads the finder, about 139 MB)…' : `Measuring: ${m.name}…`);
     setTimeout(async () => {
       try { await IC.maps.prepare(id, img); } catch (e) { busy(null); ICLOG.error(m.needsFind ? 'The finder failed' : 'Face finder failed', e); toast((m.needsFind ? 'The finder could not start: ' : 'The face finder could not start: ') + e.message); return; }
       const t0 = performance.now(), map = IC.maps.make(id, img);

@@ -161,6 +161,7 @@
   const memo = new WeakMap();
   // a map the person corrected (painted, or outlined by clicking) wins over the measured or AI one
   let override = null; const setOverride = (fn) => { override = fn; }, forget = (img) => memo.delete(img);
+  let cloudPrep = null; const setCloudPrep = (fn) => { cloudPrep = fn; };
   // the measured or AI map, leaving out the person's (or the cloud's) corrected one: null if it was never measured
   function makeRaw(id, img) { const o = override; override = null; try { return known(id, img) ? make(id, img) : null; } finally { override = o; } }
   function make(id, img) {
@@ -201,7 +202,7 @@
     // anything a map needs first (the face finder looks at the picture once)
   async function prepare(ids, img) {
     const want = new Set();
-    for (const id of [].concat(ids)) { const m = id && byId[id]; if (!m) continue; if (override && override(id, img)) continue; if (m.needsCloud) { let c = cloudMemo.get(img); if (!c) { c = {}; cloudMemo.set(img, c); } if (!c[m.needsCloud]) c[m.needsCloud] = await IC.cloud.segment(img, m.needsCloud, await IC.cloud.seeModel('gemini')); } if (m.needsFaces) await IC.faces.ensure(img); if (m.needsFind) m.needsFind.forEach((w) => want.add(w)); if (m.needsCut && !cutMemo.has(img)) { const c = document.createElement('canvas'); c.width = img.width; c.height = img.height; c.getContext('2d').putImageData(img, 0, 0); cutMemo.set(img, await CRAFTAI.cutout(c)); } }
+    for (const id of [].concat(ids)) { const m = id && byId[id]; if (!m) continue; if (override && override(id, img)) continue; if ((m.needsFind || m.needsCut) && cloudPrep && (await cloudPrep(id, img, m.needsFind ? m.needsFind[0] : 'the main subject (the people or thing the photo is of)'))) continue; if (m.needsCloud) { let c = cloudMemo.get(img); if (!c) { c = {}; cloudMemo.set(img, c); } if (!c[m.needsCloud]) c[m.needsCloud] = await IC.cloud.segment(img, m.needsCloud, await IC.cloud.seeModel('gemini')); } if (m.needsFaces) await IC.faces.ensure(img); if (m.needsFind) m.needsFind.forEach((w) => want.add(w)); if (m.needsCut && !cutMemo.has(img)) { const c = document.createElement('canvas'); c.width = img.width; c.height = img.height; c.getContext('2d').putImageData(img, 0, 0); cutMemo.set(img, await CRAFTAI.cutout(c)); } }
     if (!want.size) return;
     let fm = findMemo.get(img); if (!fm) { fm = new Map(); findMemo.set(img, fm); }
     // the scene words go together the first time (one look at the picture, about 15 seconds)
@@ -295,5 +296,5 @@
     const out = new ImageData(new Uint8ClampedArray(s), W, H), d = out.data; for (let p = 0; p < n; p++) if (hole[p] > 0.5) for (let c = 0; c < 3; c++) d[p * 4 + c] = Math.round(F[p * 3 + c]);
     return out;
   }
-  IC.maps = { makeRaw, addLayer, setOverride, forget, telea, damage, grow, fillGap, addFind, known, share, castRatio, colourBlind, stretch, falseColour, LIST, make, heat, grey, mask, apply, box, combined, OPS, prepare };
+  IC.maps = { setCloudPrep, makeRaw, addLayer, setOverride, forget, telea, damage, grow, fillGap, addFind, known, share, castRatio, colourBlind, stretch, falseColour, LIST, make, heat, grey, mask, apply, box, combined, OPS, prepare };
 })();
