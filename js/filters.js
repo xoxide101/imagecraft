@@ -156,6 +156,15 @@
     for (let p = 0; p < n; p++) { const rgb = fromLab(L[p], sa[p] * k, sb[p] * k); for (let q = 0; q < 3; q++) o[p * 4 + q] = Math.round(rgb[q] * 255); o[p * 4 + 3] = d[p * 4 + 3]; }
     return out;
   }
+  // light and colour from another version (a cloud result), detail from the photo itself: the broad difference in
+  // lightness and colour is carried over (smoothed), so no edge, texture or face is redrawn
+  function toneFrom(img, ref) {
+    const W = img.width, H = img.height, n = W * H, d = img.data, c = ref.data, dL = new Float32Array(n), dA = new Float32Array(n), dB = new Float32Array(n), O = [];
+    for (let p = 0; p < n; p++) { const a = toLab(d[p * 4] / 255, d[p * 4 + 1] / 255, d[p * 4 + 2] / 255), b = toLab(c[p * 4] / 255, c[p * 4 + 1] / 255, c[p * 4 + 2] / 255); O.push(a); dL[p] = b[0] - a[0]; dA[p] = b[1] - a[1]; dB[p] = b[2] - a[2]; }
+    const r = Math.max(2, Math.round(Math.max(W, H) / 120)), sL = boxMean(dL, W, H, r), sA = boxMean(dA, W, H, r), sB = boxMean(dB, W, H, r), out = new ImageData(W, H), o = out.data;
+    for (let p = 0; p < n; p++) { const a = O[p], rgb = fromLab(Math.max(0, Math.min(100, a[0] + sL[p])), a[1] + sA[p], a[2] + sB[p]); for (let q = 0; q < 3; q++) o[p * 4 + q] = Math.round(Math.max(0, Math.min(1, rgb[q])) * 255); o[p * 4 + 3] = d[p * 4 + 3]; }
+    return out;
+  }
   async function colourise(img, { amount = 100, warm = 0 } = {}) {
     const W = img.width, H = img.height, d = img.data, L = new Float32Array(W * H);
     for (let p = 0; p < W * H; p++) L[p] = toLab(d[p * 4] / 255, d[p * 4 + 1] / 255, d[p * 4 + 2] / 255)[0];
@@ -654,5 +663,5 @@
     return o;
   }
 
-  IC.filters = { colourFrom, colourise, mmpx, deband, chromaRebuild, guidedBy, cas, dehaze, hazeLevel, isToned, shadowRecover, guided, autoColour, clarity, pyramidBlend, aliasCheck, antialias, light, colour, autoLevels, autoFix, whiteBalance, greyscale, sepia, invert, threshold, posterize, blur, sharpen, denoise, median, despeckle, deblock, undither, pixelate, resize, scale2x, scale3x, rotate: rotateAny, rotate90: rotate, flip, crop, trimBox, canvasSize, makeClear, flatten, copy, canvasOf };
+  IC.filters = { toneFrom, colourFrom, colourise, mmpx, deband, chromaRebuild, guidedBy, cas, dehaze, hazeLevel, isToned, shadowRecover, guided, autoColour, clarity, pyramidBlend, aliasCheck, antialias, light, colour, autoLevels, autoFix, whiteBalance, greyscale, sepia, invert, threshold, posterize, blur, sharpen, denoise, median, despeckle, deblock, undither, pixelate, resize, scale2x, scale3x, rotate: rotateAny, rotate90: rotate, flip, crop, trimBox, canvasSize, makeClear, flatten, copy, canvasOf };
 })();

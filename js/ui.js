@@ -837,12 +837,47 @@
   const isLive = (t) => (typeof t.def.live === 'function' ? t.def.live(t.s) : t.def.live !== false);
   // With the switch on Cloud AI, the steps that have a cloud version use it (unless chosen otherwise in the panel);
   // on Local AI or Both they start on this computer. Used by the panels, Process a photo, Modernise and recipes.
-  function cloudAuto(id, s) {
-    if (aiMode !== 'cloud' || !s) return s; const CL = IC.cloud;
+  const CLOUD_TOOLS = { repair: 'fill', colourise: 'colour', facerestore: 'face' };
+  const cloudCan = (id) => cloudOK() && (CLOUD_TOOLS[id] ? IC.cloud.engines(CLOUD_TOOLS[id]).length > 0 : !!IC.cloud.JOBS[id] && IC.cloud.engines('edit').length > 0);
+  function localOnly(id, s) { if (id === 'repair' && String(s.how).startsWith('cloud-')) s.how = 'ai'; if (id === 'colourise') s.engine = 'builtin'; if (id === 'facerestore' && String(s.model).startsWith('cloud-')) s.model = 'codeformer'; return s; }
+  // each plan step: This computer or Cloud (chosen per step; it starts as the switch says)
+  let stepPrefs = {}; try { stepPrefs = JSON.parse(localStorage.getItem('imagecraft-steps') || '{}'); } catch (e) { /* blocked storage */ }
+  const saveStepPrefs = () => { try { localStorage.setItem('imagecraft-steps', JSON.stringify(stepPrefs)); } catch (e) { /* blocked storage */ } };
+  const modeWhere = () => (aiMode === 'cloud' ? 'cloud' : aiMode === 'both' ? 'both' : 'local');
+  const stepWhere = (x) => (cloudCan(x.id) ? x.where || (stepPrefs[x.id] && stepPrefs[x.id] !== 'switch' ? stepPrefs[x.id] : modeWhere()) : 'local');
+  // every step that can run either way, for AI settings › Steps
+  const stepList = () => [...Object.keys(CLOUD_TOOLS), ...Object.keys(IC.cloud.JOBS)].filter((id) => TOOLS[id]).map((id) => [id, TOOLS[id].title]);
+  // a step done both ways: pick this computer's, the cloud's, or a blend of the two (null = stop)
+  function chooseVersion(title, before, L, C) {
+    return new Promise((resolve) => {
+      const back = document.createElement('div'); back.className = 'backdrop'; document.body.append(back);
+      const k = Math.min(1, 520 / Math.max(L.width, L.height)), W = Math.round(L.width * k), H = Math.round(L.height * k), sm = (im) => X.resize(im, { width: W, height: H });
+      const sL = sm(L), sC = sm(C.width === L.width && C.height === L.height ? C : X.resize(C, { width: L.width, height: L.height })), sB = sm(before);
+      const url = (im) => { const c = document.createElement('canvas'); c.width = im.width; c.height = im.height; c.getContext('2d').putImageData(im, 0, 0); return c.toDataURL('image/jpeg', 0.9); };
+      const mix = (a, b, t) => { const o = new ImageData(a.width, a.height), d = o.data; for (let i = 0; i < d.length; i++) d[i] = a.data[i] + (b.data[i] - a.data[i]) * t; return o; };
+      back.innerHTML = `<div class="dialog wide" role="dialog" aria-modal="true" aria-labelledby="cv-title"><h2 id="cv-title">${esc(title)}: done both ways</h2><p class="hint">Choose which to keep, or blend the two. The step goes into History; Undo takes it back.</p>
+        <div class="cv-grid"><figure class="cl-pic"><img src="${url(sB)}" alt=""><figcaption>Before</figcaption></figure><figure class="cl-pic"><img src="${url(sL)}" alt=""><figcaption>This computer</figcaption></figure><figure class="cl-pic"><img src="${url(sC)}" alt=""><figcaption>Cloud</figcaption></figure><figure class="cl-pic"><img data-blend src="${url(mix(sL, sC, 0.5))}" alt=""><figcaption>Blend: <span data-bv>50</span>% cloud</figcaption></figure></div>
+        <label class="field"><span>Blend (0 = this computer, 100 = cloud)</span><input type="range" min="0" max="100" value="50" data-bs></label>
+        <div class="dialog-actions"><button class="btn outline" type="button" data-c="stop">Stop here</button><button class="btn outline" type="button" data-c="local">Keep this computer's</button><button class="btn outline" type="button" data-c="cloud">Keep the cloud's</button><button class="btn primary" type="button" data-c="blend">Keep the blend</button></div></div>`;
+      const bs = back.querySelector('[data-bs]'); bs.oninput = () => { back.querySelector('[data-bv]').textContent = bs.value; back.querySelector('[data-blend]').src = url(mix(sL, sC, bs.value / 100)); };
+      back.onclick = (e) => { const b = e.target.closest('[data-c]'); if (!b) return; back.remove(); const c = b.dataset.c, CC = C.width === L.width && C.height === L.height ? C : X.resize(C, { width: L.width, height: L.height });
+        resolve(c === 'stop' ? null : c === 'local' ? { img: L, how: 'this computer' } : c === 'cloud' ? { img: CC, how: 'cloud' } : { img: mix(L, CC, bs.value / 100), how: `blend ${bs.value}% cloud` }); };
+    });
+  }
+  function whereSeg(x, i) {
+    if (!cloudCan(x.id)) return whereTag(x.id); const w = stepWhere(x), eng = IC.cloud.engines(CLOUD_TOOLS[x.id] || 'edit')[0];
+    return `<span class="seg where-seg"><button type="button" class="btn" data-si="${i}" data-where="local" aria-pressed="${w === 'local'}" title="Run this step on this computer">Local</button><button type="button" class="btn" data-si="${i}" data-where="cloud" aria-pressed="${w === 'cloud'}" title="Send the picture to ${esc(IC.cloud.NAMES[eng])} for this step">Cloud: ${esc(IC.cloud.NAMES[eng].split(' ')[0])}</button><button type="button" class="btn" data-si="${i}" data-where="both" aria-pressed="${w === 'both'}" title="Do it both ways, then choose one or blend them">Both</button></span>`;
+  }
+  function cloudAuto(id, s, force) {
+    if ((aiMode !== 'cloud' && !force) || !s) return s; const CL = IC.cloud;
     if (id === 'repair' && !String(s.how).startsWith('cloud-') && CL.engines('fill').length) s.how = 'cloud-' + CL.engines('fill')[0];
     if (id === 'colourise' && (!s.engine || s.engine === 'builtin') && CL.engines('colour').length) s.engine = CL.engines('colour')[0];
     if (id === 'facerestore' && !String(s.model).startsWith('cloud-') && CL.engines('face').length) s.model = 'cloud-' + CL.engines('face')[0];
     return s;
+  }
+  async function cloudJobStep(id, img, say) {
+    const def = TOOLS[id]; IC.cloud.task(def.title);
+    return IC.cloud.tryEach(IC.cloud.engines('edit'), async (p) => { say && say(`${def.title}: sending to ${IC.cloud.NAMES[p]}… (10 to 60 seconds)`); return IC.cloud.job(id, img, p, await IC.cloud.drawModel(p)); });
   }
   // where a step will run, for the Process plan: the cloud service it will use, or this computer
   function whereTag(id) { const job = { repair: 'fill', colourise: 'colour', facerestore: 'face' }[id], eng = aiMode === 'cloud' && job && IC.cloud.engines(job)[0]; return eng ? `<span class="where cloud" title="Sent to ${esc(IC.cloud.NAMES[eng])} (the switch is on Cloud AI)">Cloud: ${esc(IC.cloud.NAMES[eng].split(' ')[0])}</span>` : `<span class="where" title="${job ? (aiMode === 'cloud' ? 'No cloud key that can do this: runs on this computer' : 'The switch is not on Cloud AI: runs on this computer') : 'No cloud version of this step: runs on this computer'}">This computer</span>`; }
@@ -917,7 +952,7 @@
     if (tab) aiTab = tab; let back = $('aisettings'); if (!back) { back = document.createElement('div'); back.className = 'backdrop'; back.id = 'aisettings'; document.body.append(back); }
     const f = (await CRAFTAI.probe()) || {}, O = IC.ollama, CL = IC.cloud;
     back.innerHTML = `<div class="dialog wide" role="dialog" aria-modal="true" aria-labelledby="ais-title"><h2 id="ais-title">AI settings</h2>
-      <div class="ai-tabs" role="tablist"><button type="button" data-tab="local" aria-selected="${aiTab === 'local'}">Local AI (this computer)</button><button type="button" data-tab="cloud" aria-selected="${aiTab === 'cloud'}">Cloud AI (your keys)</button></div><div id="ais-body"></div>
+      <div class="ai-tabs" role="tablist"><button type="button" data-tab="local" aria-selected="${aiTab === 'local'}">Local AI (this computer)</button><button type="button" data-tab="cloud" aria-selected="${aiTab === 'cloud'}">Cloud AI (your keys)</button><button type="button" data-tab="steps" aria-selected="${aiTab === 'steps'}">Steps: where each runs</button></div><div id="ais-body"></div>
       <div class="dialog-actions"><button class="btn primary" type="button" data-act="close">Close</button></div></div>`;
     const body = back.querySelector('#ais-body');
     if (aiTab === 'local') {
@@ -926,6 +961,11 @@
           <label class="check"><input type="checkbox" data-oc ${O.cfg.cloud ? 'checked' : ''}> Also offer Ollama’s cloud models in Ask AI (the picture is sent to Ollama’s servers)</label>
           <label class="field"><span>Address</span><input class="input" data-ou value="${esc(O.cfg.url)}"></label></div>`;
       O.models().then((m) => { ollamaSeen = { ok: true, n: m.length }; aiChip(); const el = body.querySelector('#ais-oll'); if (el) el.innerHTML = m.length ? `<b>Connected.</b> Models that can look at pictures: ${m.map((x) => esc(x.name) + (x.cloud ? ' (cloud)' : '')).join(', ')}. Ask AI (Clean up) uses them.` : '<b>Connected</b>, but none of its models can look at pictures. In a command prompt: <code>ollama pull qwen3.5</code>.'; }, (e) => { ollamaSeen = { blocked: !!e.blocked }; aiChip(); const el = body.querySelector('#ais-oll'); if (el) el.innerHTML = `<b>Not reachable.</b> If Ollama is not running, start it. If it is: ${O.ORIGIN_HELP}`; });
+    } else if (aiTab === 'steps') {
+      const opt = (id, v, l) => `<option value="${v}" ${(stepPrefs[id] || 'switch') === v ? 'selected' : ''}>${l}</option>`;
+      body.innerHTML = `<p class="hint">Where each step runs when Process a photo plans it (and its starting choice). <b>Follow the switch</b> uses the status bar: Local AI = this computer, Cloud AI = cloud, Both = both ways, then you choose or blend. Any step can still be changed in the plan itself. Steps not listed have no cloud version and always run on this computer.</p>
+        <table class="steps-tbl"><tbody>${stepList().map(([id, t]) => `<tr><td>${esc(t)}</td><td><select class="input" data-sp="${id}">${opt(id, 'switch', 'Follow the switch')}${opt(id, 'local', 'This computer')}${opt(id, 'cloud', 'Cloud')}${opt(id, 'both', 'Both: choose or blend')}</select></td><td class="hint">${CLOUD_TOOLS[id] ? 'its own cloud version' : IC.cloud.JOBS[id].keep === 'tone' ? 'cloud gives light and colour only' : 'cloud picture, your fine detail kept'}</td></tr>`).join('')}</tbody></table>
+        <div class="btns"><button class="btn outline" type="button" data-act="allswitch">All: follow the switch</button></div>`;
     } else cloudKeysPanel(body);
     back.hidden = false;
     back.onclick = (e) => {
@@ -933,8 +973,9 @@
       const a = e.target.closest('[data-act]'); if (!a) return;
       if (a.dataset.act === 'close') { back.hidden = true; aiChip(); if (tool && /assess|regen/.test(tool.def.id)) { if (tool.oll) tool.oll = { status: 'checking' }; renderProps(); } }
       if (a.dataset.act === 'models') { back.hidden = true; CRAFTAI.openSettings(); }
+      if (a.dataset.act === 'allswitch') { stepPrefs = {}; saveStepPrefs(); openAI('steps'); }
     };
-    back.onchange = (e) => { if (e.target.matches('[data-oc]')) { O.cfg.cloud = e.target.checked; O.save(); } if (e.target.matches('[data-ou]')) { O.cfg.url = e.target.value.trim().replace(/\/+$/, '') || 'http://127.0.0.1:11434'; O.save(); ollamaSeen = null; openAI('local'); } };
+    back.onchange = (e) => { if (e.target.matches('[data-sp]')) { stepPrefs[e.target.dataset.sp] = e.target.value; saveStepPrefs(); if (tool && tool.def.id === 'process') renderProps(); return; } if (e.target.matches('[data-oc]')) { O.cfg.cloud = e.target.checked; O.save(); } if (e.target.matches('[data-ou]')) { O.cfg.url = e.target.value.trim().replace(/\/+$/, '') || 'http://127.0.0.1:11434'; O.save(); ollamaSeen = null; openAI('local'); } };
   }
   const lastDescription = new WeakMap(); // picture → its last Ask AI description (Regenerate starts from it)
   function cloudKeysPanel(into) {
@@ -1065,7 +1106,8 @@
   async function runSteps(steps) {
     for (const s0 of steps) {
       const def = TOOLS[s0.id], img = pic().steps[pic().at].img; busyNow(`${def.title}…`); await wait(0);
-      try { const base = typeof def.s === 'function' ? def.s(img) : JSON.parse(JSON.stringify(def.s)); const t0 = performance.now(), sx = cloudAuto(s0.id, { ...base, ...s0.s }), out = await def.run(img, sx, (m) => busyNow(m)); await pushDeep(def.title, out, (im) => def.run(im, sx), performance.now() - t0, null, { id: s0.id, s: sx }); }
+      try { const base = typeof def.s === 'function' ? def.s(img) : JSON.parse(JSON.stringify(def.s)); if (s0.where === 'both') { const t1 = performance.now(), Lo = await def.run(img, localOnly(s0.id, { ...base, ...s0.s }), (m) => busyNow(`${def.title} on this computer: ${m}`)), ms = performance.now() - t1; const Co = CLOUD_TOOLS[s0.id] ? await def.run(img, cloudAuto(s0.id, { ...base, ...s0.s }, true), (m) => busyNow(m)) : await cloudJobStep(s0.id, img, (m) => busyNow(m)); busy(null); const ch = await chooseVersion(def.title, img, Lo, Co); if (!ch) { toast('Stopped. The steps done so far are in History.'); return; } await pushDeep(`${def.title} (${ch.how})`, ch.img, ch.how === 'this computer' ? (im) => def.run(im, localOnly(s0.id, { ...base, ...s0.s })) : null, ms); continue; }
+        const t0 = performance.now(), sx = s0.where === 'local' ? localOnly(s0.id, { ...base, ...s0.s }) : cloudAuto(s0.id, { ...base, ...s0.s }, s0.where === 'cloud'), viaJob = s0.where === 'cloud' && !CLOUD_TOOLS[s0.id], out = viaJob ? await cloudJobStep(s0.id, img, (m) => busyNow(m)) : await def.run(img, sx, (m) => busyNow(m)); const usedCloud = viaJob || (CLOUD_TOOLS[s0.id] && /^cloud-|^(gemini|openai)$/.test(String(sx.how || sx.engine || sx.model || ''))); await pushDeep(def.title + (usedCloud ? ' (cloud)' : ''), out, usedCloud ? null : (im) => def.run(im, sx), performance.now() - t0, null, usedCloud ? null : { id: s0.id, s: sx }); }
       catch (e) { busy(null); logFail(`${def.title} failed`, e); toast(`${def.title}: ${e.message}`); return; }
     }
     busy(null); toast(`Done: ${steps.length} step${steps.length === 1 ? '' : 's'}. Each is in History; Undo goes back one at a time.`);
@@ -1113,6 +1155,8 @@
     const P = $('props'); P.innerHTML = '';
     if (!tool) { P.append(pictureInfo()); return; }
     const t = tool, d = t.def;
+    if (IC.cloud.JOBS[d.id] && cloudCan(d.id)) setTimeout(() => { const P2 = $('props'); if (tool !== t || !P2 || P2.querySelector('[data-cjob]')) return; const eng = IC.cloud.engines('edit')[0], box = document.createElement('div'); box.className = 'field'; box.innerHTML = `<span>Or in the cloud</span><button class="btn outline" type="button" data-cjob title="One call: the picture is sent to ${esc(IC.cloud.NAMES[eng])} with an instruction for this job only; the result becomes a step in History">Do this with ${esc(IC.cloud.NAMES[eng].split(' ')[0])} instead</button><button class="btn outline" type="button" data-cboth title="Do it on this computer (with these settings) and in the cloud, then choose one or blend them">Both: compare</button><small class="hint">${IC.cloud.JOBS[d.id].keep === 'tone' ? 'Only its light and colour are used: your photo keeps its own detail.' : 'Its picture is used; detail finer than it works at (1536 px) comes back from your photo.'} About 20 to 60 seconds.</small>`; box.querySelector('[data-cboth]').onclick = async () => { const base = t.base, s0 = JSON.parse(JSON.stringify(t.s)); busyNow(`${d.title} on this computer…`); try { const Lo = await d.run(base, s0, busyNow), Co = await cloudJobStep(d.id, base, busyNow); busy(null); const ch = await chooseVersion(d.title, base, Lo, Co); if (!ch) return; closeTool(true); await pushDeep(`${d.title} (${ch.how})`, ch.img, null, 0); busy(null); } catch (e) { busy(null); logFail(`${d.title} (both) failed`, e); toast(e.message); } };
+      box.querySelector('[data-cjob]').onclick = async () => { const base = t.base; closeTool(true); busyNow(`${d.title}: sending…`); try { const out = await cloudJobStep(d.id, base, busyNow); await pushDeep(`${d.title} (cloud)`, out, null, 0); busy(null); } catch (e) { busy(null); logFail(`${d.title} (cloud) failed`, e); toast(e.message); } }; P2.append(box); }, 0);
     const head = document.createElement('div'); head.className = 'tool-title'; head.innerHTML = `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="color:var(--accent)">${(d.icon || '').replace(/class="fill"/g, 'fill="currentColor" fill-opacity=".25"')}</svg><h2>${esc(d.title)}</h2>`;
     P.append(head);
     const sec = document.createElement('div'); sec.className = 'sec'; P.append(sec);
@@ -1296,13 +1340,13 @@
     if (!S.f) return;
     add(`<div class="field"><span>What the photo needs</span><ul class="hint" style="margin:4px 0 0;padding-left:18px">${S.lines.map((l) => `<li>${esc(l)}</li>`).join('')}</ul></div>`);
     if (!S.plan.length) { add('<p class="hint">Nothing to do for these goals: tick another goal above.</p>'); return; }
-    const auto = S.plan.filter((x) => !x.manual && x.on), total = auto.reduce((a, x) => a + (x.ms || 0), 0);
-    const list = add(`<div class="field"><span>The plan (in this order)</span>${S.plan.map((x, i) => `<div class="plan-step"><input type="checkbox" data-i="${i}" ${x.on ? 'checked' : ''} ${x.manual ? 'disabled title="Done by you"' : ''}><div><b>${esc(x.label)}</b>${x.manual ? ' <span class="turn">your turn</span>' : ` ${whereTag(x.id)}`}<small>${esc(x.why)}${x.ms ? ` · about ${fmtTime(x.ms / 1000)}` : ''}</small></div><button class="btn outline" type="button" data-open="${i}" title="Open this tool to adjust it (the plan stays here: come back with Process a photo)">Open</button></div>`).join('')}</div>`);
+    const auto = S.plan.filter((x) => !x.manual && x.on), total = auto.reduce((a, x) => a + (stepWhere(x) === 'cloud' ? 0 : x.ms || 0), 0), nCloud = auto.filter((x) => stepWhere(x) !== 'local').length, nBoth = auto.filter((x) => stepWhere(x) === 'both').length;
+    const list = add(`<div class="field"><span>The plan (in this order)</span>${S.plan.map((x, i) => `<div class="plan-step"><input type="checkbox" data-i="${i}" ${x.on ? 'checked' : ''} ${x.manual ? 'disabled title="Done by you"' : ''}><div><b>${esc(x.label)}</b>${x.manual ? ' <span class="turn">your turn</span>' : ` ${whereSeg(x, i)}`}<small>${esc(x.why)}${x.manual ? '' : stepWhere(x) === 'both' ? ` · both ways: ${x.ms ? fmtTime(x.ms / 1000) + ' here, ' : ''}20 to 60 s in the cloud, then you choose` : stepWhere(x) === 'cloud' ? ' · about 20 to 60 s (cloud)' : x.ms ? ` · about ${fmtTime(x.ms / 1000)}` : ''}</small></div><button class="btn outline" type="button" data-open="${i}" title="Open this tool to adjust it (the plan stays here: come back with Process a photo)">Open</button></div>`).join('')}</div>`);
     list.onchange = (e) => { const i = e.target.dataset.i; if (i != null) { S.plan[+i].on = e.target.checked; renderProps(); } };
-    list.onclick = (e) => { const b = e.target.closest('[data-open]'); if (!b) return; const x = S.plan[+b.dataset.open]; closeTool(true); openTool(x.id, x.s); };
-    add(`<p class="hint">${auto.length} automatic step${auto.length === 1 ? '' : 's'}, about <b>${fmtTime(total / 1000)}</b> in all on this computer${S.plan.some((x) => x.id === 'facerestore' || x.id === 'colourise') ? ' (AI steps download their models the first time)' : ''}. Your-turn steps are left for you: open them when the automatic ones are done.</p>`);
+    list.onclick = (e) => { const w = e.target.closest('[data-where]'); if (w) { S.plan[+w.dataset.si].where = w.dataset.where; renderProps(); return; } const b = e.target.closest('[data-open]'); if (!b) return; const x = S.plan[+b.dataset.open]; closeTool(true); openTool(x.id, x.s); };
+    add(`<p class="hint">${auto.length} automatic step${auto.length === 1 ? '' : 's'}: ${auto.length - nCloud} on this computer (about <b>${fmtTime(total / 1000)}</b>)${nCloud ? `, ${nCloud} in the cloud (about 20 to 60 s each; each sends the picture: see the cloud button)` : ''}${nBoth ? `. ${nBoth} done both ways: you choose or blend after each` : ''}${S.plan.some((x) => x.id === 'facerestore' || x.id === 'colourise') ? ' (AI steps download their models the first time)' : ''}. Your-turn steps are left for you: open them when the automatic ones are done.</p>`);
     const go = add('<div class="btns"><button class="btn primary" type="button">Run the ticked steps</button></div>').querySelector('button');
-    go.onclick = () => { const steps = S.plan.filter((x) => !x.manual && x.on).map((x) => ({ id: x.id, s: x.s })); if (!steps.length) return toast('Tick at least one automatic step.'); closeTool(true); runSteps(steps).then(() => { S.f = null; renderInfo(); }); };
+    go.onclick = () => { const steps = S.plan.filter((x) => !x.manual && x.on).map((x) => ({ id: x.id, s: x.s, where: stepWhere(x) })); if (!steps.length) return toast('Tick at least one automatic step.'); closeTool(true); runSteps(steps).then(() => { S.f = null; renderInfo(); }); };
   }
   function renderHist() {
     const L = $('hist'); L.innerHTML = ''; const p = pic(); if (!p) return;

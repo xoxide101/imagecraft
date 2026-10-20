@@ -131,6 +131,33 @@
     return out.width === img.width && out.height === img.height ? out : scaled(out, img.width, img.height);
   }
 
+  // ------------------------------------------------------------------ one clean-up job done by the cloud (a focused instruction)
+  // keep 'tone': only the light and colour are taken (the photo's own detail stays). keep 'all': the cloud's picture is used;
+  // when the photo is bigger than the cloud works (1536 px), the fine detail above that size comes back from the photo.
+  const KEEP = 'Keep everything else exactly as it is: the same people, faces, expressions, objects, textures, framing and composition. Do not add, remove, restyle or redraw anything. Return the same photo.';
+  const JOBS = {
+    nlm: { keep: 'all', what: 'Remove the grain and noise from this photograph, gently, keeping real detail and texture.' },
+    chroma: { keep: 'all', what: 'Remove the colour noise, colour blotches and colour bleeding from this photograph.' },
+    deblur: { keep: 'all', what: 'Make this slightly blurred photograph sharp and in focus, as if taken with a good lens.' },
+    sharpen: { keep: 'all', what: 'Sharpen this photograph a little, naturally, without halos or added grain.' },
+    deblock: { keep: 'all', what: 'Remove the JPEG compression blocks, ringing and artefacts from this photograph.' },
+    descreen: { keep: 'all', what: 'Remove the printing dot pattern (halftone screen and moiré) from this scanned printed photograph.' },
+    autocolour: { keep: 'tone', what: 'Correct the light and colour of this faded photograph: natural contrast, true blacks and whites, faded colours restored. If it is a sepia or toned print, keep the tone.' },
+    balance: { keep: 'tone', what: 'Remove the colour cast from this photograph so that greys and whites are neutral.' },
+    shadows: { keep: 'tone', what: 'Bring out the detail hidden in the dark shadows of this photograph and soften blown highlights, naturally.' },
+    dehaze: { keep: 'tone', what: 'Remove the haze, veil and fading from this photograph, giving it clear contrast.' },
+    clahe: { keep: 'tone', what: 'Bring back the faded local contrast and detail of this old photograph, naturally.' },
+  };
+  async function job(id, img, p, model) {
+    const J = JOBS[id]; if (!J) throw new Error('That step has no cloud version.');
+    const k = Math.min(1, 1536 / Math.max(img.width, img.height)), sw = Math.round(img.width * k), sh = Math.round(img.height * k), small = k < 1 ? scaled(img, sw, sh) : img;
+    const back = await edit(small, p, model, `${J.what} ${KEEP}`), big = k < 1 ? scaled(back, img.width, img.height) : back;
+    if (J.keep === 'tone') return IC.filters.toneFrom(img, big);
+    if (k === 1) return big;
+    const lost = scaled(small, img.width, img.height), o = new ImageData(new Uint8ClampedArray(big.data), img.width, img.height), d = o.data, a = img.data, l = lost.data; // detail finer than the cloud saw
+    for (let i = 0; i < d.length; i++) if ((i & 3) !== 3) d[i] = d[i] + (a[i] - l[i]) * 0.8;
+    return o;
+  }
   // ------------------------------------------------------------------ fill marked areas (repair): only the marked parts change
   // The marked area and a margin round it are cut out (sharper and cheaper than the whole picture), at most 1024 px
   // across; OpenAI gets a mask (see-through = fill), Gemini sees the area painted magenta and is asked to fill it. The
@@ -207,7 +234,7 @@
   const face = (crop, p, model) => edit(crop, p, model, 'Restore this old, blurred or damaged face photo so it looks sharp and natural, like a modern photo of the same person. Keep the identity, expression, pose, hair, age and framing exactly the same. Do not change the background or the crop.');
 
   // which services can do a job, given the keys; which of their models to use (the person's choice, or a good default)
-  const engines = (job) => lastIn(({ fill: ['openai', 'gemini'], colour: ['gemini', 'openai'], masks: ['gemini'], locate: ['openai', 'anthropic'], face: ['gemini', 'openai'] }[job] || []).filter(has));
+  const engines = (job) => lastIn(({ fill: ['openai', 'gemini'], colour: ['gemini', 'openai'], masks: ['gemini'], edit: ['openai', 'gemini'], locate: ['openai', 'anthropic'], face: ['gemini', 'openai'] }[job] || []).filter(has));
   // the newest model that fits (by the version numbers in its name), so retired models (gemini-2.5-flash) are never chosen
   const ver = (id) => (String(id).match(/\d+(?:\.\d+)?/g) || []).map(Number);
   const newest = (ms) => ms.slice().sort((a, b) => { const x = ver(a.id), y = ver(b.id); for (let i = 0; i < Math.max(x.length, y.length); i++) { const d = (y[i] || 0) - (x[i] || 0); if (d) return d; } return a.id.length - b.id.length; })[0];
@@ -220,5 +247,5 @@
   async function tryEach(list, fn) { list = lastIn(list); let last = null; for (const p of list) { try { return await fn(p); } catch (e) { last = e; if (/paid credit|quota/i.test(e.message)) unpaid.add(p); if (!passable(e) || p === list[list.length - 1]) throw e; if (window.ICLOG) ICLOG.add('info', `Cloud: ${NAMES[p]} could not do it (${e.message.slice(0, 120)}); trying ${NAMES[list[list.indexOf(p) + 1]]}`); } } throw last; }
   // a job with this service first, then the others that can do it
   const orderFrom = (job, first) => { const l = engines(job); return first && l.includes(first) ? [first, ...l.filter((x) => x !== first)] : l; };
-  IC.cloud = { tryEach, orderFrom, log, onLog, task: setTask, cfg, save, has, NAMES, models, describe, regenerate, edit, fill, layBack, colourise, segment, segmentMany, locate, face, engines, drawModel, seeModel };
+  IC.cloud = { JOBS, job, tryEach, orderFrom, log, onLog, task: setTask, cfg, save, has, NAMES, models, describe, regenerate, edit, fill, layBack, colourise, segment, segmentMany, locate, face, engines, drawModel, seeModel };
 })();
