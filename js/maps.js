@@ -161,6 +161,8 @@
   const memo = new WeakMap();
   // a map the person corrected (painted, or outlined by clicking) wins over the measured or AI one
   let override = null; const setOverride = (fn) => { override = fn; }, forget = (img) => memo.delete(img);
+  // the measured or AI map, leaving out the person's (or the cloud's) corrected one: null if it was never measured
+  function makeRaw(id, img) { const o = override; override = null; try { return known(id, img) ? make(id, img) : null; } finally { override = o; } }
   function make(id, img) {
     const o = override && override(id, img); if (o) return o;
     let m = memo.get(img); if (!m) { m = {}; memo.set(img, m); }
@@ -293,5 +295,5 @@
     const out = new ImageData(new Uint8ClampedArray(s), W, H), d = out.data; for (let p = 0; p < n; p++) if (hole[p] > 0.5) for (let c = 0; c < 3; c++) d[p * 4 + c] = Math.round(F[p * 3 + c]);
     return out;
   }
-  IC.maps = { addLayer, setOverride, forget, telea, damage, grow, fillGap, addFind, known, share, castRatio, colourBlind, stretch, falseColour, LIST, make, heat, grey, mask, apply, box, combined, OPS, prepare };
+  IC.maps = { makeRaw, addLayer, setOverride, forget, telea, damage, grow, fillGap, addFind, known, share, castRatio, colourBlind, stretch, falseColour, LIST, make, heat, grey, mask, apply, box, combined, OPS, prepare };
 })();

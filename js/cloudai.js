@@ -15,9 +15,42 @@
   const has = (p) => !!(cfg.keys[p] || '').trim();
 
   const anthHeaders = (k, json) => ({ ...(json ? { 'content-type': 'application/json' } : {}), 'x-api-key': k, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true', ...(cfg.workspace.trim() ? { 'anthropic-workspace-id': cfg.workspace.trim() } : {}) });
+  // ------------------------------------------------------------------ the activity log: every call, what was sent and what came back (never the key)
+  // Kept in memory for this session only (the last 40). IC.cloud.task('Repair fill') names the calls that follow.
+  const log = [], listeners = new Set(); let task = '';
+  const setTask = (t) => { task = t || ''; };
+  const onLog = (fn) => { listeners.add(fn); return () => listeners.delete(fn); };
+  const tell = () => listeners.forEach((fn) => { try { fn(log); } catch (e) { /* a closed view */ } });
+  function sentOf(opts) {
+    const o = { pics: [], text: '', bytes: 0 }, b = opts && opts.body;
+    if (typeof b === 'string') { o.bytes = b.length; let j = null; try { j = JSON.parse(b); } catch (e) { /* not JSON */ }
+      const walk = (x) => { if (!x || typeof x !== 'object') return; if (Array.isArray(x)) { x.forEach(walk); return; }
+        const d = x.inline_data || x.inlineData; if (d && d.data) o.pics.push(`data:${d.mime_type || d.mimeType || 'image/jpeg'};base64,${d.data}`);
+        if (x.type === 'image' && x.source && x.source.data) o.pics.push(`data:${x.source.media_type};base64,${x.source.data}`);
+        if (x.image_url && x.image_url.url) o.pics.push(x.image_url.url);
+        if (typeof x.text === 'string') o.text += (o.text ? '\n' : '') + x.text;
+        for (const k in x) if (k !== 'inline_data' && k !== 'inlineData' && k !== 'source' && k !== 'image_url') walk(x[k]); };
+      walk(j); }
+    else if (b instanceof FormData) { for (const [k, v] of b.entries()) { if (v instanceof Blob) { o.bytes += v.size; o.pics.push({ blob: v, label: k }); } else if (k === 'prompt') { o.text = String(v); o.bytes += o.text.length; } } }
+    return o;
+  }
+  function backOf(j) {
+    const o = { pics: [], text: '' }; if (!j) return o;
+    (j.data || []).forEach((d) => { if (d && d.b64_json) o.pics.push('data:image/png;base64,' + d.b64_json); });
+    ((j.candidates || [])[0]?.content?.parts || []).forEach((x) => { const d = x.inline_data || x.inlineData; if (d && d.data) o.pics.push(`data:${d.mime_type || d.mimeType};base64,${d.data}`); if (x.text) o.text += x.text; });
+    (j.content || []).forEach((c) => { if (c.text) o.text += c.text; });
+    if (j.choices) o.text += j.choices.map((c) => c.message?.content || '').join('');
+    o.text = o.text.replace(/"mask"\s*:\s*"(?:data:image\/png;base64,)?([A-Za-z0-9+/=]{80,})"/g, (all, b64) => { o.pics.push('data:image/png;base64,' + b64); return `"mask": "(picture ${o.pics.length})"`; }); // Gemini's outlines: shown as pictures
+    if (!o.text && !o.pics.length && Array.isArray(j.data || j.models)) o.text = `(a list of ${(j.data || j.models).length} models)`;
+    return o;
+  }
   async function call(url, opts, who) {
-    let r; try { r = await fetch(url, opts); } catch (e) { throw new Error(`${NAMES[who]} could not be reached (no internet, or the browser blocked it).`); }
-    const t = await r.text(); let j = null; try { j = JSON.parse(t); } catch (e) { /* not JSON */ }
+    const e = { at: Date.now(), who, task, what: url.replace(/^https:\/\/[^/]+/, '').replace(/[?&]key=[^&]*/, '').replace(/\?$/, ''), model: (() => { try { return JSON.parse(opts.body).model || ''; } catch (err) { return opts && opts.body instanceof FormData ? opts.body.get('model') || '' : (url.match(/models\/([^:/?]+):/) || [])[1] || ''; } })(), sent: sentOf(opts), state: 'sending' };
+    if (!/\/models(\?|$)/.test(e.what)) { log.unshift(e); if (log.length > 40) log.pop(); tell(); }
+    for (const p of e.sent.pics) if (p.blob) p.url = URL.createObjectURL(p.blob);
+    let r; try { r = await fetch(url, opts); } catch (err) { e.state = 'failed'; e.error = 'could not be reached'; e.secs = (Date.now() - e.at) / 1000; tell(); throw new Error(`${NAMES[who]} could not be reached (no internet, or the browser blocked it).`); }
+    const t = await r.text(); let j = null; try { j = JSON.parse(t); } catch (err) { /* not JSON */ }
+    e.secs = (Date.now() - e.at) / 1000; e.status = r.status; e.backBytes = t.length; e.state = r.ok ? 'done' : 'failed'; if (r.ok) e.back = backOf(j); else e.error = (j && j.error && (j.error.message || j.error.type)) || t.slice(0, 300); if (j && j.usage) e.usage = j.usage; if (j && j.usageMetadata) e.usage = j.usageMetadata; tell();
     if (!r.ok && /quota|billing|credit balance|insufficient_quota/i.test(t)) throw new Error(`${NAMES[who]}: this account has no paid credit for it yet (${who === 'gemini' ? 'Google: turn on billing for the key in Google AI Studio; the free tier does not draw pictures' : who === 'anthropic' ? 'Anthropic Console › Plans & Billing' : 'OpenAI: Settings › Billing'}). The other services and the built-in AI still work.`);
     if (!r.ok) { const m = (j && (j.error && (j.error.message || j.error.type))) || t.slice(0, 200); throw new Error(`${NAMES[who]}: ${/workspace/i.test(m) ? 'this key is not tied to one workspace: add the Workspace ID (Anthropic Console › Settings › Workspaces) under the Claude key, or use a key made inside a workspace. ' : r.status === 401 || r.status === 403 ? 'the key was refused (check it in AI settings › Cloud AI). ' : ''}${m}`); }
     return j;
@@ -180,5 +213,5 @@
   const drawModel = async (p) => { const want = cfg.models['draw:' + p], ms = (await models(p)).filter((x) => x.draw); if (want && ms.some((x) => x.id === want)) return want; const pick = newest(ms.filter((x) => /^gpt-image/.test(x.id) && !/mini/.test(x.id))) || newest(ms.filter((x) => /flash-image/.test(x.id) && !/preview/.test(x.id))) || newest(ms.filter((x) => /flash-image|gpt-image/.test(x.id))) || ms[0]; if (!pick) throw new Error(`${NAMES[p]}: this key has no model that can draw pictures.`); return pick.id; };
   const seeModel = async (p) => { const want = cfg.models['see:' + p], ms = (await models(p)).filter((x) => x.see && !x.draw); if (want && ms.some((x) => x.id === want)) return want; const plain = (x) => !/lite|image|tts|live|audio|thinking|preview|exp/.test(x.id); const pick = newest(ms.filter((x) => /^gemini-[\d.]+-flash$/.test(x.id))) || newest(ms.filter((x) => /flash/.test(x.id) && plain(x))) || newest(ms.filter(plain)) || ms[0]; if (!pick) throw new Error(`${NAMES[p]}: this key has no model that can look at pictures.`); return pick.id; };
 
-  IC.cloud = { cfg, save, has, NAMES, models, describe, regenerate, edit, fill, layBack, colourise, segment, segmentMany, locate, face, engines, drawModel, seeModel };
+  IC.cloud = { log, onLog, task: setTask, cfg, save, has, NAMES, models, describe, regenerate, edit, fill, layBack, colourise, segment, segmentMany, locate, face, engines, drawModel, seeModel };
 })();
