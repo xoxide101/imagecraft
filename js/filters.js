@@ -451,6 +451,57 @@
   // Background mixed into a colour, anywhere (thin light veins in a leaf, the white inside a ®): a pixel lying on the line
   // between the background colour and the strongest colour near it is that much background, so it becomes that much
   // see-through and gets the colour back. A real lighter shade (a gradient) has its own hue, off that line: it stays.
+  // Magic wand: the pixels like the clicked one (each colour within tolerance, as Photoshop), joined to it or anywhere
+  function wandRegion(img, x0, y0, { tolerance = 32, contiguous = true } = {}) {
+    const W = img.width, H = img.height, d = img.data, n = W * H, m = new Uint8Array(n), i0 = (y0 * W + x0) * 4, r = d[i0], g = d[i0 + 1], b = d[i0 + 2], a = d[i0 + 3], t = tolerance;
+    const like = (p) => { const q = p * 4; return Math.abs(d[q] - r) <= t && Math.abs(d[q + 1] - g) <= t && Math.abs(d[q + 2] - b) <= t && Math.abs(d[q + 3] - a) <= Math.max(t, 24); };
+    if (!contiguous) { for (let p = 0; p < n; p++) if (like(p)) m[p] = 1; return m; }
+    const st = new Int32Array(n); let top = 0; st[top++] = y0 * W + x0; m[y0 * W + x0] = 1;
+    while (top) { const p = st[--top], x = p % W, y = (p / W) | 0; for (const [xx, yy] of [[x - 1, y], [x + 1, y], [x, y - 1], [x, y + 1]]) { if (xx < 0 || yy < 0 || xx >= W || yy >= H) continue; const q = yy * W + xx; if (!m[q] && like(q)) { m[q] = 1; st[top++] = q; } } }
+    return m;
+  }
+  // how far each pixel is from the nearest pixel of a mask (two passes, 3-4 chamfer, in pixels)
+  function distanceTo(mask, W, H) {
+    const D = new Float32Array(W * H), INF = 1e9; for (let p = 0; p < W * H; p++) D[p] = mask[p] ? 0 : INF;
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { const p = y * W + x; let v = D[p]; if (x > 0) v = Math.min(v, D[p - 1] + 1); if (y > 0) { v = Math.min(v, D[p - W] + 1); if (x > 0) v = Math.min(v, D[p - W - 1] + 1.414); if (x < W - 1) v = Math.min(v, D[p - W + 1] + 1.414); } D[p] = v; }
+    for (let y = H - 1; y >= 0; y--) for (let x = W - 1; x >= 0; x--) { const p = y * W + x; let v = D[p]; if (x < W - 1) v = Math.min(v, D[p + 1] + 1); if (y < H - 1) { v = Math.min(v, D[p + W] + 1); if (x < W - 1) v = Math.min(v, D[p + W + 1] + 1.414); if (x > 0) v = Math.min(v, D[p + W - 1] + 1.414); } D[p] = v; }
+    return D;
+  }
+  // what counts as the artwork: its solid parts if it has see-through parts, else everything unlike the background
+  function artMask(img) {
+    const d = img.data, n = img.width * img.height, m = new Uint8Array(n); let clear = false; for (let p = 0; p < n; p++) if (d[p * 4 + 3] < 250) { clear = true; break; }
+    if (clear) { for (let p = 0; p < n; p++) m[p] = d[p * 4 + 3] >= 128 ? 1 : 0; return m; }
+    const bg = cornerBg(img); for (let p = 0; p < n; p++) m[p] = Math.abs(d[p * 4] - bg[0]) + Math.abs(d[p * 4 + 1] - bg[1]) + Math.abs(d[p * 4 + 2] - bg[2]) > 40 ? 1 : 0; return m;
+  }
+  // Add outline: a stroke of a colour round the artwork (outside, centred on its edge, or inside), smooth-edged; the
+  // picture grows by the stroke's width when it is outside, so nothing is cut off
+  function outline(img, { width = 6, colour = '#ffffff', where = 'outside' } = {}) {
+    const w = Math.max(1, +width), grow = where === 'outside' ? Math.ceil(w) + 2 : where === 'centre' ? Math.ceil(w / 2) + 2 : 0, W = img.width + grow * 2, H = img.height + grow * 2;
+    const src = grow ? draw(W, H, (x) => x.drawImage(canvasOf(img), grow, grow)) : copy(img), m = artMask(src), sd = src.data, n = W * H;
+    const col = [parseInt(colour.slice(1, 3), 16), parseInt(colour.slice(3, 5), 16), parseInt(colour.slice(5, 7), 16)], out = new ImageData(W, H), o = out.data;
+    const outside = distanceTo(m, W, H), inv = new Uint8Array(n); for (let p = 0; p < n; p++) inv[p] = m[p] ? 0 : 1; const inside = distanceTo(inv, W, H);
+    for (let p = 0; p < n; p++) {
+      const q = p * 4; let sa; // the stroke's cover here, 0 to 1 (half a pixel of soft edge)
+      if (where === 'outside') sa = m[p] ? 1 : Math.max(0, Math.min(1, w + 0.5 - outside[p]));
+      else if (where === 'centre') sa = m[p] ? Math.max(0, Math.min(1, w / 2 + 0.5 - inside[p])) : Math.max(0, Math.min(1, w / 2 + 0.5 - outside[p]));
+      else sa = m[p] ? Math.max(0, Math.min(1, w + 0.5 - inside[p])) : 0;
+      const aa = sd[q + 3] / 255, onTop = where !== 'outside'; // outside: the stroke is behind the art; centre and inside: on top
+      if (onTop) { for (let c = 0; c < 3; c++) o[q + c] = Math.round(sd[q + c] * (1 - sa) + col[c] * sa); o[q + 3] = Math.round(Math.max(sd[q + 3], sa * 255)); }
+      else { const a = aa + sa * (1 - aa); for (let c = 0; c < 3; c++) o[q + c] = a ? Math.round((sd[q + c] * aa + col[c] * sa * (1 - aa)) / a) : 0; o[q + 3] = Math.round(a * 255); }
+    }
+    return out;
+  }
+  // Trim to the artwork: tiny stray bits dropped, then cropped to the artwork with a little room round it
+  function trimArt(img, { pad = 8, specks = 12 } = {}) {
+    const W = img.width, H = img.height, m = artMask(img), lab = new Int32Array(W * H), st = new Int32Array(W * H), o = copy(img), d = o.data; let id = 0, clear = false;
+    for (let p = 0; p < W * H; p++) if (img.data[p * 4 + 3] < 250) { clear = true; break; }
+    for (let s0 = 0; s0 < W * H; s0++) { if (!m[s0] || lab[s0]) continue; id++; let top = 0, area = 0; const px = []; st[top++] = s0; lab[s0] = id;
+      while (top) { const p = st[--top]; area++; if (area <= specks) px.push(p); const x = p % W, y = (p / W) | 0; for (let j = -1; j <= 1; j++) for (let i = -1; i <= 1; i++) { const xx = x + i, yy = y + j; if (xx < 0 || yy < 0 || xx >= W || yy >= H) continue; const q = yy * W + xx; if (m[q] && !lab[q]) { lab[q] = id; st[top++] = q; } } }
+      if (area <= specks) for (const p of px) { m[p] = 0; if (clear) d[p * 4 + 3] = 0; else { const bg = cornerBg(img); d[p * 4] = bg[0]; d[p * 4 + 1] = bg[1]; d[p * 4 + 2] = bg[2]; } } }
+    let x0 = W, y0 = H, x1 = -1, y1 = -1; for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (m[y * W + x]) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+    if (x1 < 0) return o; x0 = Math.max(0, x0 - pad); y0 = Math.max(0, y0 - pad); x1 = Math.min(W - 1, x1 + pad); y1 = Math.min(H - 1, y1 + pad);
+    return crop(o, { x: x0, y: y0, width: x1 - x0 + 1, height: y1 - y0 + 1 });
+  }
   function colourOut(img, bg, { reach = 3, resid = 20 } = {}) {
     const W = img.width, H = img.height, d = img.data, o = copy(img), od = o.data;
     for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
@@ -759,5 +810,5 @@
     return o;
   }
 
-  IC.filters = { colourOut, bleedColour, cornerBg, defringe, dotsOff, paperClean, toneFrom, colourFrom, colourise, mmpx, deband, chromaRebuild, guidedBy, cas, dehaze, hazeLevel, isToned, shadowRecover, guided, autoColour, clarity, pyramidBlend, aliasCheck, antialias, light, colour, autoLevels, autoFix, whiteBalance, greyscale, sepia, invert, threshold, posterize, blur, sharpen, denoise, median, despeckle, deblock, undither, pixelate, resize, scale2x, scale3x, rotate: rotateAny, rotate90: rotate, flip, crop, trimBox, canvasSize, makeClear, flatten, copy, canvasOf };
+  IC.filters = { wandRegion, distanceTo, artMask, outline, trimArt, colourOut, bleedColour, cornerBg, defringe, dotsOff, paperClean, toneFrom, colourFrom, colourise, mmpx, deband, chromaRebuild, guidedBy, cas, dehaze, hazeLevel, isToned, shadowRecover, guided, autoColour, clarity, pyramidBlend, aliasCheck, antialias, light, colour, autoLevels, autoFix, whiteBalance, greyscale, sepia, invert, threshold, posterize, blur, sharpen, denoise, median, despeckle, deblock, undither, pixelate, resize, scale2x, scale3x, rotate: rotateAny, rotate90: rotate, flip, crop, trimBox, canvasSize, makeClear, flatten, copy, canvasOf };
 })();
