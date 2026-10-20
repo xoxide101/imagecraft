@@ -639,8 +639,10 @@
         const a = t.aiCache.img; if (+s.mix >= 100) return a;
         return blendLight(a, X.resize(img, { width: a.width, height: a.height, method: 'nohalo' }), +s.mix / 100);
       } },
-    modern: { title: 'Modernise', icon: IK.modern, live: false, s: (img) => ({ kind: img.width * img.height < 90000 ? 'pixel' : 'photo', bigger: 2, useAi: false }),
-      fields: [seg('kind', 'What kind of picture', [['pixel', 'Pixel art'], ['screen', 'Dithered screen'], ['photo', 'Old photo or scan'], ['jpeg', 'Blocky JPEG']]), seg('bigger', 'Make it bigger', [[1, 'No'], [2, '2×'], [4, '4×']]), chk('useAi', 'Use AI upscaling (slower; downloads a model once)', (s) => s.kind !== 'pixel' && +s.bigger > 1),
+    modern: { title: 'Modernise', icon: IK.modern, live: false, s: (img) => ({ kind: img.width * img.height < 90000 ? 'pixel' : 'photo', bigger: 2, useAi: false, colourise: false, faces: false }),
+      fields: [seg('kind', 'What kind of picture', [['pixel', 'Pixel art'], ['screen', 'Dithered screen'], ['photo', 'Old photo or scan'], ['jpeg', 'Blocky JPEG']]), seg('bigger', 'Make it bigger', [[1, 'No'], [2, '2×'], [4, '4×']]), chk('useAi', 'Use AI upscaling (the compact Real-ESRGAN that comes with ImageCraft)', (s) => s.kind !== 'pixel' && +s.bigger > 1),
+        chk('colourise', 'Colourise (AI: the colours are a guess; about 135 MB once, 10 s)', (s) => s.kind === 'photo'), chk('faces', 'Restore faces (AI: faces are redrawn; about 377 MB once; non-commercial)', (s) => s.kind === 'photo'),
+        note('With colourising and face restoring, a full photo can take several minutes (one test: 6 minutes on the processor for a 1282 × 1613 group of seven, made 2× bigger). A graphics card is much quicker.', (s) => s.kind === 'photo' && (s.colourise || s.faces)),
         note('Pixel art: grown with smooth, rounded edges. Dithered screen: dots blended to smooth colour. Old photo: JPEG blocks (when there are any), dust, smart noise removal, a gentle deblur, colour cast, levels and faded detail. Blocky JPEG: blocks smoothed.'), note('Press Preview to see it first.')],
       run: async (img, s, say) => {
         const k = +s.bigger; let o = img;
@@ -651,6 +653,8 @@
         if (s.kind === 'photo') { const bl = IC.restore.blockiness(o); if (bl.luma > 1.3) { say && say('Smoothing the JPEG blocks…'); o = X.deblock(o, { strength: 50 }); } if (bl.colour > 2) o = X.chromaRebuild(o, { size: 8 }); }
         if (s.kind === 'photo') { say && say('Dust and noise…'); o = IC.restore.impulse(o, { threshold: 30 }); const n = IC.restore.noiseLevel(o); if (n.luma > 1 || n.chroma > 1) o = IC.restore.nlm(o, nlmFor(n)); say && say('Sharpness and tone…'); const m = IC.restore.measure(o); if (m && m.radius > 0.8) o = IC.restore.deblur(o, { kind: 'gauss', radius: Math.min(3, m.radius * 0.7), noise: kFor(IC.restore.noiseLevel(o).luma) + 20, strength: 60 }); const toned = X.isToned(o) || undefined, hz = X.hazeLevel(o); if (hz > 0.22) o = X.dehaze(o, { strength: Math.min(80, (hz - 0.15) * 300), keepSome: 0.15 }); o = X.clarity(X.autoColour(X.shadowRecover(o, { shadows: 40, highlights: 15, detail: 5, maxGain: 2.5 }), { strength: 100, keepTone: toned ? true : 'auto' }), { amount: 30 }); }
         if (s.kind === 'jpeg') { say && say('Smoothing the blocks…'); o = X.deblock(o, { strength: 60 }); }
+        if (s.kind === 'photo' && s.colourise) { say && say('Colourising (AI)…'); o = await X.colourise(o, { amount: 80 }); } // a little under full strength: with the clean-up's own contrast, full colour came out too vivid
+        if (s.kind === 'photo' && s.faces) { say && say('Finding faces…'); const f = await IC.faces.ensure(o); if (f.length) o = await IC.faces.restore(o, f, { fidelity: 0.7, onStep: (m) => say && say(m) }); }
         if (k > 1) o = s.useAi ? await upscaleWith(o, s.kind === 'jpeg' || s.kind === 'photo' ? 'ai-esrgan3' : 'ai-sharp', k, say, true, { strength: s.kind === 'jpeg' ? 0.8 : 0.5 }) : X.resize(o, { width: o.width * k, height: o.height * k });
         // a light finish (an old photo was sharpened by the deblur already)
         return s.kind === 'photo' ? X.colour(o, { vibrance: 6 }) : X.colour(X.sharpen(o, { amount: 50, radius: 1, threshold: 3 }), { vibrance: 12 });
