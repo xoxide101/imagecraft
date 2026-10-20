@@ -90,6 +90,14 @@
   const pics = []; let cur = -1;
   const pic = () => pics[cur];
   const now = () => (pic() ? pic().steps[pic().at].img : null);
+  // a tool saying what it needs ("No faces found", "Paint over the shadow first") is a note; a fault in the program
+  // (TypeError and the like) is an error, counted in the red badge
+  const logFail = (what, e) => (e && /^(TypeError|ReferenceError|RangeError|SyntaxError|InternalError)$/.test(e.name) ? ICLOG.error(what, e) : ICLOG.warn(what, e));
+  const fmtTime = (sec) => (sec < 90 ? `${Math.max(1, Math.round(sec))} s` : sec < 5400 ? `${Math.round(sec / 60)} min` : `${(sec / 3600).toFixed(1)} hours`);
+  const etaSay = (say) => { const t0 = performance.now(); return (m) => { const r = /(\d+) of (\d+)/.exec(m || ''); if (r && +r[1] > 0 && +r[2] > +r[1]) { const el = (performance.now() - t0) / 1000, left = (el / +r[1]) * (+r[2] - +r[1]); if (el > 1.5 && left > 2) m += ` · about ${fmtTime(left)} left`; } if (say) say(m); }; };
+  // how fast this computer ran each AI model last time (ms for a 160-pixel square), for estimates before starting
+  const SPEED_KEY = 'imagecraft-speed'; let speed = {}; try { speed = JSON.parse(localStorage.getItem(SPEED_KEY) || '{}'); } catch (e) { /* blocked storage */ }
+  const noteSpeed = (k, ms) => { speed[k] = Math.round(ms); try { localStorage.setItem(SPEED_KEY, JSON.stringify(speed)); } catch (e) { /* blocked storage */ } };
   const baseName = (n) => (n || 'picture').replace(/\.[a-z0-9]+$/i, '');
   const MAX_STEPS = 24;
   function addPic(name, img, info, size, deep) {
@@ -102,8 +110,8 @@
     $('welcome').hidden = !!pic(); $('stage').hidden = !pic();
     if (fresh) colourCount();
   }
-  function push(label, img, deep) {
-    const p = pic(); p.steps.length = p.at + 1; p.steps.push({ label, img, deep: deep || undefined });
+  function push(label, img, deep, how) {
+    const p = pic(); p.steps.length = p.at + 1; p.steps.push({ label, img, deep: deep || undefined, how: how || undefined });
     if (p.steps.length > MAX_STEPS) p.steps.splice(1, 1);
     p.steps.forEach((s, i) => { if (i > 0 && i < p.steps.length - DEEP_KEEP) delete s.deep; }); // older steps keep 8 bits (memory)
     p.at = p.steps.length - 1; p.dirty = true; afterChange();
@@ -119,11 +127,11 @@
   async function deepRun(fn, st, out8, ms, mask) {
     const inImg = st.img, W = inImg.width, H = inImg.height, N = W * H * 4, D = st.deep, s8 = inImg.data;
     const src = D ? (i) => D[i] / 257 : (i) => s8[i];
-    let acc = null;
+    let acc = null; const eta = etaSay((m) => busyNow(m));
     if (ms * DEEP_K < 3000) {
       for (let k = 0; k < DEEP_K; k++) {
         const im = new ImageData(W, H), d = im.data; for (let i = 0; i < N; i++) d[i] = (i & 3) === 3 ? Math.round(src(i)) : Math.round(src(i) + jitter(i, k));
-        const o = await fn(im); if (!o || !o.data || o.width !== out8.width || o.height !== out8.height) return null;
+        if (k > 0) eta(`16-bit pass ${k + 1} of ${DEEP_K}`); const o = await fn(im); if (!o || !o.data || o.width !== out8.width || o.height !== out8.height) return null;
         if (!acc) acc = new Float32Array(o.data.length); const od = o.data; for (let i = 0; i < od.length; i++) acc[i] += od[i];
         await wait(0);
       }
@@ -135,10 +143,10 @@
     return deep;
   }
   // a new step from a tool's 8-bit result, with its 16-bit copy worked out
-  async function pushDeep(label, out8, fn, ms, mask) {
+  async function pushDeep(label, out8, fn, ms, mask, how) {
     const st = pic().steps[pic().at]; let deep = null;
     if (fn && deepOn) { busyNow(`${label} (in 16 bits)…`); try { deep = await deepRun(fn, st, out8, ms, mask); } catch (e) { ICLOG.warn(`${label}: the 16-bit pass was skipped`, e); } }
-    push(label, deep ? F.down16(deep, out8.width, out8.height) : out8, deep);
+    push(label, deep ? F.down16(deep, out8.width, out8.height) : out8, deep, how);
   }
   let deepOn = true; try { deepOn = localStorage.getItem('imagecraft-deep') !== 'off'; } catch (e) { /* blocked storage */ }
   function afterChange() { if (mapView) { mapView = null; $('mapbar').hidden = true; } renderPics(); renderHist(); renderProps(); show(); if (view.fit) fitView(); status(); colourCount(); }
@@ -207,6 +215,7 @@
   let repairPaint = null;
   function paintAt(px, py, erase) {
     const t = tool, b = t.base, W = b.width, H = b.height; if (!repairPaint || repairPaint.length !== W * H) repairPaint = new Uint8Array(W * H);
+    if (t.def.id === 'shadowlift') { const r = Math.max(1, t.s.brush / 2); for (let y = Math.max(0, Math.floor(py - r)); y <= Math.min(H - 1, Math.ceil(py + r)); y++) for (let x = Math.max(0, Math.floor(px - r)); x <= Math.min(W - 1, Math.ceil(px + r)); x++) if ((x - px) ** 2 + (y - py) ** 2 <= r * r) repairPaint[y * W + x] = erase ? 0 : 1; t.preview = markOver(b, repairPaint); t.stale = true; show(); return; }
     const r = Math.max(1, t.s.brush / 2), x0 = Math.max(0, Math.floor(px - r)), x1 = Math.min(W - 1, Math.ceil(px + r)), y0 = Math.max(0, Math.floor(py - r)), y1 = Math.min(H - 1, Math.ceil(py + r));
     for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) if ((x - px) ** 2 + (y - py) ** 2 <= r * r) repairPaint[y * W + x] = erase ? 0 : 1;
     t.preview = markOver(b, repairDamage(b, t.s)); t.stale = true; show();
@@ -321,14 +330,15 @@
   const DEPTHS = [['1', '1-bit · 2 colours'], ['2', '2-bit · 4 colours'], ['3', '3-bit · 8 colours'], ['4', '4-bit · 16 colours'], ['5', '5-bit · 32 colours'], ['6', '6-bit · 64 colours'], ['7', '7-bit · 128 colours'], ['8', '8-bit · 256 colours'], ['high15', '15-bit · 32,768 colours (high colour)'], ['high16', '16-bit · 65,536 colours (high colour)']];
   const LEVELS = [['0', 'Any colour (24-bit)'], ['8', 'Atari ST: from 512 colours'], ['16', 'Amiga / Atari STE: from 4,096'], ['4', 'EGA: from 64 colours'], ['64', 'VGA: from 262,144']];
   const PALS = [['adaptive', 'Best for this picture'], ...Object.entries(C.PALETTES).map(([k, p]) => [k, p.name])];
-  const UPS = [['smooth', 'Best (automatic)'], ['splat', 'Splat (edge-following blobs)'], ['area', 'Pixel averaging (area)'], ['nohalo', 'Sharp, no halos'], ['lanczos', 'Lanczos (sharpest)'], ['cubic', 'Cubic'], ['mitchell', 'Soft (Mitchell)'], ['linear', 'Linear'], ['nearest', 'Square pixels (pixel art, exact)'], ['scale2x', 'Pixel art, rounded corners (Scale2x)'], ['scale3x', 'Pixel art ×3 (Scale3x)'], ['smoothpixel', 'Pixel art made smooth'], ['ai-esrgan', 'AI 4× Real-ESRGAN (real photos)'], ['ai-esrgan2', 'AI 2× Real-ESRGAN'], ['ai-sharp', 'AI 2× (clean pictures)'], ['ai-photo', 'AI 4× (old photos)'], ['ai-jpeg', 'AI 4× (JPEG clean-up)']];
-  const ai = (k) => /^ai-/.test(k) ? k.slice(3) : null;
-  async function upscaleWith(img, method, factor, say, linear = true) {
+  const UPS = [['smooth', 'Best (automatic)'], ['splat', 'Splat (edge-following blobs)'], ['area', 'Pixel averaging (area)'], ['nohalo', 'Sharp, no halos'], ['lanczos', 'Lanczos (sharpest)'], ['cubic', 'Cubic'], ['mitchell', 'Soft (Mitchell)'], ['linear', 'Linear'], ['nearest', 'Square pixels (pixel art, exact)'], ['mmpx', 'Pixel art, style kept (MMPX)'], ['scale2x', 'Pixel art, rounded corners (Scale2x)'], ['scale3x', 'Pixel art ×3 (Scale3x)'], ['smoothpixel', 'Pixel art made smooth'], ['ai-esrgan3', 'AI 4× Real-ESRGAN compact (fast, noise control)'], ['ai-esrgan', 'AI 4× Real-ESRGAN (real photos)'], ['ai-esrgan2', 'AI 2× Real-ESRGAN'], ['ai-sharp', 'AI 2× (clean pictures)'], ['ai-photo', 'AI 4× (old photos)'], ['ai-jpeg', 'AI 4× (JPEG clean-up)']];
+  const ai = (k) => /^ai-/.test(k) ? k.slice(3) : null, aiKey = (s) => s.method + (s.method === 'ai-esrgan3' ? ':' + s.denoise : '');
+  async function upscaleWith(img, method, factor, say, linear = true, opts = {}) {
     const k = ai(method);
     if (!k) return X.resize(img, { width: img.width * factor, height: img.height * factor, method, linear });
     if (!window.CRAFTAI) throw new Error('The AI helpers are missing.');
     say && say(`Getting the AI model ready (the first time it downloads)…`);
-    const c = await CRAFTAI.upscale(X.canvasOf(img), k, (n, t) => say && say(`AI upscaling… ${n} of ${t}`));
+    const t0 = performance.now(); let tiles = 1; const c = await CRAFTAI.upscale(X.canvasOf(img), k, (n, t) => { tiles = t; say && say(`AI upscaling… square ${n} of ${t}`); }, opts);
+    noteSpeed(k, (performance.now() - t0) / tiles);
     let out = c.getContext('2d').getImageData(0, 0, c.width, c.height);
     if (out.width !== img.width * factor) out = X.resize(out, { width: img.width * factor, height: img.height * factor });
     return out;
@@ -452,6 +462,46 @@
         for (let p = 0; p < soft.length; p++) { const k = Math.max(hole[p], soft[p]); if (k > 0) for (let c = 0; c < 3; c++) d[p * 4 + c] = Math.round(d[p * 4 + c] + (a[p * 4 + c] - d[p * 4 + c]) * k); }
         return o;
       } },
+    descreen: { title: 'Descreen (printing dots)', icon: IK.undither, s: { sensitivity: 50, cut: 0.7, sharpen: 60, strength: 100 },
+      fields: [note('A photo printed in a newspaper, yearbook or magazine is a grid of dots. Their spacing is measured from the picture’s frequency spectrum (where a printing screen shows as sharp spikes), the dots are smoothed away by exactly that much, and the edges are sharpened back without bringing the dots back. A picture without a printing screen is left alone.'),
+        range('sensitivity', 'How faint a screen to look for', 0, 100), range('cut', 'Smoothing (× the dot spacing)', 0.4, 1.4, 0.05), range('sharpen', 'Sharpen back (%)', 0, 100), { t: 'out' }],
+      report: () => (tool && tool.out && tool.out.peaks != null ? `<p class="hint">${tool.out.peaks >= 4 ? `Printing screen found: dots every <b>${tool.out.period.toFixed(1)}</b> pixels.` : 'No printing screen found, so nothing was changed (raise the sensitivity if you can see dots).'}</p>` : ''),
+      run: (img, s) => IC.restore.descreen(img, s) },
+    redeye: { title: 'Red eye', icon: IK.cutout, live: false, s: { strength: 100, level: 50 },
+      fields: [note('The flash lit the back of the eye. The face finder finds each iris, and only there, where red is far above green and blue, the red is taken down to them: the pupil becomes dark again and the iris keeps its own colour.'),
+        range('level', 'Sensitivity', 0, 100), range('strength', 'Strength %', 0, 100), { t: 'out' }, note('The first use downloads the face finder (about 4 MB). Press Preview.')],
+      report: () => (tool && tool.redeye != null ? `<p class="hint"><b>${tool.redeye}</b> red pixel${tool.redeye === 1 ? '' : 's'} fixed in ${tool.faces} face${tool.faces === 1 ? '' : 's'}.</p>` : ''),
+      run: async (img, s, say) => {
+        say && say('Finding faces…'); const faces = await IC.faces.ensure(img); if (!faces.length) throw new Error('No faces found in this picture.');
+        const m = IC.maps.grow(IC.faces.partMask(img, faces, 'irises'), img.width, img.height, 2), o = new ImageData(new Uint8ClampedArray(img.data), img.width, img.height), d = o.data, ratio = 2 - s.level / 100, k = s.strength / 100; let n = 0;
+        for (let p = 0; p < m.length; p++) { if (m[p] < 0.3) continue; const i = p * 4, r = d[i], g = d[i + 1], b = d[i + 2], gb = Math.max(g, b); if (r > 60 && r > ratio * gb) { d[i] = Math.round(r + (Math.min(r, (g + b) / 2) - r) * k * Math.min(1, m[p] * 1.5)); n++; } }
+        if (tool) { tool.redeye = n; tool.faces = faces.length; } return o;
+      } },
+    shadowlift: { title: 'Lift a shadow', icon: IK.light, live: false, paint: true, s: { brush: 30, strength: 100, edge: 50 },
+      fields: [note('For a hard shadow, such as a flash shadow on a wall behind someone. <b>Paint over the shadow</b> (the right button takes paint away). The light just outside it is compared with the shadow, colour by colour, and the shadow is brightened by that much, with its edge following the picture so no dark rim is left.'),
+        range('brush', 'Brush size (pixels)', 4, 120), range('strength', 'Strength %', 0, 100), range('edge', 'Edge softness', 0, 100), { t: 'btns', buttons: [{ label: 'Clear the painting', run: () => { repairPaint = null; if (tool) { tool.preview = null; show(); } } }] }, { t: 'out' }, note('Press Preview.')],
+      report: () => (tool && tool.gain ? `<p class="hint">Brightened ${tool.gain.map((g) => g.toFixed(2) + '×').join(', ')} (red, green, blue).</p>` : ''),
+      run: (img, s) => {
+        const W = img.width, H = img.height, n = W * H; if (!repairPaint || repairPaint.length !== n || !repairPaint.some((v) => v)) throw new Error('Paint over the shadow first.');
+        const M = Float32Array.from(repairPaint), d = img.data, R = Math.max(4, Math.round(Math.max(W, H) / 80)), near = IC.maps.box(M, W, H, R * 2);
+        // what is painted and a ring round it, split into dark and light (Otsu's method), so sloppy painting either way does
+        // not matter: the shadow is the dark group, the lit wall the light one, and the gain is their ratio, colour by colour
+        const lum = (p) => 0.299 * d[p * 4] + 0.587 * d[p * 4 + 1] + 0.114 * d[p * 4 + 2], hist = new Float64Array(256); let tot = 0;
+        for (let p = 0; p < n; p += 2) if (near[p] > 0.02) { hist[Math.min(255, Math.round(lum(p)))]++; tot++; }
+        let sum = 0; for (let i = 0; i < 256; i++) sum += i * hist[i]; let sB = 0, wB = 0, best = -1, th = 128;
+        for (let t = 0; t < 256; t++) { wB += hist[t]; if (!wB) continue; const wF = tot - wB; if (!wF) break; sB += t * hist[t]; const v = wB * wF * (sB / wB - (sum - sB) / wF) ** 2; if (v > best) { best = v; th = t; } }
+        const med = (pick) => { const v = [[], [], [], []]; for (let p = 0; p < n; p += 2) if (pick(p)) { for (let c = 0; c < 3; c++) v[c].push(d[p * 4 + c]); v[3].push(lum(p)); } return v.map((a) => { a.sort((x, y) => x - y); return a.length ? a[a.length >> 1] : 0; }); };
+        const sh = med((p) => M[p] > 0.5 && lum(p) <= th), lit = med((p) => near[p] > 0.02 && lum(p) > th);
+        if (!lit[3] || !sh[3]) throw new Error('Could not tell the shadow from the light round it: paint a little past its edge.');
+        const gain = sh.slice(0, 3).map((v, c) => Math.min(4, Math.max(1, (lit[c] + 1) / (v + 1)))), lo = sh[3], hi = lit[3];
+        // the mask's edge made to follow the picture (guided by its brightness), then softened a little
+        const L = new Float32Array(n); for (let p = 0; p < n; p++) L[p] = (0.299 * d[p * 4] + 0.587 * d[p * 4 + 1] + 0.114 * d[p * 4 + 2]) / 255;
+        let m = X.guidedBy(L, IC.maps.box(M, W, H, 2), W, H, Math.max(2, Math.round(R * (0.3 + s.edge / 100))), 0.002); m = m.map((v) => Math.max(0, Math.min(1, v)));
+        const o = new ImageData(new Uint8ClampedArray(d), W, H), od = o.data, k = s.strength / 100;
+        // only what is dark gets lifted (painted wall that is already lit stays as it is)
+        for (let p = 0; p < n; p++) { const w = m[p] * k * Math.max(0, Math.min(1, (hi - lum(p)) / Math.max(1, hi - lo))); if (w > 0.002) for (let c = 0; c < 3; c++) od[p * 4 + c] = Math.round(d[p * 4 + c] * (1 + (gain[c] - 1) * w)); }
+        if (tool) tool.gain = gain; return o;
+      } },
     falsecolour: { title: 'False colour', icon: IK.colour, toNew: 'false colour', applyLabel: 'Open as a new picture', s: { amount: 100 },
       fields: [note('Each colour separation (cyan, magenta, yellow) is stretched to its own full range and inked again, so differences of a few percent become strong colours. On a black-and-white or sepia print it shows stains, uneven toning, fading and retouching; on a faded colour print, which dye layer has gone. For looking and for masks: it is not the real colour.'), range('amount', 'Amount %', 0, 100), { t: 'out' }],
       report: () => (tool && tool.out && tool.out.ranges ? `<p class="hint">How much of each ink this picture really holds: ${['cyan', 'magenta', 'yellow'].map((n, i) => `${n} ${Math.round(tool.out.ranges[i][0] * 100)}–${Math.round(tool.out.ranges[i][1] * 100)}%`).join(', ')}.</p>` : ''),
@@ -558,17 +608,17 @@
       fields: [{ t: 'swatch', k: 'rgb', label: 'Colour (click the picture to pick it)' }, range('tolerance', 'Close colours too', 0, 100), range('soft', 'Soft edge', 0, 60)],
       pick: (s, rgb) => { s.rgb = rgb; }, run: (img, s) => X.makeClear(img, s) },
     flatten: { title: 'Fill see-through parts', icon: IK.canvas, s: { colour: '#ffffff' }, fields: [{ t: 'colour', k: 'colour', label: 'Fill with' }], run: (img, s) => X.flatten(img, { fill: s.colour }) },
-    upscale: { title: 'Make bigger', icon: IK.upscale, s: (img) => ({ method: img.width * img.height < 90000 ? 'scale2x' : 'smooth', factor: 2, linear: true, mix: 100, aa: 0 }),
+    upscale: { title: 'Make bigger', icon: IK.upscale, s: (img) => ({ method: img.width * img.height < 90000 ? 'scale2x' : 'smooth', factor: 2, linear: true, mix: 100, aa: 0, denoise: 50 }),
       fields: [sel('method', 'How', UPS), seg('factor', 'Times', [[2, '2×'], [3, '3×'], [4, '4×']], (s) => !ai(s.method)),
         chk('linear', 'Average in linear light (truer colours and edges)', (s) => !ai(s.method) && s.method !== 'nearest'),
-        range('mix', 'AI strength (%): less mixes in the classic enlargement', 0, 100, 5, (s) => !!ai(s.method)), range('aa', 'Smooth jagged edges (%)', 0, 100, 1, (s) => !ai(s.method)), { t: 'out' },
+        range('denoise', 'Noise removal (%)', 0, 100, 5, (s) => s.method === 'ai-esrgan3'), range('mix', 'AI strength (%): less mixes in the classic enlargement', 0, 100, 5, (s) => !!ai(s.method)), range('aa', 'Smooth jagged edges (%)', 0, 100, 1, (s) => !ai(s.method)), { t: 'out' },
         note('<b>Best</b> sharpens edges without the light and dark halos sharp filters leave, and averages light the way the eye sees it. <b>Pixel averaging</b> counts every pixel by how much it covers: crisp, honest, no invented detail.', (s) => !ai(s.method)),
         note('The AI ways download a model once (10–70 MB) and work offline after that. On a graphics card they take about a second for each 160 × 160 square; on the processor much longer.', (s) => !!ai(s.method))],
-      live: (s) => !ai(s.method) || !!(tool && tool.aiCache && tool.aiCache.k === s.method), report: (img) => `<p class="hint">Becomes <b>${img.width} × ${img.height}</b> pixels.</p>`,
+      live: (s) => !ai(s.method) || !!(tool && tool.aiCache && tool.aiCache.k === aiKey(s)), report: (img) => { const s = tool && tool.s, k = s && ai(s.method), b = tool && tool.base; let est = ''; if (k && b) { const n = Math.ceil(b.width / 160) * Math.ceil(b.height / 160), ms = speed[k]; est = ms ? ` AI: ${n} squares, about <b>${fmtTime((n * ms) / 1000)}</b> on this computer.` : ` AI: ${n} squares; how long depends on the model and the graphics card (from a tenth of a second to ten seconds a square). It is timed the first time.`; } return `<p class="hint">Becomes <b>${img.width} × ${img.height}</b> pixels.${est}</p>`; },
       run: async (img, s, say) => {
         if (!ai(s.method)) { const u = await upscaleWith(img, s.method, +s.factor, say, s.linear); return +s.aa ? X.antialias(u, { amount: +s.aa }) : u; }
         // the AI result is kept, so moving the strength slider does not run the model again
-        const t = tool; if (!t.aiCache || t.aiCache.k !== s.method) t.aiCache = { k: s.method, img: await upscaleWith(img, s.method, CRAFTAI.MODELS[ai(s.method)].scale, say) };
+        const t = tool || {}; if (!t.aiCache || t.aiCache.k !== aiKey(s)) t.aiCache = { k: aiKey(s), img: await upscaleWith(img, s.method, CRAFTAI.MODELS[ai(s.method)].scale, say, true, { strength: +s.denoise / 100 }) };
         const a = t.aiCache.img; if (+s.mix >= 100) return a;
         return blendLight(a, X.resize(img, { width: a.width, height: a.height, method: 'nohalo' }), +s.mix / 100);
       } },
@@ -584,7 +634,7 @@
         if (s.kind === 'photo') { const bl = IC.restore.blockiness(o); if (bl.luma > 1.3) { say && say('Smoothing the JPEG blocks…'); o = X.deblock(o, { strength: 50 }); } if (bl.colour > 2) o = X.chromaRebuild(o, { size: 8 }); }
         if (s.kind === 'photo') { say && say('Dust and noise…'); o = IC.restore.impulse(o, { threshold: 30 }); const n = IC.restore.noiseLevel(o); if (n.luma > 1 || n.chroma > 1) o = IC.restore.nlm(o, nlmFor(n)); say && say('Sharpness and tone…'); const m = IC.restore.measure(o); if (m && m.radius > 0.8) o = IC.restore.deblur(o, { kind: 'gauss', radius: Math.min(3, m.radius * 0.7), noise: kFor(IC.restore.noiseLevel(o).luma) + 20, strength: 60 }); const toned = X.isToned(o) || undefined, hz = X.hazeLevel(o); if (hz > 0.22) o = X.dehaze(o, { strength: Math.min(80, (hz - 0.15) * 300), keepSome: 0.15 }); o = X.clarity(X.autoColour(X.shadowRecover(o, { shadows: 40, highlights: 15, detail: 5, maxGain: 2.5 }), { strength: 100, keepTone: toned ? true : 'auto' }), { amount: 30 }); }
         if (s.kind === 'jpeg') { say && say('Smoothing the blocks…'); o = X.deblock(o, { strength: 60 }); }
-        if (k > 1) o = s.useAi ? await upscaleWith(o, s.kind === 'jpeg' || s.kind === 'photo' ? (k === 2 ? 'ai-esrgan2' : 'ai-esrgan') : 'ai-sharp', k, say) : X.resize(o, { width: o.width * k, height: o.height * k });
+        if (k > 1) o = s.useAi ? await upscaleWith(o, s.kind === 'jpeg' || s.kind === 'photo' ? 'ai-esrgan3' : 'ai-sharp', k, say, true, { strength: s.kind === 'jpeg' ? 0.8 : 0.5 }) : X.resize(o, { width: o.width * k, height: o.height * k });
         // a light finish (an old photo was sharpened by the deblur already)
         return s.kind === 'photo' ? X.colour(o, { vibrance: 6 }) : X.colour(X.sharpen(o, { amount: 50, radius: 1, threshold: 3 }), { vibrance: 12 });
       } },
@@ -705,7 +755,7 @@
   // ------------------------------------------------------------------ running a tool
   let tool = null, token = 0, timer = null;
   // Where: any tool that keeps the picture's size can work only where a map says (a mask: white = apply, black = leave)
-  const NO_MASK = new Set(['resize', 'crop', 'canvas', 'straighten', 'looks', 'text', 'trace', 'upscale', 'remaster', 'modern', 'depth', 'noisemap', 'stack', 'split', 'falsecolour', 'assess', 'repair']);
+  const NO_MASK = new Set(['resize', 'crop', 'canvas', 'straighten', 'looks', 'text', 'trace', 'upscale', 'remaster', 'modern', 'depth', 'noisemap', 'stack', 'split', 'falsecolour', 'assess', 'repair', 'redeye', 'shadowlift']);
   const maskable = (def) => !NO_MASK.has(def.id) && !def.viewOnly;
   const MASK_FIELDS = [
     { t: 'html', html: () => '<h3 style="margin:10px 0 0">Where</h3>' },
@@ -720,7 +770,7 @@
   const isLive = (t) => (typeof t.def.live === 'function' ? t.def.live(t.s) : t.def.live !== false);
   function openTool(id, preset) {
     if (!pic()) { toast('Open a picture first.'); return; }
-    if (id === 'repair') repairPaint = null; // a fresh painting each time
+    if (id === 'repair' || id === 'shadowlift') repairPaint = null; // a fresh painting each time
     if (tool) closeTool(true);
     const def = TOOLS[id], base = now();
     tool = { def, base, s: { ...JSON.parse(JSON.stringify(typeof def.s === 'function' ? def.s(base) : def.s)), ...(preset || {}) }, preview: null };
@@ -771,8 +821,8 @@
   async function runSteps(steps) {
     for (const s0 of steps) {
       const def = TOOLS[s0.id], img = pic().steps[pic().at].img; busyNow(`${def.title}…`); await wait(0);
-      try { const base = typeof def.s === 'function' ? def.s(img) : JSON.parse(JSON.stringify(def.s)); const t0 = performance.now(), sx = { ...base, ...s0.s }, out = await def.run(img, sx, (m) => busyNow(m)); await pushDeep(def.title, out, (im) => def.run(im, sx), performance.now() - t0); }
-      catch (e) { busy(null); ICLOG.error(`${def.title} failed`, e); toast(`${def.title}: ${e.message}`); return; }
+      try { const base = typeof def.s === 'function' ? def.s(img) : JSON.parse(JSON.stringify(def.s)); const t0 = performance.now(), sx = { ...base, ...s0.s }, out = await def.run(img, sx, (m) => busyNow(m)); await pushDeep(def.title, out, (im) => def.run(im, sx), performance.now() - t0, null, { id: s0.id, s: sx }); }
+      catch (e) { busy(null); logFail(`${def.title} failed`, e); toast(`${def.title}: ${e.message}`); return; }
     }
     busy(null); toast(`Done: ${steps.length} step${steps.length === 1 ? '' : 's'}. Each is in History; Undo goes back one at a time.`);
   }
@@ -785,12 +835,12 @@
     const t = tool; if (!t) return; const my = ++token;
     busy(`${t.def.title}…`);
     try {
-      await wait(0); const t0 = performance.now(); if (t.s.wMap) await IC.maps.prepare([t.s.wMap, t.s.wOp ? t.s.wMap2 : ''], t.base); const r0 = await t.def.run(t.base, t.s, (m) => { if (my === token) busyNow(m); }), r = masked(t, r0);
+      await wait(0); const t0 = performance.now(); if (t.s.wMap) await IC.maps.prepare([t.s.wMap, t.s.wOp ? t.s.wMap2 : ''], t.base); const r0 = await t.def.run(t.base, t.s, etaSay((m) => { if (my === token) busyNow(m); })), r = masked(t, r0);
       if (my !== token || tool !== t) return;
       t.ms = performance.now() - t0; ICLOG.info(`${t.def.title}: ${t.base.width} × ${t.base.height} → ${r.width} × ${r.height} in ${Math.round(t.ms)} ms`, JSON.stringify(t.s).slice(0, 400));
       const sizeChanged = !t.preview ? r.width !== t.base.width || r.height !== t.base.height : r.width !== t.preview.width || r.height !== t.preview.height;
       t.out = r; t.preview = t.showMask && t.s.wMap ? IC.maps.grey(maskOf(t), t.base.width, t.base.height) : r; busy(null); show(); if (sizeChanged && view.fit) fitView(); renderOut();
-    } catch (e) { ICLOG.error(`${t.def.title} failed`, e); if (my === token) { busy(null); toast(e.message || String(e)); } }
+    } catch (e) { logFail(`${t.def.title} failed`, e); if (my === token) { busy(null); toast(e.message || String(e)); } }
   }
   async function applyTool() {
     const t = tool; if (!t) return;
@@ -800,14 +850,16 @@
     if (t.def.id === 'split') { if (!t.outputs || t.stale) { await runPreview(); if (tool !== t || !t.outputs) return; } const nm = baseName(pic().name), outs = t.outputs; closeTool(true); outs.forEach(([k, im, bits]) => addPic(`${nm} – ${k}.png`, im, { format: k === 'subject' ? 'Subject (cut out)' : 'Background', bits })); toast('The subject and the background are open as two pictures: restore each, then put them back with Detail › Blend a version.'); return; }
     if (t.def.toNew) { if (!t.out && !t.preview) { await runPreview(); if (tool !== t) return; } const r = t.out || t.preview, nm = `${baseName(pic().name)} – ${t.def.toNew}.png`; closeTool(true); addPic(nm, r, { format: t.def.title, bits: 24 }); toast(`The ${t.def.toNew} picture is open as a new picture.`); return; }
     const r = t.out || t.preview, mk = t.s && t.s.wMap && r.width === t.base.width && r.height === t.base.height ? maskOf(t) : null, s0 = JSON.parse(JSON.stringify(t.s || {})); closeTool(true);
-    await pushDeep(t.def.title + (t.s && t.s.wMap ? ' (masked)' : ''), r, (im) => t.def.run(im, s0), t.ms || 1e9, mk); busy(null);
+    await pushDeep(t.def.title + (t.s && t.s.wMap ? ' (masked)' : ''), r, (im) => t.def.run(im, s0), t.ms || 1e9, mk, t.def.paint || t.def.pick ? null : { id: t.def.id, s: s0 }); busy(null);
   }
   // a tool that needs no settings: done at once, as a step
+  // the quick actions a recipe can name
+  const QUICK = { 'Auto levels': (i) => X.autoLevels(i), 'Auto fix': (i) => X.autoFix(i), Greyscale: (i) => X.greyscale(i), Invert: (i) => X.invert(i), 'Turn left': (i) => X.rotate90(i, 270), 'Turn right': (i) => X.rotate90(i, 90), 'Turn upside down': (i) => X.rotate90(i, 180), 'Flip across': (i) => X.flip(i, true), 'Flip up and down': (i) => X.flip(i, false) };
   function quick(label, fn) {
     if (!pic()) { toast('Open a picture first.'); return; }
     if (tool) closeTool(true);
     busyNow(`${label}…`);
-    setTimeout(async () => { const t0 = performance.now(); try { const out = await fn(now()), ms = performance.now() - t0; await pushDeep(label, out, fn, ms); ICLOG.info(`${label} in ${Math.round(ms)} ms`); } catch (e) { ICLOG.error(`${label} failed`, e); toast(e.message); } busy(null); }, 20);
+    setTimeout(async () => { const t0 = performance.now(); try { const out = await fn(now()), ms = performance.now() - t0; await pushDeep(label, out, fn, ms, null, QUICK[label] ? { quick: label } : null); ICLOG.info(`${label} in ${Math.round(ms)} ms`); } catch (e) { logFail(`${label} failed`, e); toast(e.message); } busy(null); }, 20);
   }
 
   // ------------------------------------------------------------------ the right-hand panel
@@ -917,8 +969,47 @@
       L.append(b);
     });
   }
+  // ------------------------------------------------------------------ recipes (the steps in History, saved and run again)
+  // A recipe is the list of steps that made a picture, each a tool and its settings (or a quick action), saved as a
+  // small .json file. It can be run on another picture, or on every open picture: the tools measure each picture
+  // themselves (noise, blur, blocks), so one recipe suits a whole box of similar old photos.
+  function recipeOf(p) {
+    const steps = p.steps.slice(1, p.at + 1), list = steps.filter((st) => st.how).map((st) => ({ label: st.label, ...st.how })), skipped = steps.length - list.length;
+    return { app: 'ImageCraft', kind: 'recipe', version: 1, made: new Date().toISOString().slice(0, 10), from: baseName(p.name), steps: list, skipped };
+  }
+  async function runRecipe(rec, say) {
+    if (!rec || rec.kind !== 'recipe' || !Array.isArray(rec.steps)) throw new Error('That is not an ImageCraft recipe.');
+    let n = 0;
+    for (const st of rec.steps) {
+      const img = now(); say && say(`${st.label} (${++n} of ${rec.steps.length})…`); await wait(0); const t0 = performance.now();
+      if (st.quick) { const fn = QUICK[st.quick]; if (!fn) throw new Error(`Unknown quick action “${st.quick}”.`); const out = await fn(img); await pushDeep(st.label, out, fn, performance.now() - t0, null, { quick: st.quick }); continue; }
+      const def = TOOLS[st.id]; if (!def || def.viewOnly) throw new Error(`Unknown tool “${st.id}”.`);
+      const base = typeof def.s === 'function' ? def.s(img) : JSON.parse(JSON.stringify(def.s)), s = { ...base, ...st.s };
+      if (s.wMap) await IC.maps.prepare([s.wMap, s.wOp ? s.wMap2 : ''], img);
+      const r0 = await def.run(img, s, (m) => say && say(`${st.label}: ${m}`)), mk = s.wMap && r0.width === img.width && r0.height === img.height ? IC.maps.mask(img, { map: s.wMap, map2: s.wOp ? s.wMap2 : '', op: s.wOp, invert: s.wInvert, level: s.wLevel, softness: s.wSoft, feather: s.wFeather }) : null;
+      await pushDeep(st.label, mk ? IC.maps.apply(img, r0, mk) : r0, (im) => def.run(im, s), performance.now() - t0, mk, { id: st.id, s: st.s });
+    }
+  }
+  function saveRecipe() {
+    const p = pic(); if (!p) return; const rec = recipeOf(p); if (!rec.steps.length) return toast('There are no steps to save yet (painted repairs and clicked cut-outs cannot be repeated).');
+    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(rec, null, 1)], { type: 'application/json' })); a.download = `${baseName(p.name)} recipe.json`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    toast(`Recipe saved: ${rec.steps.length} step${rec.steps.length === 1 ? '' : 's'}${rec.skipped ? ` (${rec.skipped} painted or clicked step${rec.skipped === 1 ? '' : 's'} left out)` : ''}.`);
+  }
+  async function useRecipe(rec, all) {
+    const list = all ? pics.map((p, i) => i) : [cur]; let done = 0;
+    for (const i of list) { if (all && pics[i] === rec.__from) continue; select(i); try { await runRecipe(rec, (m) => busyNow(`${pics[i].name}: ${m}`)); done++; } catch (e) { busy(null); ICLOG.error('Recipe failed', e); toast(e.message); return; } }
+    busy(null); toast(`Recipe run on ${done} picture${done === 1 ? '' : 's'}. Each step is in its History.`);
+  }
+  function openRecipe(all) {
+    const inp = document.createElement('input'); inp.type = 'file'; inp.accept = '.json,application/json';
+    inp.onchange = async () => { const f = inp.files[0]; if (!f) return; try { const rec = JSON.parse(await f.text()); await useRecipe(rec, all); } catch (e) { toast(e.message.startsWith('That') ? e.message : 'That file could not be read as a recipe.'); } };
+    inp.click();
+  }
   function renderHist() {
     const L = $('hist'); L.innerHTML = ''; const p = pic(); if (!p) return;
+    const bar = document.createElement('li'); bar.className = 'recipe-bar'; bar.innerHTML = '<div class="btns" style="margin:0 0 6px;flex-wrap:wrap"><button class="btn outline" type="button" data-r="save" title="Save these steps (tools and settings) as a recipe file">Save as recipe…</button><button class="btn outline" type="button" data-r="open" title="Run a saved recipe on this picture">Run a recipe…</button>' + (pics.length > 1 ? '<button class="btn outline" type="button" data-r="all" title="Run these same steps on every other open picture">These steps on all open pictures</button>' : '') + '</div>';
+    bar.onclick = (e) => { const r = e.target.closest('[data-r]'); if (!r) return; if (r.dataset.r === 'save') saveRecipe(); else if (r.dataset.r === 'open') openRecipe(false); else { const rec = recipeOf(p); if (!rec.steps.length) return toast('There are no steps to repeat yet.'); rec.__from = p; useRecipe(rec, true); } };
+    L.append(bar);
     p.steps.forEach((s, i) => { const li = document.createElement('li'), b = document.createElement('button'); b.innerHTML = `<span class="n">${i}</span>${esc(s.label)}`; b.setAttribute('aria-current', String(i === p.at)); if (i > p.at) b.className = 'undone'; b.onclick = () => goStep(i); li.append(b); L.append(li); });
   }
   const showTab = (name) => { document.querySelectorAll('.tab').forEach((x) => x.setAttribute('aria-selected', String(x.dataset.tab === name))); ['pics', 'hist', 'maps', 'debug'].forEach((k) => { $('tab-' + k).hidden = k !== name; }); if (name === 'debug') renderLog(); if (name === 'maps') renderMaps(); };
@@ -1213,14 +1304,14 @@
           { col: [B('Flip across', IK.flipH, () => quick('Flip across', (i) => X.flip(i, true))), B('Flip up and down', IK.flipV, () => quick('Flip up and down', (i) => X.flip(i, false))), B('Straighten', IK.straighten, T('straighten'))] }]],
       ] },
       { id: 'adjust', label: 'Adjust', hue: '#e07a1f', groups: [
-        ['Light', [B('Brightness', IK.light, T('light'), { big: true, title: 'Brightness, contrast, midtones, shadows and highlights' }), B('Recover shadows', IK.light, T('shadows'), { big: true, title: 'Lift dark areas with their detail, sky untouched' }), B('Dehaze', IK.light, T('dehaze'), { big: true, title: 'Take away a foggy or faded grey veil' }), { col: [B('Auto levels', IK.auto, () => quick('Auto levels', (i) => X.autoLevels(i))), B('Auto fix', IK.auto, () => quick('Auto fix', (i) => X.autoFix(i)))] }]],
+        ['Light', [B('Brightness', IK.light, T('light'), { big: true, title: 'Brightness, contrast, midtones, shadows and highlights' }), B('Recover shadows', IK.light, T('shadows'), { big: true, title: 'Lift dark areas with their detail, sky untouched' }), B('Dehaze', IK.light, T('dehaze'), { big: true, title: 'Take away a foggy or faded grey veil' }), B('Lift a shadow', IK.light, T('shadowlift'), { big: true, title: 'Paint over a hard shadow (a flash shadow on a wall) and brighten it to match the light around it' }), { col: [B('Auto levels', IK.auto, () => quick('Auto levels', (i) => X.autoLevels(i))), B('Auto fix', IK.auto, () => quick('Auto fix', (i) => X.autoFix(i)))] }]],
         ['Colour', [B('Auto colour', IK.auto, T('autocolour'), { big: true, title: 'Correct a faded print: levels, neutral midtones and faded colour' }), B('Colour', IK.colour, T('colour'), { big: true, title: 'Saturation, vibrance, hue, warmth and tint' }), { col: [B('Fix a colour cast', IK.balance, T('balance')), B('Greyscale', IK.grey, () => quick('Greyscale', (i) => X.greyscale(i))), B('Sepia', IK.sepia, T('sepia'))] }, { col: [B('Invert', IK.invert, () => quick('Invert', (i) => X.invert(i))), B('Threshold', IK.threshold, T('threshold')), B('Posterize', IK.posterize, T('posterize'))] }]],
         ['Detail', [B('Clarity', IK.sharpen, T('clarity'), { big: true, title: 'Local contrast: texture and detail' }), { col: [B('Sharpen', IK.sharpen, T('sharpen')), B('Blur', IK.blur, T('blur')), B('Pixelate', IK.pixelate, T('pixelate'))] }]],
       ] },
       { id: 'detail', label: 'Detail', hue: '#c2410c', groups: [
         ['Curves', [B('Curves', IK.light, T('curves'), { big: true, title: 'Curves for brightness or each colour, with Where for curves layers' }), B('Blend a version', IK.compare, T('blendstep'), { big: true, title: 'Mix an earlier step back in (like layers), anywhere or through a map' })]],
         ['Detail', [B('Detail equaliser', IK.sharpen, T('equalizer'), { big: true, title: 'Fine, small, medium and large detail, each with its own amount' }), B('Even the light', IK.light, T('gradient'), { big: true, title: 'Gradient domain: big brightness jumps smaller, faint detail bigger' }), B('Crisp edges', IK.sharpen, T('crisp'), { big: true, title: 'Shock filter: soft edges made crisp without halos' }), B('Edge-keeping smooth', IK.denoise, T('diffuse'), { big: true, title: 'Perona–Malik diffusion: smooth, but never across an edge' })]],
-        ['Faces', [B('Face refine', IK.cutout, T('facerefine'), { big: true, title: 'Find each face’s skin, eyes, irises, lips and teeth and treat each on its own (nothing redrawn)' })]],
+        ['Faces', [B('Face refine', IK.cutout, T('facerefine'), { big: true, title: 'Find each face’s skin, eyes, irises, lips and teeth and treat each on its own (nothing redrawn)' }), B('Red eye', IK.cutout, T('redeye'), { big: true, title: 'Take the flash’s red out of the pupils (found by the face finder)' })]],
         ['Maps', [B('Maps and channels', IK.grid, () => { showSide('left'); showTab('maps'); }, { big: true, title: 'See the picture measured into maps and channels' }), B('False colour', IK.colour, T('falsecolour'), { big: true, title: 'Stretch the faint colour differences to full strength: stains, toning and fading show' })]],
       ] },
       { id: 'colours', label: 'Colours', hue: '#b44be1', groups: [
@@ -1231,7 +1322,7 @@
         ['Repair', [B('Repair damage', IK.dust, T('repair'), { big: true, title: 'Find specks, scratches, tears and stamps (or paint over damage) and fill them in from around them' })]],
         ['Old photo', [B('Restore old photo', IK.modern, () => openTool('modern', { kind: 'photo', bigger: 1 }), { big: true, title: 'Dust, noise, blur, colour cast and fading fixed in one go, measured from the picture' }), B('Split subject and background', IK.cutout, T('split'), { big: true, title: 'The main subject and the background as two pictures (layers), each restored its own way' }), B('Ask AI what it needs', IK.modern, T('assess'), { big: true, title: 'A vision model in Ollama on this computer looks at the picture, says what it is and what is wrong, and ticks the tools to fix it' })]],
         ['Restore', [B('Remove noise', IK.denoise, T('nlm'), { big: true, title: 'Smart noise removal (non-local means): grain and colour blotches' }), B('Deblur', IK.sharpen, T('deblur'), { big: true, title: 'Undo soft focus, out of focus or camera shake (Wiener deconvolution)' }), B('Faded detail', IK.light, T('clahe'), { big: true, title: 'Adaptive contrast for faded photos (CLAHE)' }), { col: [B('Where the noise is', IK.grid, T('noisemap')), B('Rebuild colour detail', IK.colour, T('chroma'), { title: 'Colour blocks and smears (JPEG, old scans) made to follow the real brightness detail' })] }]],
-        ['Clean', [B('Smooth out noise', IK.denoise, T('denoise'), { big: true }), B('Dust and scratches', IK.dust, T('despeckle'), { big: true }), B('JPEG blocks', IK.jpeg, T('deblock'), { big: true, title: 'Remove JPEG blocks and smudges' }), B('Undither', IK.undither, T('undither'), { big: true, title: 'Blend dithering dots back into smooth colour' }), B('Banding', IK.undither, T('deband'), { big: true, title: 'Smooth out stripes in skies and shadows (banding)' })]],
+        ['Clean', [B('Smooth out noise', IK.denoise, T('denoise'), { big: true }), B('Dust and scratches', IK.dust, T('despeckle'), { big: true }), B('JPEG blocks', IK.jpeg, T('deblock'), { big: true, title: 'Remove JPEG blocks and smudges' }), B('Undither', IK.undither, T('undither'), { big: true, title: 'Blend dithering dots back into smooth colour' }), B('Banding', IK.undither, T('deband'), { big: true, title: 'Smooth out stripes in skies and shadows (banding)' }), B('Descreen', IK.undither, T('descreen'), { big: true, title: 'Printing dots (newspaper, yearbook, magazine) measured and smoothed away' })]],
         ['Background', [B('Remove background', IK.cutout, T('cutout'), { big: true })]],
         ['Bigger', [B('Make bigger', IK.upscale, T('upscale'), { big: true, title: 'Smooth, pixel-art or AI upscaling' }), B('Combine photos', IK.upscale, T('stack'), { big: true, title: 'Merge several shots of the same scene: less noise, and more detail than any one shot' }), B('Modernise', IK.modern, T('modern'), { big: true }), B('Remaster shapes', IK.svg, T('remaster'), { big: true, title: 'Recognise the shapes, draw them again crisply at the new size, and blend with the original' })]],
       ] },
@@ -1298,5 +1389,5 @@
 
   renderProps(); status();
   // for testing and the command layer: the same things the buttons do
-  window.ImageCraft = { snapShapes, openFiles, addPic, openTool, applyTool, closeTool, quick, openSave, openBatch, undo, redo, sample, pics: () => pics, current: () => pic(), tool: () => tool, view, prepared, TOOLS };
+  window.ImageCraft = { recipeOf: () => pic() && recipeOf(pic()), runRecipe: (rec) => runRecipe(rec), snapShapes, openFiles, addPic, openTool, applyTool, closeTool, quick, openSave, openBatch, undo, redo, sample, pics: () => pics, current: () => pic(), tool: () => tool, view, prepared, TOOLS };
 })();

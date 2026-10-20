@@ -20,12 +20,13 @@
     photo: { gpuDtype: 'fp32', id: 'Xenova/swin2SR-realworld-sr-x4-64-bsrgan-psnr', name: 'Upscale 4× (old photos)', what: 'Makes an old, small or noisy photo four times bigger and cleans the noise and blur as it goes.', mb: { gpu: 50, cpu: 15 }, licence: 'Apache-2.0', scale: 4 },
     jpeg: { gpuDtype: 'fp32', id: 'Xenova/swin2SR-compressed-sr-x4-48', name: 'Upscale 4× (JPEG clean-up)', what: 'For pictures spoilt by JPEG blocks and smudges: four times bigger with the blocks taken out.', mb: { gpu: 30, cpu: 10 }, licence: 'Apache-2.0', scale: 4 },
     esrgan: { raw: 'https://huggingface.co/SceneWorks/real-esrgan-onnx/resolve/main/real_esrgan_x4.onnx', name: 'Upscale 4× (Real-ESRGAN, real photos)', what: 'The standard for real-world photos: four times bigger, with crisp edges and natural texture in grass, gravel, fabric and leaves; also cleans JPEG blocks and noise.', mb: { gpu: 67, cpu: 67 }, licence: 'BSD-3-Clause', scale: 4 },
+    esrgan3: { embedded: 'lib/craft-esrgan-v3.js', global: 'CRAFT_ESRGAN_V3', name: 'Upscale 4× (Real-ESRGAN compact, noise control)', what: 'A small, fast Real-ESRGAN for real photos, four times bigger, with a noise-removal slider (its two versions blended). It comes with ImageCraft: nothing to download.', mb: { gpu: 0, cpu: 0 }, licence: 'BSD-3-Clause', scale: 4 },
     esrgan2: { raw: 'https://huggingface.co/SceneWorks/real-esrgan-onnx/resolve/main/real_esrgan_x2.onnx', name: 'Upscale 2× (Real-ESRGAN)', what: 'Real-ESRGAN at twice the size, for photos that only need a little more.', mb: { gpu: 67, cpu: 67 }, licence: 'BSD-3-Clause', scale: 2 },
     find: { id: 'Xenova/clipseg-rd64-refined', name: 'Find things by name', what: 'Finds sky, grass, trees, people, clothes, buildings and anything you name in a picture, by what they are rather than by their colour, so it works on sepia and faded prints too. (About 15 seconds a picture on the processor.)', mb: { gpu: 139, cpu: 139 }, licence: 'Apache-2.0' },
     inpaint: { raw: 'https://huggingface.co/andraniksargsyan/migan/resolve/main/migan_pipeline_v2.onnx', name: 'Repair (fill in damage)', what: 'Fills tears, scratches, holes and stamps from what is around them (MI-GAN, Picsart). It invents what is missing, so use it where the original is lost.', mb: { gpu: 28, cpu: 28 }, licence: 'MIT' },
     pick: { id: 'Xenova/slimsam-77-uniform', name: 'Pick an object', what: 'Click an object in a picture and it is outlined for you, to keep or take out.', mb: { gpu: 21, cpu: 14 }, licence: 'Apache-2.0' },
   };
-  const DEFAULTS = { on: true, gpu: null, use: { cutout: true, best: false, sharp: true, photo: true, jpeg: true, esrgan: true, esrgan2: true, find: true, inpaint: true, pick: true } };
+  const DEFAULTS = { on: true, gpu: null, use: { cutout: true, best: false, sharp: true, photo: true, jpeg: true, esrgan: true, esrgan2: true, esrgan3: true, find: true, inpaint: true, pick: true } };
   let settings = DEFAULTS;
   try { settings = { ...DEFAULTS, ...JSON.parse(localStorage.getItem(KEY) || '{}') }; settings.use = { ...DEFAULTS.use, ...(settings.use || {}) }; } catch (e) { /* ignore */ }
   const save = () => { try { localStorage.setItem(KEY, JSON.stringify(settings)); } catch (e) { /* ignore */ } };
@@ -121,7 +122,12 @@
       progress(k, { status: 'starting' });
       try {
         let r;
-        if (m.raw) { // a plain ONNX file (Real-ESRGAN): ONNX Runtime directly, graphics card first
+        if (m.embedded) { // a model that comes with ImageCraft, wrapped as a script (a page opened from a file cannot fetch files)
+          if (!window[m.global]) await new Promise((res, rej) => { const sc = document.createElement('script'); sc.src = m.embedded; sc.onload = res; sc.onerror = () => rej(new Error(`${m.embedded} is missing from the ImageCraft folder.`)); document.head.append(sc); });
+          const bytes = Uint8Array.from(atob(window[m.global]), (ch) => ch.charCodeAt(0));
+          r = await T.ort.InferenceSession.create(bytes, { executionProviders: dv === 'webgpu' ? ['webgpu'] : ['wasm'], graphOptimizationLevel: 'all' }); r.isRaw = true;
+        }
+        else if (m.raw) { // a plain ONNX file (Real-ESRGAN): ONNX Runtime directly, graphics card first
           const buf = await fetchCached(m.raw, (l, t) => progress(k, { loaded: l, total: t }));
           r = await T.ort.InferenceSession.create(new Uint8Array(buf), { executionProviders: dv === 'webgpu' ? ['webgpu'] : ['wasm'], graphOptimizationLevel: 'all' });
           r.isRaw = true;
@@ -197,7 +203,7 @@
   }
   // Upscale in tiles (so a big picture fits in memory and progress can be shown); the tiles overlap and only their
   // middles are kept, so no seams show. See-through parts keep their see-through, scaled up smoothly.
-  async function upscale(src, kind = 'sharp', onTile) {
+  async function upscale(src, kind = 'sharp', onTile, opts = {}) {
     const T = await lib(), m = MODELS[kind], S = m.scale, im = await imgOf(src), W = im.naturalWidth || im.width, H = im.naturalHeight || im.height;
     const out = document.createElement('canvas'); out.width = W * S; out.height = H * S; const ox = out.getContext('2d');
     // Tiles overlap by OV pixels and are faded into each other (weights ramp down over the overlap), so no seam shows.
@@ -212,11 +218,11 @@
       const c = document.createElement('canvas'); c.width = x1 - x0; c.height = y1 - y0; const cx = c.getContext('2d');
       cx.fillStyle = '#fff'; cx.fillRect(0, 0, c.width, c.height); cx.drawImage(im, -x0, -y0);
       let res;
-      if (m.raw) {
+      if (m.raw || m.embedded) {
         // Real-ESRGAN: [1, 3, h, w] RGB 0–1 in, [1, 3, S·h, S·w] out
         const cw = c.width, chh = c.height, px = cx.getImageData(0, 0, cw, chh).data, inp = new Float32Array(3 * cw * chh);
         for (let i = 0; i < cw * chh; i++) { inp[i] = px[i * 4] / 255; inp[cw * chh + i] = px[i * 4 + 1] / 255; inp[2 * cw * chh + i] = px[i * 4 + 2] / 255; }
-        const o = await run(kind, (ses) => ses.run({ [ses.inputNames[0]]: new T.ort.Tensor('float32', inp, [1, 3, chh, cw]) }).then((x) => x[ses.outputNames[0]]));
+        const o = await run(kind, (ses) => ses.run({ [ses.inputNames[0]]: new T.ort.Tensor('float32', inp, [1, 3, chh, cw]), ...(ses.inputNames.includes('strength') ? { strength: new T.ort.Tensor('float32', new Float32Array([opts.strength ?? 0.5]), [1]) } : {}) }).then((x) => x[ses.outputNames[0]]));
         const ow = o.dims[3], oh = o.dims[2], od = o.data, hwc = new Uint8ClampedArray(ow * oh * 3), plane = ow * oh;
         for (let i = 0; i < plane; i++) { hwc[i * 3] = od[i] * 255; hwc[i * 3 + 1] = od[plane + i] * 255; hwc[i * 3 + 2] = od[2 * plane + i] * 255; }
         res = { data: hwc, width: ow, height: oh, channels: 3 };

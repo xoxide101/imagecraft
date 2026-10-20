@@ -345,5 +345,41 @@
     const ratio = (A, P) => { const on = new Float64Array(P), no = new Float64Array(P); let all = 0, n = 0; const st = Math.max(1, Math.floor(H / 400)); for (let y = 0; y < H; y += st) for (let x = 0; x < W - 1; x++) { const v = Math.abs(A[y * W + x + 1] - A[y * W + x]); on[x % P] += v; no[x % P]++; all += v; n++; } let best = 0; for (let o = 0; o < P; o++) { const off = (all - on[o]) / Math.max(1, n - no[o]); best = Math.max(best, on[o] / Math.max(1, no[o]) / Math.max(1e-6, off)); } return best; };
     return { luma: ratio(Y, 8), colour: ratio(C, 16) };
   }
-  IC.restore = { blockiness, impulse, deblurCareful, deblur, psf, psfTaps, blurWith, nlm, clahe, measure, noiseLevel, noiseMap, fft2, pow2 };
+  // Descreen: a printed photo (newspaper, yearbook, magazine) is a regular grid of dots, which shows as sharp spikes in
+  // the frequency spectrum, away from the middle where the picture itself lives. Each spike and its mirror is notched
+  // out with a soft Butterworth notch; everything else (the edges of faces too) is kept. A plain low-pass blur (the
+  // usual quick answer) softens the whole picture instead.
+  function descreen(img, { strength = 100, sensitivity = 50, cut = 0.7, sharpen = 60 } = {}) {
+    const W = img.width, H = img.height, P = pow2(W), Q = pow2(H), N = P * Q, s = img.data;
+    if (N > 4096 * 4096) throw new Error('This picture is too big to descreen in one go (over 16 megapixels once padded): crop it or make it smaller first.');
+    const mx = (x, n) => { const m = 2 * n; x = ((x % m) + m) % m; return x < n ? x : m - 1 - x; }; // mirrored edges (no seams in the spectrum)
+    const plane = (f) => { const re = new Float64Array(N), im = new Float64Array(N); for (let y = 0; y < Q; y++) { const yy = mx(y, H); for (let x = 0; x < P; x++) re[y * P + x] = f((yy * W + mx(x, W)) * 4); } return [re, im]; };
+    // find the spikes in the brightness spectrum
+    const [lr, li] = plane((i) => 0.299 * s[i] + 0.587 * s[i + 1] + 0.114 * s[i + 2]); fft2(lr, li, P, Q, false);
+    const mag = new Float32Array(N); for (let i = 0; i < N; i++) mag[i] = Math.log(1 + Math.hypot(lr[i], li[i]));
+    const R = 6, bg = new Float32Array(N), tmp = new Float32Array(N);
+    for (let y = 0; y < Q; y++) for (let x = 0; x < P; x++) { let t = 0; for (let k = -R; k <= R; k++) t += mag[y * P + ((x + k + P) % P)]; tmp[y * P + x] = t / (2 * R + 1); }
+    for (let y = 0; y < Q; y++) for (let x = 0; x < P; x++) { let t = 0; for (let k = -R; k <= R; k++) t += tmp[((y + k + Q) % Q) * P + x]; bg[y * P + x] = t / (2 * R + 1); }
+    const fu = (x) => (x < P / 2 ? x : x - P), fv = (y) => (y < Q / 2 ? y : y - Q), rmin = 0.06 * Math.min(P, Q), thr = 3.4 - sensitivity / 50, peaks = [];
+    for (let y = 0; y < Q; y++) for (let x = 0; x < P; x++) {
+      const u = fu(x), v = fv(y); if (Math.hypot(u / P, v / Q) * Math.min(P, Q) < rmin || v < 0 || (v === 0 && u < 0)) continue; // one of each mirrored pair
+      // the JPEG block grid makes spikes at multiples of 1/8 (and 1/16 for colour) along the axes: not a printing screen
+      const onGrid = (f, n) => { const k = f * 16 / n; return Math.abs(k - Math.round(k)) * (n / 16) < 1.5; };
+      if ((onGrid(u, P) && Math.abs(v) <= 2) || (onGrid(v, Q) && Math.abs(u) <= 2) || (onGrid(u, P) && onGrid(v, Q))) continue;
+      const i = y * P + x, e = mag[i] - bg[i]; if (e < thr) continue;
+      let top = true; for (let j = -2; j <= 2 && top; j++) for (let k = -2; k <= 2; k++) if ((j || k) && mag[((y + j + Q) % Q) * P + ((x + k + P) % P)] > mag[i]) { top = false; break; }
+      if (top) peaks.push([u, v, e]);
+    }
+    peaks.sort((a, b) => b[2] - a[2]); peaks.length = Math.min(peaks.length, 48);
+    if (peaks.length < 4) { const o = new ImageData(new Uint8ClampedArray(s), W, H); o.peaks = 0; return o; } // no screen found: left alone
+    // the screen's own spacing: the strongest spikes are its first harmonic. Notching the spikes left the rosette that
+    // colour screens make with each other (it sits below the screen frequency), so the screen is taken out by a blur
+    // matched to its spacing, and the edges are sharpened back without bringing the dots back (contrast-adaptive)
+    const f0 = Math.min(...peaks.slice(0, 6).map(([u, v]) => Math.hypot(u / P, v / Q))), T = 1 / f0, X = IC.filters;
+    let out = X.blur(img, { radius: Math.max(1, Math.round(T * 0.5 * cut / 0.7)) });
+    if (sharpen) out = X.cas(out, { amount: sharpen });
+    if (strength < 100) { const a = out.data, k = strength / 100; for (let i = 0; i < a.length; i++) if ((i & 3) !== 3) a[i] = Math.round(s[i] + (a[i] - s[i]) * k); }
+    out.peaks = peaks.length; out.period = T; return out;
+  }
+  IC.restore = { descreen, blockiness, impulse, deblurCareful, deblur, psf, psfTaps, blurWith, nlm, clahe, measure, noiseLevel, noiseMap, fft2, pow2 };
 })();

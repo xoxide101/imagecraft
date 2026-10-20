@@ -90,6 +90,20 @@ Every picture is expanded to full colour when it opens, so a palette never limit
 - **Smooth jagged edges**: an edge check marks staircase edges in red and smooth ones in green; smoothing works along each edge, never across it. Also in Resize, Make bigger, and in **Save as**, which checks the edges of what is about to be saved and suggests smoothing when they are jagged.
 - **Remaster shapes**: the picture's shapes are recognised as clean outlines (near-circles and ellipses become perfect ones, near-polygons get straight sides), drawn again crisply at the new size, then blended with the enlarged original band by band (multi-band pyramid blending), at the edges only (keeping the original's texture) or everywhere. For logos, clip art, icons, pixel art and drawings.
 
+### Recipes (do it once, repeat it on a whole box of photos)
+
+The **History** tab can save the steps that made a picture as a **recipe**: each tool with its settings, masks included, as a small `.json` file. **Run a recipe…** repeats it on the open picture; **These steps on all open pictures** runs the same steps on every other open picture, each into its own History. The tools measure each picture themselves (noise, blur, JPEG blocks, faces), so one recipe suits a set of similar photos. Painted repairs and clicked cut-outs belong to one picture, so they are left out (ImageCraft says how many). The same works from the command layer: `ImageCraft.recipeOf()` and `ImageCraft.runRecipe(recipe)`.
+
+### How long things take
+
+Heavy work says how far it has got and roughly how long is left, worked out from the first steps: AI enlarging ("square 12 of 80 · about 40 s left"), the 16-bit passes, and any tool that reports progress. **Make bigger** with an AI method estimates the time before you start, from how fast this computer ran that model last time (the first run is timed).
+
+### Printing dots, red eye, flash shadows
+
+- **Descreen** (Clean up › Clean): a photo printed in a newspaper, yearbook or magazine is a grid of dots, which shows as sharp spikes in the frequency spectrum. Their spacing is measured (6.03 pixels found on a 6-pixel test screen), the dots are smoothed away by that much, and the edges are sharpened back. Notching out just the spikes was tried first, but it left the rosette that colour screens make with each other. The JPEG block grid also makes spikes, so those are ignored: the three test photos are left alone.
+- **Red eye** (Detail › Faces): the face finder finds each iris, and only there, where red is far above green and blue, the red is taken down. On a test with painted red pupils, none were left red.
+- **Lift a shadow** (Adjust › Light): paint over a hard shadow, such as a flash shadow on a wall. What is painted, plus a ring round it, is split into dark and light (Otsu's method), so sloppy painting either way doesn't matter. Only the dark part is brightened, by the light-to-dark ratio colour by colour, with the edge following the picture. On a test wall the shadow came back to within one level of the lit wall.
+
 ### Repair damage
 
 **Clean up › Repair › Repair damage** marks the damage and fills it in from what is around it.
@@ -103,6 +117,8 @@ Every picture is expanded to full colour when it opens, so a palette never limit
 - **Smooth out noise** (edges stay sharp), **Dust and scratches**, **Remove JPEG blocks**, **Undither** (blends dithering dots back into smooth colour).
 - **Make bigger** and **Resize**: Best (sharp edges without halos), Pixel averaging (every pixel counted by how much it covers), Lanczos, Cubic, Soft (Mitchell), Linear, square pixels, Scale2x and Scale3x for pixel art, smooth pixel art (grown with Scale2x and averaged back down), or **AI upscaling**: Real-ESRGAN 2× and 4× (the standard for real-world photos: crisp edges, JPEG blocks cleaned), and Swin2SR 2× for clean pictures, 4× for old photos and 4× JPEG clean-up with an AI strength slider that mixes in the classic enlargement. Averaging is done in linear light, as light really adds up, so fine detail and edges keep their brightness.
 - **Rebuild colour detail** (Clean up › Restore): a JPEG keeps brightness in full but colour at half size in 8 × 8 blocks, and old scans smear colour. The colour is made to follow the brightness edges that are really there (a guided filter); nothing is invented and brightness is untouched. On a test JPEG the colour error fell by 2.2 dB (heavily compressed) and 0.9 dB (normal), where a plain blur made it worse.
+- **Pixel art, style kept (MMPX)** (Make bigger): Morgan McGuire and Mara Gagiu's style-preserving magnifier, in 2× steps. It has rules for 1:1 and 2:1 slopes and for crossing lines, so thin lines, corners and dithering keep their look and no new colours are made. On a test drawing, shallow lines came out as clean slopes where Scale2x leaves steps.
+- **AI 4× Real-ESRGAN compact** (Make bigger; also what Modernise uses with AI): a small, fast Real-ESRGAN (BSD-3) that comes with ImageCraft (nothing to download), with a **Noise removal** slider that blends its two published versions, the same as Real-ESRGAN's own denoise strength. Converted here from the original PyTorch weights to one ONNX file (lib/esrgan-build), and checked against PyTorch to 0.00001. On a 160 × 160 crop: about 0.1 s against 8.5 s for the big Real-ESRGAN, softer but more faithful (the big one reshaped a toddler's face).
 - **Combine photos** (Clean up › Bigger): several shots of the same scene (a handheld burst, or the same print scanned a few times) are lined up to a fraction of a pixel and merged. **Super-resolution** uses the tiny shifts between the shots to fill in detail between the pixels, the way phone cameras and DLSS-style game upscalers use several frames. **Average** removes noise, and **Median** also drops things that moved (passers-by). Each part can be lined up on its own, for handheld shots. On a test with 8 shots at half size, Super 2× scored 33.7 dB against 30.8 for the best single-shot enlargement (4 shots: 33.4).
 - **Sharpen › Smart (CAS)**: contrast-adaptive sharpening after AMD FidelityFX CAS (the FSR 1 sharpener, MIT). Each pixel is sharpened by how much room its neighbours leave, so there are no halos or clipping, and flat areas are left alone.
 - **Modernise** in one go: pixel art, a dithered screen, an old photo or scan, or a blocky JPEG.
@@ -130,6 +146,8 @@ Small AI models that run inside the browser, on the graphics card if there is on
 - **Opened as a file?** Ollama refuses pages without a web address until it is told to allow them: `setx OLLAMA_ORIGINS *` in a command prompt, then quit and restart Ollama. `*` lets any page use Ollama, websites included, so you may prefer to set it only while you use ImageCraft. (Ollama does not accept the narrower "null".) A page served from `localhost` works without it.
 
 ## When something goes wrong
+
+The red badge in the status bar counts faults in the program. A tool saying what it needs ("No faces found", "Paint over the shadow first") is shown as a message and kept in the Debug log as a note, not counted as an error.
 
 The **Debug** tab (left panel, or View › Debug log) lists errors and what happened: files opened and saved, tools run and how long they took, AI models that would not load. A red error count appears in the status bar when there is one. **Copy** or **Save** the log to send it along with a question.
 
@@ -168,6 +186,8 @@ Open-source libraries it uses are listed with their licences in Credits.
 - [ImageTracer](https://github.com/jankovicsandras/imagetracerjs) (public domain / Unlicense) for SVG outlines.
 - [Transformers.js](https://github.com/huggingface/transformers.js) and ONNX Runtime Web (Apache-2.0) for the AI helpers, in `lib/craft-ai-libs.js`. Models: U²-Net (Apache-2.0), BEN2 (MIT), SlimSAM (Apache-2.0), Swin2SR (Apache-2.0), Real-ESRGAN (BSD-3-Clause; the ONNX export by SceneWorks).
 - [CLIPSeg](https://huggingface.co/CIDAS/clipseg-rd64-refined) (Apache-2.0), run through Transformers.js, finds things by name.
+- [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN) general v3 (BSD-3-Clause, © 2021 Xintao Wang) is included as lib/craft-esrgan-v3.js, converted by lib/esrgan-build.
+- [MMPX](https://casual-effects.com/research/McGuire2021PixelArt/) pixel-art magnification, ported to JavaScript from the MIT reference code (© 2020 Morgan McGuire & Mara Gagiu).
 - [MI-GAN](https://github.com/Picsart-AI-Research/MI-GAN) (MIT) fills in damage; the ONNX pipeline file is from huggingface.co/andraniksargsyan/migan.
 - [MediaPipe Tasks Vision](https://github.com/google-ai-edge/mediapipe) and its Face Landmarker model (Apache-2.0), bundled as `lib/craft-face-libs.js` (built from `lib/face-build`).
 - Smart sharpen follows AMD FidelityFX CAS (MIT); the method was re-written here from its published description, not copied.

@@ -228,6 +228,10 @@
   // linear: average in linear light (default), as GIMP does.
   function resize(img, { width, height, method = 'smooth', linear = true } = {}) {
     const W = Math.max(1, Math.round(width || img.width)), H = Math.max(1, Math.round(height || img.height));
+    if (method === 'mmpx') { // MMPX in 2× steps; anything in between is averaged down from the next step up
+      let s = img; while ((s.width < W || s.height < H) && s.width * s.height * 4 <= 64e6) s = mmpx(s);
+      return s.width === W && s.height === H ? s : resize(s, { width: W, height: H, method: 'area', linear });
+    }
     if (method === 'scale2x' || method === 'scale3x' || method === 'smoothpixel') {
       // smooth pixel art: grown well past the size with Scale2x, then averaged down, so each edge is anti-aliased
       // from many sub-pixels (supersampling) instead of blurred
@@ -244,6 +248,49 @@
     let c = canvasOf(img), cw = img.width, ch = img.height;
     while (cw / 2 >= W && ch / 2 >= H) { const n = document.createElement('canvas'); n.width = Math.round(cw / 2); n.height = Math.round(ch / 2); const x = n.getContext('2d'); x.imageSmoothingQuality = 'high'; x.drawImage(c, 0, 0, n.width, n.height); c = n; cw = n.width; ch = n.height; }
     return draw(W, H, (x) => { x.imageSmoothingQuality = 'high'; x.drawImage(c, 0, 0, W, H); });
+  }
+  // MMPX: style-preserving pixel-art magnification (2×), ported from the MIT reference code. Copyright 2020 Morgan
+  // McGuire & Mara Gagiu, https://casual-effects.com/research/McGuire2021PixelArt/ . Like EPX, each pixel becomes 2 × 2,
+  // but with rules for 1:1 and 2:1 slopes and for lines crossing, and ties settled by brightness, so thin lines,
+  // corners and dithering keep their look and no new colours are made.
+  function mmpx(img) {
+    const sw = img.width, sh = img.height, src = new Uint32Array(img.data.buffer.slice(img.data.byteOffset, img.data.byteOffset + sw * sh * 4)), out = new ImageData(sw * 2, sh * 2), dst = new Uint32Array(out.data.buffer);
+    const mx = sw - 1, my = sh - 1, px = (x, y) => src[Math.min(my, Math.max(0, y)) * sw + Math.min(mx, Math.max(0, x))];
+    const luma = (c) => (((c >>> 16) & 255) + ((c >>> 8) & 255) + (c & 255) + 1) * (256 - (c >>> 24));
+    const all2 = (B, a, b) => B === a && B === b, all3 = (B, a, b, c) => B === a && B === b && B === c, all4 = (B, a, b, c, d) => B === a && B === b && B === c && B === d;
+    const any3 = (B, a, b, c) => B === a || B === b || B === c, none2 = (B, a, b) => B !== a && B !== b, none4 = (B, a, b, c, d) => B !== a && B !== b && B !== c && B !== d;
+    for (let y = 0; y < sh; y++) for (let x = 0; x < sw; x++) {
+      const A = px(x - 1, y - 1), B = px(x, y - 1), C = px(x + 1, y - 1), D = px(x - 1, y), E = px(x, y), F = px(x + 1, y), G = px(x - 1, y + 1), H = px(x, y + 1), I = px(x + 1, y + 1);
+      let J = E, K = E, L = E, M = E;
+      if (A !== E || B !== E || C !== E || D !== E || F !== E || G !== E || H !== E || I !== E) {
+        const P = px(x, y - 2), S = px(x, y + 2), Q = px(x - 2, y), R = px(x + 2, y), Bl = luma(B), Dl = luma(D), El = luma(E), Fl = luma(F), Hl = luma(H);
+        // 1:1 slopes
+        if (D === B && D !== H && D !== F && (El >= Dl || E === A) && any3(E, A, C, G) && (El < Dl || A !== D || E !== P || E !== Q)) J = D;
+        if (B === F && B !== D && B !== H && (El >= Bl || E === C) && any3(E, A, C, I) && (El < Bl || C !== B || E !== P || E !== R)) K = B;
+        if (H === D && H !== F && H !== B && (El >= Hl || E === G) && any3(E, A, G, I) && (El < Hl || G !== H || E !== S || E !== Q)) L = H;
+        if (F === H && F !== B && F !== D && (El >= Fl || E === I) && any3(E, C, G, I) && (El < Fl || I !== H || E !== R || E !== S)) M = F;
+        // lines crossing
+        if (E !== F && all4(E, C, I, D, Q) && all2(F, B, H) && F !== px(x + 3, y)) K = M = F;
+        if (E !== D && all4(E, A, G, F, R) && all2(D, B, H) && D !== px(x - 3, y)) J = L = D;
+        if (E !== H && all4(E, G, I, B, P) && all2(H, D, F) && H !== px(x, y + 3)) L = M = H;
+        if (E !== B && all4(E, A, C, H, S) && all2(B, D, F) && B !== px(x, y - 3)) J = K = B;
+        if (Bl < El && all4(E, G, H, I, S) && none4(E, A, D, C, F)) J = K = B;
+        if (Hl < El && all4(E, A, B, C, P) && none4(E, D, G, I, F)) L = M = H;
+        if (Fl < El && all4(E, A, D, G, Q) && none4(E, B, C, I, H)) K = M = F;
+        if (Dl < El && all4(E, C, F, I, R) && none4(E, B, A, G, H)) J = L = D;
+        // 2:1 slopes
+        if (H !== B) {
+          if (H !== A && H !== E && H !== C) { if (all3(H, G, F, R) && none2(H, D, px(x + 2, y - 1))) L = M; if (all3(H, I, D, Q) && none2(H, F, px(x - 2, y - 1))) M = L; }
+          if (B !== I && B !== G && B !== E) { if (all3(B, A, F, R) && none2(B, D, px(x + 2, y + 1))) J = K; if (all3(B, C, D, Q) && none2(B, F, px(x - 2, y + 1))) K = J; }
+        }
+        if (F !== D) {
+          if (D !== I && D !== E && D !== C) { if (all3(D, A, H, S) && none2(D, B, px(x + 1, y + 2))) J = L; if (all3(D, G, B, P) && none2(D, H, px(x + 1, y - 2))) L = J; }
+          if (F !== E && F !== A && F !== G) { if (all3(F, C, H, S) && none2(F, B, px(x - 1, y + 2))) K = M; if (all3(F, I, B, P) && none2(F, H, px(x - 1, y - 2))) M = K; }
+        }
+      }
+      const o = 2 * y * 2 * sw + 2 * x; dst[o] = J; dst[o + 1] = K; dst[o + 2 * sw] = L; dst[o + 2 * sw + 1] = M;
+    }
+    return out;
   }
   // EPX / Scale2x: each pixel becomes 2 × 2, taking a neighbour's colour where two neighbours agree on a diagonal
   function scale2x(img) {
@@ -575,5 +622,5 @@
     return o;
   }
 
-  IC.filters = { deband, chromaRebuild, guidedBy, cas, dehaze, hazeLevel, isToned, shadowRecover, guided, autoColour, clarity, pyramidBlend, aliasCheck, antialias, light, colour, autoLevels, autoFix, whiteBalance, greyscale, sepia, invert, threshold, posterize, blur, sharpen, denoise, median, despeckle, deblock, undither, pixelate, resize, scale2x, scale3x, rotate: rotateAny, rotate90: rotate, flip, crop, trimBox, canvasSize, makeClear, flatten, copy, canvasOf };
+  IC.filters = { mmpx, deband, chromaRebuild, guidedBy, cas, dehaze, hazeLevel, isToned, shadowRecover, guided, autoColour, clarity, pyramidBlend, aliasCheck, antialias, light, colour, autoLevels, autoFix, whiteBalance, greyscale, sepia, invert, threshold, posterize, blur, sharpen, denoise, median, despeckle, deblock, undither, pixelate, resize, scale2x, scale3x, rotate: rotateAny, rotate90: rotate, flip, crop, trimBox, canvasSize, makeClear, flatten, copy, canvasOf };
 })();
