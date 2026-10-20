@@ -280,6 +280,7 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 .q-tbl tr.q-pick td { background: color-mix(in srgb, var(--accent) 14%, transparent); }
 .q-tbl small { display: block; }
 .sbs-box { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; display: grid; gap: 6px; }
+.fix-all { margin: 6px 0 10px; } .fix-report { margin-top: 8px; display: grid; gap: 6px; font-size: 12px; } .fix-report ul { margin: 4px 0 0; padding-left: 18px; } .fix-report li { margin: 2px 0; }
 .steps-tbl { width: 100%; border-collapse: collapse; } .steps-tbl td { padding: 4px 6px; border-top: 1px solid var(--line); vertical-align: middle; } .steps-tbl select { width: auto; }
 .where-seg .btn { padding: 0 4px; font-size: 10.5px; line-height: 19px; border-radius: 0; }
 .where-seg .btn:first-child { border-radius: 999px 0 0 999px; } .where-seg .btn:last-child { border-radius: 0 999px 999px 0; }

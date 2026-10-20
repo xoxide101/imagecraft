@@ -848,7 +848,11 @@
   // every step that can run either way, for AI settings › Steps
   const stepList = () => [...Object.keys(CLOUD_TOOLS), ...Object.keys(IC.cloud.JOBS)].filter((id) => TOOLS[id]).map((id) => [id, TOOLS[id].title]);
   // a step done both ways: pick this computer's, the cloud's, or a blend of the two (null = stop)
+  // Both: ask each time, or blend by itself at the mix chosen in AI settings › Steps (the last mix picked is remembered)
+  let bothPref = { ask: true, mix: 50 }; try { bothPref = { ...bothPref, ...JSON.parse(localStorage.getItem('imagecraft-both') || '{}') }; } catch (e) { /* blocked storage */ }
+  const saveBoth = () => { try { localStorage.setItem('imagecraft-both', JSON.stringify(bothPref)); } catch (e) { /* blocked storage */ } };
   function chooseVersion(title, before, L, C) {
+    if (!bothPref.ask) { const CC = C.width === L.width && C.height === L.height ? C : X.resize(C, { width: L.width, height: L.height }), o = new ImageData(L.width, L.height), t = bothPref.mix / 100; for (let i = 0; i < o.data.length; i++) o.data[i] = L.data[i] + (CC.data[i] - L.data[i]) * t; return Promise.resolve({ img: o, how: `blend ${bothPref.mix}% cloud` }); }
     return new Promise((resolve) => {
       const back = document.createElement('div'); back.className = 'backdrop'; document.body.append(back);
       const k = Math.min(1, 520 / Math.max(L.width, L.height)), W = Math.round(L.width * k), H = Math.round(L.height * k), sm = (im) => X.resize(im, { width: W, height: H });
@@ -856,11 +860,12 @@
       const url = (im) => { const c = document.createElement('canvas'); c.width = im.width; c.height = im.height; c.getContext('2d').putImageData(im, 0, 0); return c.toDataURL('image/jpeg', 0.9); };
       const mix = (a, b, t) => { const o = new ImageData(a.width, a.height), d = o.data; for (let i = 0; i < d.length; i++) d[i] = a.data[i] + (b.data[i] - a.data[i]) * t; return o; };
       back.innerHTML = `<div class="dialog wide" role="dialog" aria-modal="true" aria-labelledby="cv-title"><h2 id="cv-title">${esc(title)}: done both ways</h2><p class="hint">Choose which to keep, or blend the two. The step goes into History; Undo takes it back.</p>
-        <div class="cv-grid"><figure class="cl-pic"><img src="${url(sB)}" alt=""><figcaption>Before</figcaption></figure><figure class="cl-pic"><img src="${url(sL)}" alt=""><figcaption>This computer</figcaption></figure><figure class="cl-pic"><img src="${url(sC)}" alt=""><figcaption>Cloud</figcaption></figure><figure class="cl-pic"><img data-blend src="${url(mix(sL, sC, 0.5))}" alt=""><figcaption>Blend: <span data-bv>50</span>% cloud</figcaption></figure></div>
-        <label class="field"><span>Blend (0 = this computer, 100 = cloud)</span><input type="range" min="0" max="100" value="50" data-bs></label>
+        <div class="cv-grid"><figure class="cl-pic"><img src="${url(sB)}" alt=""><figcaption>Before</figcaption></figure><figure class="cl-pic"><img src="${url(sL)}" alt=""><figcaption>This computer</figcaption></figure><figure class="cl-pic"><img src="${url(sC)}" alt=""><figcaption>Cloud</figcaption></figure><figure class="cl-pic"><img data-blend src="${url(mix(sL, sC, bothPref.mix / 100))}" alt=""><figcaption>Blend: <span data-bv>${bothPref.mix}</span>% cloud</figcaption></figure></div>
+        <label class="field"><span>Blend (0 = this computer, 100 = cloud)</span><input type="range" min="0" max="100" value="${bothPref.mix}" data-bs></label><label class="check"><input type="checkbox" data-bauto> From now on, blend by itself at this mix (change it in AI settings › Steps)</label>
         <div class="dialog-actions"><button class="btn outline" type="button" data-c="stop">Stop here</button><button class="btn outline" type="button" data-c="local">Keep this computer's</button><button class="btn outline" type="button" data-c="cloud">Keep the cloud's</button><button class="btn primary" type="button" data-c="blend">Keep the blend</button></div></div>`;
       const bs = back.querySelector('[data-bs]'); bs.oninput = () => { back.querySelector('[data-bv]').textContent = bs.value; back.querySelector('[data-blend]').src = url(mix(sL, sC, bs.value / 100)); };
       back.onclick = (e) => { const b = e.target.closest('[data-c]'); if (!b) return; back.remove(); const c = b.dataset.c, CC = C.width === L.width && C.height === L.height ? C : X.resize(C, { width: L.width, height: L.height });
+        if (c === 'blend') { bothPref.mix = +bs.value; if (back.querySelector('[data-bauto]').checked) bothPref.ask = false; saveBoth(); }
         resolve(c === 'stop' ? null : c === 'local' ? { img: L, how: 'this computer' } : c === 'cloud' ? { img: CC, how: 'cloud' } : { img: mix(L, CC, bs.value / 100), how: `blend ${bs.value}% cloud` }); };
     });
   }
@@ -977,7 +982,8 @@
       const opt = (id, v, l) => `<option value="${v}" ${(stepPrefs[id] || 'switch') === v ? 'selected' : ''}>${l}</option>`;
       body.innerHTML = `<p class="hint">Where each step runs when Process a photo plans it (and its starting choice). <b>Follow the switch</b> uses the status bar: Local AI = this computer, Cloud AI = cloud, Both = both ways, then you choose or blend. Any step can still be changed in the plan itself. Steps not listed have no cloud version and always run on this computer.</p>
         <table class="steps-tbl"><tbody>${stepList().map(([id, t]) => `<tr><td>${esc(t)}</td><td><select class="input" data-sp="${id}">${opt(id, 'switch', 'Follow the switch')}${opt(id, 'local', 'This computer')}${opt(id, 'cloud', 'Cloud')}${opt(id, 'both', 'Both: choose or blend')}</select></td><td class="hint">${CLOUD_TOOLS[id] ? 'its own cloud version' : IC.cloud.JOBS[id].keep === 'tone' ? 'cloud gives light and colour only' : 'cloud picture, your fine detail kept'}</td></tr>`).join('')}</tbody></table>
-        <div class="btns"><button class="btn outline" type="button" data-act="allswitch">All: follow the switch</button></div>`;
+        <div class="btns"><button class="btn outline" type="button" data-act="allswitch">All: follow the switch</button></div>
+        <div class="ai-card"><h3>When a step is done both ways</h3><label class="check"><input type="radio" name="bp" data-bp="ask" ${bothPref.ask ? 'checked' : ''}> Ask each time (see both, keep one or a blend)</label><label class="check"><input type="radio" name="bp" data-bp="auto" ${bothPref.ask ? '' : 'checked'}> Blend by itself</label><label class="field"><span>Mix: <b data-bmv>${bothPref.mix}</b>% cloud (0 = this computer only, 100 = cloud only)</span><input type="range" min="0" max="100" value="${bothPref.mix}" data-bm></label><p class="hint">A blend keeps the photo's own moment (faces, ground, light as it was) with the cloud's clarity and colour; often the most true to life.</p></div>`;
     } else cloudKeysPanel(body);
     back.hidden = false;
     back.onclick = (e) => {
@@ -989,7 +995,8 @@
       if (a.dataset.act === 'bench') { a.disabled = true; a.textContent = 'Measuring…'; CRAFTAI.bench((m) => { a.textContent = m; }).then(() => { openAI('local'); aiChip(); toast('Measured. Auto now picks the level for each picture.'); }, (err) => { logFail('Measuring failed', err); a.disabled = false; a.textContent = 'Measure this computer'; toast(err.message); }); }
       if (a.dataset.act === 'allswitch') { stepPrefs = {}; saveStepPrefs(); openAI('steps'); }
     };
-    back.onchange = (e) => { if (e.target.matches('[data-qb]')) { CRAFTAI.setQuality(null, +e.target.value); openAI('local'); return; } if (e.target.matches('[data-sp]')) { stepPrefs[e.target.dataset.sp] = e.target.value; saveStepPrefs(); if (tool && tool.def.id === 'process') renderProps(); return; } if (e.target.matches('[data-oc]')) { O.cfg.cloud = e.target.checked; O.save(); } if (e.target.matches('[data-ou]')) { O.cfg.url = e.target.value.trim().replace(/\/+$/, '') || 'http://127.0.0.1:11434'; O.save(); ollamaSeen = null; openAI('local'); } };
+    back.oninput = (e) => { if (e.target.matches('[data-bm]')) { bothPref.mix = +e.target.value; back.querySelector('[data-bmv]').textContent = bothPref.mix; saveBoth(); } };
+    back.onchange = (e) => { if (e.target.matches('[data-bp]')) { bothPref.ask = e.target.dataset.bp === 'ask'; saveBoth(); return; } if (e.target.matches('[data-qb]')) { CRAFTAI.setQuality(null, +e.target.value); openAI('local'); return; } if (e.target.matches('[data-sp]')) { stepPrefs[e.target.dataset.sp] = e.target.value; saveStepPrefs(); if (tool && tool.def.id === 'process') renderProps(); return; } if (e.target.matches('[data-oc]')) { O.cfg.cloud = e.target.checked; O.save(); } if (e.target.matches('[data-ou]')) { O.cfg.url = e.target.value.trim().replace(/\/+$/, '') || 'http://127.0.0.1:11434'; O.save(); ollamaSeen = null; openAI('local'); } };
   }
   const lastDescription = new WeakMap(); // picture → its last Ask AI description (Regenerate starts from it)
   function cloudKeysPanel(into) {
@@ -1117,14 +1124,44 @@
     const cp = p('<div class="btns"><button class="btn outline" type="button">Copy the description</button></div>').querySelector('button');
     cp.onclick = () => { navigator.clipboard.writeText(`${a.subject}. ${a.materials}. ${a.description}`).then(() => toast('Copied.'), () => toast('Could not copy.')); };
   }
-  async function runSteps(steps) {
+  async function runSteps(steps, quiet) {
     for (const s0 of steps) {
       const def = TOOLS[s0.id], img = pic().steps[pic().at].img; busyNow(`${def.title}…`); await wait(0);
+      if (s0.id === 'repair' && s0.s && s0.s.auto) { const cd = IC.maps.make('cl:damage', img); repairPaint = cd.some((v) => v > 0.5) ? Float32Array.from(cd) : null; if (!localOK()) s0.s.scratches = false; const hole = repairDamage(img, { ...TOOLS.repair.s, ...s0.s, scratches: false }); if (!hole.some((v) => v > 0.5) && !s0.s.scratches) { repairPaint = null; continue; } }
       try { const base = typeof def.s === 'function' ? def.s(img) : JSON.parse(JSON.stringify(def.s)); if (s0.where === 'both') { const t1 = performance.now(), Lo = await def.run(img, localOnly(s0.id, { ...base, ...s0.s }), (m) => busyNow(`${def.title} on this computer: ${m}`)), ms = performance.now() - t1; const Co = CLOUD_TOOLS[s0.id] ? await def.run(img, cloudAuto(s0.id, { ...base, ...s0.s }, true), (m) => busyNow(m)) : await cloudJobStep(s0.id, img, (m) => busyNow(m)); busy(null); const ch = await chooseVersion(def.title, img, Lo, Co); if (!ch) { toast('Stopped. The steps done so far are in History.'); return; } await pushDeep(`${def.title} (${ch.how})`, ch.img, ch.how === 'this computer' ? (im) => def.run(im, localOnly(s0.id, { ...base, ...s0.s })) : null, ms); continue; }
         const t0 = performance.now(), sx = s0.where === 'local' ? localOnly(s0.id, { ...base, ...s0.s }) : cloudAuto(s0.id, { ...base, ...s0.s }, s0.where === 'cloud'), viaJob = s0.where === 'cloud' && !CLOUD_TOOLS[s0.id], out = viaJob ? await cloudJobStep(s0.id, img, (m) => busyNow(m)) : await def.run(img, sx, (m) => busyNow(m)); const usedCloud = viaJob || (CLOUD_TOOLS[s0.id] && /^cloud-|^(gemini|openai)$/.test(String(sx.how || sx.engine || sx.model || ''))); await pushDeep(def.title + (usedCloud ? ' (cloud)' : ''), out, usedCloud ? null : (im) => def.run(im, sx), performance.now() - t0, null, usedCloud ? null : { id: s0.id, s: sx }); }
-      catch (e) { busy(null); logFail(`${def.title} failed`, e); toast(`${def.title}: ${e.message}`); return; }
+      catch (e) { if (s0.id === 'repair' && s0.s && s0.s.auto && /Nothing is marked/.test(e.message)) { repairPaint = null; continue; } busy(null); repairPaint = null; logFail(`${def.title} failed`, e); toast(`${def.title}: ${e.message}`); return false; }
+      if (s0.id === 'repair') repairPaint = null;
     }
-    busy(null); toast(`Done: ${steps.length} step${steps.length === 1 ? '' : 's'}. Each is in History; Undo goes back one at a time.`);
+    busy(null); if (!quiet) toast(`Done: ${steps.length} step${steps.length === 1 ? '' : 's'}. Each is in History; Undo goes back one at a time.`); return true;
+  }
+  // ------------------------------------------------------------------ Fix everything: a full pass, then touch-up passes
+  // Pass 1 measures and runs the whole plan with nothing left for the person; each later pass measures the result
+  // again and does only what still needs it, until nothing does or the passes run out. A report says what each pass did.
+  // one touch-up pass on the picture as it is now
+  async function fixTouch(S) {
+    closeTool(true); const img = now(), t0 = performance.now(), p = pic(); busyNow('Touch up: measuring…');
+    try { const f = await IC.process.measure(img, { say: (m) => busyNow(`Touch up: ${m}`) }), steps = IC.process.plan(f, S.goals, { factor: S.factor, speed, auto: true, touchup: true, also: S.auto }).filter((x) => !x.manual && x.on); const n = (S.report || []).filter((r) => r.steps.length).length + 1;
+      S.report = (S.report || []).filter((r) => r.steps.length);
+      if (!steps.length) S.report.push({ pass: n, steps: [], note: 'Nothing left that measures as needing work.' });
+      else { const before = p.steps.length, ok = await runSteps(steps.map((x) => ({ id: x.id, s: x.s, where: stepWhere(x) })), true); S.report.push({ pass: n, steps: steps.map((x) => ({ label: x.label, why: x.why, where: stepWhere(x) })), made: p.steps.length - before, secs: (performance.now() - t0) / 1000, stopped: !ok }); } }
+    catch (e) { logFail('Touch up failed', e); toast(e.message); }
+    busy(null); renderInfo(); openTool('process');
+  }
+  async function fixEverything(S) {
+    const p = pic(), max = S.passes || 3; S.report = []; closeTool(true);
+    for (let pass = 1; pass <= max; pass++) {
+      const img = now(), t0 = performance.now(); busyNow(`Pass ${pass}: measuring…`);
+      let f; try { f = await IC.process.measure(img, { faces: pass === 1 && S.auto.faces, say: (m) => busyNow(`Pass ${pass}: ${m}`) }); } catch (e) { busy(null); logFail('Measuring failed', e); toast(e.message); break; }
+      const P = IC.process.plan(f, S.goals, { factor: S.factor, speed, auto: true, touchup: pass > 1, also: S.auto }), steps = P.filter((x) => !x.manual && x.on);
+      if (pass === 1) { S.f = f; S.lines = IC.process.describe(f); }
+      if (!steps.length) { S.report.push({ pass, steps: [], note: pass === 1 ? 'Nothing measured as needing work.' : 'Nothing left that measures as needing work.' }); break; }
+      const before = p.steps.length, ok = await runSteps(steps.map((x) => ({ id: x.id, s: x.s, where: stepWhere(x) })), true);
+      S.report.push({ pass, steps: steps.map((x) => ({ label: x.label, why: x.why, where: stepWhere(x) })), made: p.steps.length - before, secs: (performance.now() - t0) / 1000, stopped: !ok });
+      if (!ok) break;
+      if (pass === max) { const f2 = await IC.process.measure(now(), {}), left = IC.process.plan(f2, S.goals, { factor: S.factor, auto: true, touchup: true, also: S.auto }).filter((x) => !x.manual && x.on); if (left.length) S.report.push({ pass: pass + 1, steps: [], note: `Still measuring as needing: ${left.map((x) => x.label).join(', ')}. Press Touch up again, or work on it by hand.` }); else S.report.push({ pass: pass + 1, steps: [], note: 'Nothing left that measures as needing work.' }); }
+    }
+    busy(null); S.f = null; renderInfo(); openTool('process'); toast('Fix everything: done. Each step is in History; the report is in Process a photo.');
   }
   function closeTool(quiet) {
     if (!tool) return; const d = tool.def; tool = null; token++; clearTimeout(timer); busy(null);
@@ -1385,7 +1422,16 @@
     g.onchange = (e) => { const k = e.target.dataset.g; if (k) { S.goals[k] = e.target.checked; if (S.f) S.plan = IC.process.plan(S.f, S.goals, { factor: S.factor, speed }); renderProps(); } };
     if (S.goals.bigger) { const f2 = add(`<div class="field"><span>How much bigger</span><div class="seg">${[2, 4].map((k) => `<button type="button" class="btn" data-fac="${k}" aria-pressed="${S.factor === k}">${k}×</button>`).join('')}</div></div>`); f2.onclick = (e) => { const b = e.target.closest('[data-fac]'); if (b) { S.factor = +b.dataset.fac; if (S.f) S.plan = IC.process.plan(S.f, S.goals, { factor: S.factor, speed }); renderProps(); } }; }
     const fc = add(`<label class="check"><input type="checkbox" ${S.faces ? 'checked' : ''}> Look for faces too (the first time downloads the face finder, about 4 MB)</label>`); fc.querySelector('input').onchange = (e) => { S.faces = e.target.checked; };
-    const look = add('<div class="btns"><button class="btn primary" type="button">Look at the photo</button></div>').querySelector('button');
+    S.auto = S.auto || { faces: true, colourise: true }; S.passes = S.passes || 3;
+    const fx = add(`<div class="ai-card fix-all"><h3>Fix everything</h3><p class="hint">One click: measures the photo, runs the whole plan (damage found automatically, nothing left for you), then touch-up passes that measure the result again and fix only what still needs it. Each step runs Local, Cloud or Both as the status bar switch and AI settings › Steps say.</p>
+      <label class="check"><input type="checkbox" data-fa="faces" ${S.auto.faces ? 'checked' : ''}> Restore faces (they are redrawn)</label><label class="check"><input type="checkbox" data-fa="colourise" ${S.auto.colourise ? 'checked' : ''}> Colourise if black and white or sepia</label>
+      <label class="field"><span>Passes, at most</span><select class="input" data-fp style="width:auto">${[[1, '1 (no touch-up)'], [2, '2 (one touch-up)'], [3, '3 (two touch-ups)'], [4, '4']].map(([v, l]) => `<option value="${v}" ${S.passes === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+      <div class="btns"><button class="btn primary" type="button" data-fx="all">Fix everything</button>${S.report ? '<button class="btn outline" type="button" data-fx="touch" title="Measure the picture as it is now and fix only what still needs it">Touch up again</button>' : ''}</div>
+      ${S.report ? `<div class="fix-report">${S.report.map((r) => `<div><b>${r.steps.length ? `Pass ${r.pass}${r.pass > 1 ? ' (touch-up)' : ''}` : 'Then'}</b>${r.steps.length ? ` · ${r.steps.length} step${r.steps.length === 1 ? '' : 's'} · ${fmtTime(r.secs)}${r.stopped ? ' · <b>stopped</b>' : ''}<ul>${r.steps.map((x) => `<li>${esc(x.label)} <span class="where${x.where !== 'local' ? ' cloud' : ''}">${x.where === 'local' ? 'Local' : x.where === 'cloud' ? 'Cloud' : 'Both'}</span><small class="hint"> ${esc(x.why)}</small></li>`).join('')}</ul>` : `<p class="hint">${esc(r.note)}</p>`}</div>`).join('')}</div>` : ''}</div>`);
+    fx.onchange = (e) => { const a = e.target.dataset.fa; if (a) S.auto[a] = e.target.checked; if (e.target.matches('[data-fp]')) S.passes = +e.target.value; };
+    fx.onclick = (e) => { const b = e.target.closest('[data-fx]'); if (!b) return; if (b.dataset.fx === 'touch') { const keep = S.passes; S.passes = 1; S.touchOnly = true; fixTouch(S).finally(() => { S.passes = keep; S.touchOnly = false; }); } else fixEverything(S); };
+    add('<p class="hint" style="margin-top:10px"><b>Or step by step:</b> look at the photo, then choose the steps yourself.</p>');
+    const look = add('<div class="btns"><button class="btn outline" type="button">Look at the photo</button></div>').querySelector('button');
     look.onclick = async () => { const img = t.base; busyNow('Measuring…'); try { S.f = await IC.process.measure(img, { faces: S.faces, say: busyNow }); S.lines = IC.process.describe(S.f); S.plan = IC.process.plan(S.f, S.goals, { factor: S.factor, speed }); } catch (e) { logFail('Measuring failed', e); toast(e.message); } busy(null); if (tool === t) renderProps(); };
     if (!S.f) return;
     add(`<div class="field"><span>What the photo needs</span><ul class="hint" style="margin:4px 0 0;padding-left:18px">${S.lines.map((l) => `<li>${esc(l)}</li>`).join('')}</ul></div>`);

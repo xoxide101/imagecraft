@@ -33,6 +33,7 @@
     f.toned = X.isToned(img); f.cast = M.castRatio(img); f.haze = X.hazeLevel(c);
     say && say('Specks…'); await new Promise((r) => setTimeout(r, 0));
     const sp = M.damage(c, { specks: true }); let s2 = 0; sp.forEach((v) => (s2 += v)); f.specks = s2 / sp.length;
+    const fl = M.damage(c, { specks: false, flecks: true }); let s3 = 0; fl.forEach((v) => (s3 += v)); f.flecks = s3 / fl.length;
     f.kind = f.fewColours && f.fewColours <= 64 && n < 600000 ? 'pixel' : f.fewColours && f.fewColours < 300 ? 'drawing' : 'photo';
     if (faces) { say && say('Finding faces (the first time downloads the face finder)…'); try { const fs = await IC.faces.ensure(img); f.faces = fs.length; f.faceSize = fs.length ? Math.min(...fs.map((q) => q.box[2] - q.box[0])) : 0; } catch (e) { f.faces = null; } }
     return f;
@@ -60,35 +61,42 @@
     return (PER_MP[step.id] || 500) * Math.max(0.3, f.mp) * (step.ms8 === false ? 1 : 1.5); // ×1.5: the 16-bit pass
   }
   // the plan: goals = { edits, bigger, colour, repair }, factor = 2 | 4
-  function plan(f, goals, { factor = 2, speed } = {}) {
+  // auto: nothing is left for the person (damage found automatically; no edits). touchup: a later pass of Fix everything,
+  // only what still measures as needing it (stricter, so nothing is done twice for a marginal reading), and not the
+  // one-time steps (colourise, faces, make bigger). also: { faces, colourise } chosen for Fix everything.
+  function plan(f, goals, { factor = 2, speed, auto = false, touchup = false, also = {} } = {}) {
+    const k = touchup ? 1.3 : 1;
     const P = [], add = (id, label, why, s = {}, on = true, extra = {}) => P.push({ id, label, why, s, on, ...extra });
     const manual = (id, label, why, extra = {}) => P.push({ id, label, why, manual: true, on: true, ...extra });
     const photo = f.kind === 'photo';
     // 1 repair: printing dots and JPEG blocks come out before anything sharpens them; then specks; then the person marks the rest
     if (goals.repair || goals.colour || goals.bigger) {
       if (f.screen.peaks) add('descreen', 'Descreen', `printing dots every ${f.screen.period.toFixed(1)} px`);
-      if (f.blocks.luma > 1.3) add('deblock', 'Remove JPEG blocks', `blocks ${f.blocks.luma.toFixed(1)}× at the 8-pixel grid (a clean photo is about 1)`, { strength: 50 });
-      if (f.blocks.colour > 2) add('chroma', 'Rebuild colour detail', `colour in blocks ${f.blocks.colour.toFixed(1)}×`, { size: 8 });
+      if (f.blocks.luma > 1.3 * k) add('deblock', 'Remove JPEG blocks', `blocks ${f.blocks.luma.toFixed(1)}× at the 8-pixel grid (a clean photo is about 1)`, { strength: 50 });
+      if (f.blocks.colour > 2 * k) add('chroma', 'Rebuild colour detail', `colour in blocks ${f.blocks.colour.toFixed(1)}×`, { size: 8 });
     }
     if (goals.repair) {
+      if (auto) { if (!touchup || f.specks > 0.0002 * k || f.flecks > 0.0005 * k) add('repair', touchup ? 'Repair what is left' : 'Repair damage (found automatically)', `${(f.specks * 100).toFixed(2)}% specks, ${(f.flecks * 100).toFixed(2)}% flecks and flaking${touchup ? '' : ', and scratches (AI finder)'}; filled with AI`, { specks: true, flecks: true, scratches: !touchup, level: 50, how: 'ai', auto: true }); }
+      else {
       if (f.specks > 0.0002) add('repair', 'Repair specks and dust', `${(f.specks * 100).toFixed(2)}% specks (filled from the edges, Telea)`, { specks: true, flecks: false, how: 'smooth' });
       manual('repair', 'Mark tears, flaking and stains', 'your turn: paint over them (or click them) in Repair damage, then choose AI fill for anything bigger than a speck');
+      }
     }
     // 2 clean: noise before sharpening, blur after the noise is gone
     if ((goals.repair || goals.colour || goals.bigger) && photo) {
-      if (f.noise.luma > 1.5 || f.noise.chroma > 1.5) add('nlm', 'Remove noise (smart)', `noise ${f.noise.luma.toFixed(1)} / colour ${f.noise.chroma.toFixed(1)}`);
-      if (f.blur > 1.2 && goals.repair) add('deblur', 'Restore sharpness', `blur about ${f.blur.toFixed(1)} px`, {}, f.blur < 3);
+      if (f.noise.luma > 1.5 * k || f.noise.chroma > 1.5 * k) add('nlm', 'Remove noise (smart)', `noise ${f.noise.luma.toFixed(1)} / colour ${f.noise.chroma.toFixed(1)}`);
+      if (f.blur > 1.2 * k && goals.repair) add('deblur', 'Restore sharpness', `blur about ${f.blur.toFixed(1)} px`, {}, f.blur < 3);
     }
     // 3 light and colour
     if (goals.colour) {
-      if (f.mean < 0.33) add('shadows', 'Recover shadows', `dark: average ${(f.mean * 100).toFixed(0)}%`);
-      if (f.haze > 0.22) add('dehaze', 'Dehaze', `grey veil ${f.haze.toFixed(2)}`);
-      if (f.toned) { add('autocolour', 'Auto colour (keeping the tone)', 'black and white or sepia: levels and fade fixed, the tone kept', { keepTone: 'auto' }); add('colourise', 'Colourise (AI, a guess)', 'black and white: likely colours, only the colour guessed', { amount: 80 }, false); }
-      else { if (f.cast > 1.2) add('balance', 'Fix a colour cast', `colours lean one way (${f.cast.toFixed(1)})`); add('autocolour', 'Auto colour', f.spread < 0.6 ? `faded: range only ${(f.spread * 100).toFixed(0)}%` : 'levels and colour balance', {}, true); }
-      if (f.spread < 0.5) add('clahe', 'Bring back faded detail', `very flat: range ${(f.spread * 100).toFixed(0)}%`, {}, false);
+      if (f.mean < 0.33 / k) add('shadows', 'Recover shadows', `dark: average ${(f.mean * 100).toFixed(0)}%`);
+      if (f.haze > 0.22 * k) add('dehaze', 'Dehaze', `grey veil ${f.haze.toFixed(2)}`);
+      if (f.toned) { add('autocolour', 'Auto colour (keeping the tone)', 'black and white or sepia: levels and fade fixed, the tone kept', { keepTone: 'auto' }); if (!touchup) add('colourise', 'Colourise (AI, a guess)', 'black and white: likely colours, only the colour guessed', { amount: 80 }, !!(auto && also.colourise)); }
+      else { if (f.cast > 1.2 * k) add('balance', 'Fix a colour cast', `colours lean one way (${f.cast.toFixed(1)})`); if (!touchup || f.spread < 0.6) add('autocolour', 'Auto colour', f.spread < 0.6 ? `faded: range only ${(f.spread * 100).toFixed(0)}%` : 'levels and colour balance', {}, true); }
+      if (f.spread < 0.5 / k) add('clahe', 'Bring back faded detail', `very flat: range ${(f.spread * 100).toFixed(0)}%`, {}, false);
     }
     // 4 your own edits (Photoshop-style), in the usual order
-    if (goals.edits) {
+    if (goals.edits && !auto) {
       manual('straighten', 'Straighten', 'your turn, if the horizon or a wall leans');
       manual('crop', 'Crop', 'your turn: frame it');
       manual('curves', 'Curves (or Brightness)', 'your turn: the overall light; use Where to work on the sky, faces or background alone');
@@ -96,9 +104,9 @@
       manual('clarity', 'Clarity and detail', 'your turn: local contrast (Detail equaliser for finer control)');
     }
     // 5 faces (only on request: they are redrawn)
-    if ((goals.repair || goals.colour) && f.faces) { if (f.faceSize < 160) add('facerestore', 'Restore faces (AI, redrawn)', `${f.faces} face${f.faces === 1 ? '' : 's'}, the smallest ${Math.round(f.faceSize)} px across`, { fidelity: 70 }, false); else manual('facerefine', 'Face refine', 'your turn: skin, eyes and teeth gently, nothing redrawn'); }
+    if ((goals.repair || goals.colour) && f.faces && !touchup) { if (f.faceSize < 160 || (auto && also.faces)) add('facerestore', 'Restore faces (AI, redrawn)', `${f.faces} face${f.faces === 1 ? '' : 's'}, the smallest ${Math.round(f.faceSize)} px across`, { fidelity: 70 }, !!(auto && also.faces)); else if (!auto) manual('facerefine', 'Face refine', 'your turn: skin, eyes and teeth gently, nothing redrawn'); }
     // 6 bigger: by kind; photos 4× with the AI and then a careful shrink when 2× is wanted (enlarging past the target and averaging down)
-    if (goals.bigger) {
+    if (goals.bigger && !touchup) {
       const W2 = Math.round(f.W * factor), H2 = Math.round(f.H * factor);
       if (f.kind === 'pixel') add('resize', `Make bigger ${factor}× (pixel art, MMPX)`, 'pixel art: shapes and dithering kept, no new colours', { w: W2, h: H2, method: 'mmpx' });
       else if (f.kind === 'drawing') add('resize', `Make bigger ${factor}× (Splat)`, 'a drawing: edge-following blobs keep lines smooth without halos', { w: W2, h: H2, method: 'splat' });
@@ -108,7 +116,7 @@
       }
     }
     // 7 a light final sharpen (contrast-adaptive: no halos)
-    if (goals.bigger || goals.repair || goals.colour) add('sharpen', 'Final sharpen (smart)', 'last, so nothing sharpens noise or blocks', { how: 'smart', cas: f.kind === 'photo' ? 35 : 20 }, f.kind === 'photo');
+    if ((goals.bigger || goals.repair || goals.colour) && (!touchup || f.blur > 1.2)) add('sharpen', 'Final sharpen (smart)', 'last, so nothing sharpens noise or blocks', { how: 'smart', cas: f.kind === 'photo' ? 35 : 20 }, f.kind === 'photo');
     P.forEach((st) => { if (!st.manual) st.ms = estimate(st, f, speed); });
     return P;
   }
