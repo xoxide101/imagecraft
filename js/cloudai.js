@@ -8,11 +8,25 @@
   'use strict';
   const IC = (window.IC = window.IC || {});
   const KEY = 'imagecraft-cloud';
-  let cfg = { keys: { anthropic: '', gemini: '', openai: '', openrouter: '' }, models: {}, workspace: '' }; // workspace: Anthropic workspace ID, for keys not tied to one workspace
+  let cfg = { keys: { anthropic: '', gemini: '', openai: '', openrouter: '', runware: '' }, models: {}, workspace: '' }; // workspace: Anthropic workspace ID, for keys not tied to one workspace
   try { const s = JSON.parse(localStorage.getItem(KEY) || 'null'); if (s) cfg = { keys: { ...cfg.keys, ...(s.keys || {}) }, models: s.models || {}, workspace: s.workspace || '' }; } catch (e) { /* blocked storage */ }
   const save = () => { try { localStorage.setItem(KEY, JSON.stringify(cfg)); } catch (e) { /* blocked storage */ } };
-  const NAMES = { anthropic: 'Claude (Anthropic)', gemini: 'Gemini (Google)', openai: 'GPT (OpenAI)', openrouter: 'OpenRouter (many models)' };
-  const PROVIDERS = ['anthropic', 'gemini', 'openai', 'openrouter'];
+  const NAMES = { anthropic: 'Claude (Anthropic)', gemini: 'Gemini (Google)', openai: 'GPT (OpenAI)', openrouter: 'OpenRouter (many models)', runware: 'Runware (Nano Banana, FLUX, upscalers)' };
+  const PROVIDERS = ['anthropic', 'gemini', 'openai', 'openrouter', 'runware'];
+  // Runware: one key for many image models. Each request is a list of tasks; the answers come back in data[].
+  const RW = 'https://api.runware.ai/v1', RW_EDIT = 'google:4@3', RW_FILL = 'bfl:1@2', RW_UP = 'prunaai:p-image@upscale', RW_CUT = 'runware:112@5';
+  const uuid = () => (crypto.randomUUID ? crypto.randomUUID() : 'xxxxxxxx-xxxx-4xxx-8xxx-xxxxxxxxxxxx'.replace(/x/g, () => ((Math.random() * 16) | 0).toString(16)));
+  async function rw(k, task) {
+    const j = await call(RW, { method: 'POST', headers: { 'content-type': 'application/json', Authorization: `Bearer ${k}` }, body: JSON.stringify([{ taskUUID: uuid(), ...task }]) }, 'runware');
+    const d = (j.data || [])[0]; if (!d) throw new Error(`Runware: ${(j.errors && j.errors[0] && j.errors[0].message) || 'nothing came back'}.`); return d;
+  }
+  const dataUrlOf = (img) => { const c = document.createElement('canvas'); c.width = img.width; c.height = img.height; c.getContext('2d').putImageData(img, 0, 0); return c.toDataURL('image/png'); };
+  async function rwPicture(d) { const b = d.imageBase64Data || (d.imageDataURI || '').split(',')[1]; if (!b) throw new Error('Runware sent no picture back.'); return toImageData(b, 'image/png'); }
+  const rwKey = () => { const k = (cfg.keys.runware || '').trim(); if (!k) throw new Error('No Runware key yet: add it in AI settings › Cloud AI.'); return k; };
+  // Make bigger in the cloud (P-Image upscaler, 2× to 16×)
+  async function upscale(img, factor = 2) { const d = await rw(rwKey(), { taskType: 'upscale', model: RW_UP, inputs: { image: dataUrlOf(img) }, upscaleFactor: Math.max(2, Math.min(16, factor)), outputType: 'base64Data', outputFormat: 'PNG', includeCost: true }); return rwPicture(d); }
+  // the background taken away in the cloud (BiRefNet): a see-through PNG
+  async function removeBg(img) { const d = await rw(rwKey(), { taskType: 'removeBackground', model: RW_CUT, inputs: { image: dataUrlOf(img) }, outputType: 'base64Data', outputFormat: 'PNG', includeCost: true }); return rwPicture(d); }
   // OpenRouter: one key for many companies' models, in OpenAI's form. Text answers come from chat; pictures from /images.
   const OR = 'https://openrouter.ai/api/v1', orHead = (k) => ({ 'content-type': 'application/json', Authorization: `Bearer ${k}`, 'X-Title': 'ImageCraft' });
   async function orChat(k, model, b64, prompt, json) {
@@ -72,8 +86,8 @@
     let r; try { r = await fetch(url, opts); if ((r.status === 503 || r.status === 429) && !opts.__retried && !(opts.body instanceof FormData)) { const t0 = await r.clone().text(); if (/high demand|overloaded|try again/i.test(t0)) { await new Promise((ok) => setTimeout(ok, 2500)); r = await fetch(url, opts); } } } catch (err) { e.state = 'failed'; e.error = 'could not be reached'; e.secs = (Date.now() - e.at) / 1000; tell(); throw new Error(`${NAMES[who]} could not be reached (no internet, or the browser blocked it).`); }
     const t = await r.text(); let j = null; try { j = JSON.parse(t); } catch (err) { /* not JSON */ }
     e.secs = (Date.now() - e.at) / 1000; e.status = r.status; e.backBytes = t.length; e.state = r.ok ? 'done' : 'failed'; if (r.ok) e.back = backOf(j); else e.error = (j && j.error && (j.error.message || j.error.type)) || t.slice(0, 300); if (j && j.usage) e.usage = j.usage; if (j && j.usageMetadata) e.usage = j.usageMetadata; tell();
-    if (!r.ok && /quota|billing|credit balance|insufficient_quota|insufficient credits|more credits|purchased credits/i.test(t)) { unpaid.add(who); throw new Error(`${NAMES[who]}: this account has no paid credit for it yet (${who === 'gemini' ? 'Google: turn on billing for the key in Google AI Studio; the free tier does not draw pictures' : who === 'anthropic' ? 'Anthropic Console › Plans & Billing' : who === 'openrouter' ? 'openrouter.ai › Settings › Credits; until then its free models are used for describing and finding things' : 'OpenAI: Settings › Billing'}). The other services and the built-in AI still work.`); }
-    if (!r.ok) { const m = (j && (j.error && (j.error.message || j.error.type))) || t.slice(0, 200); throw new Error(`${NAMES[who]}: ${who === 'anthropic' && /workspace/i.test(m) ? 'this key is not tied to one workspace: add the Workspace ID (Anthropic Console › Settings › Workspaces) under the Claude key, or use a key made inside a workspace. ' : r.status === 401 || r.status === 403 ? 'the key was refused (check it in AI settings › Cloud AI). ' : ''}${m}`); }
+    if (!r.ok && /quota|billing|credit balance|insufficient_quota|insufficient credits|more credits|purchased credits|insufficient balance|insufficientcredits/i.test(t)) { unpaid.add(who); throw new Error(`${NAMES[who]}: this account has no paid credit for it yet (${who === 'gemini' ? 'Google: turn on billing for the key in Google AI Studio; the free tier does not draw pictures' : who === 'anthropic' ? 'Anthropic Console › Plans & Billing' : who === 'openrouter' ? 'openrouter.ai › Settings › Credits; until then its free models are used for describing and finding things' : who === 'runware' ? 'my.runware.ai › Billing' : 'OpenAI: Settings › Billing'}). The other services and the built-in AI still work.`); }
+    if (!r.ok) { const m = (j && ((j.error && (j.error.message || j.error.type)) || (j.errors && j.errors[0] && j.errors[0].message))) || t.slice(0, 200); throw new Error(`${NAMES[who]}: ${who === 'anthropic' && /workspace/i.test(m) ? 'this key is not tied to one workspace: add the Workspace ID (Anthropic Console › Settings › Workspaces) under the Claude key, or use a key made inside a workspace. ' : r.status === 401 || r.status === 403 ? 'the key was refused (check it in AI settings › Cloud AI). ' : ''}${m}`); }
     return j;
   }
   // a JPEG of at most `max` pixels across (what the services take; smaller is quicker and cheaper)
@@ -90,6 +104,7 @@
     const k = cfg.keys[p].trim(); if (!k) return [];
     if (p === 'anthropic') { const j = await call('https://api.anthropic.com/v1/models?limit=100', { headers: anthHeaders(k) }, p); return (j.data || []).map((m) => ({ id: m.id, name: m.display_name || m.id, see: true })); }
     if (p === 'gemini') { const j = await call(`https://generativelanguage.googleapis.com/v1beta/models?pageSize=200&key=${encodeURIComponent(k)}`, {}, p); return (j.models || []).filter((m) => (m.supportedGenerationMethods || []).includes('generateContent')).map((m) => ({ id: m.name.replace(/^models\//, ''), name: m.displayName || m.name, see: !/embedding|aqa|tts/i.test(m.name), draw: /image/i.test(m.name) })); }
+    if (p === 'runware') { await rw(k, { taskType: 'authentication', apiKey: k }); return [{ id: RW_EDIT, name: 'Nano Banana 2 (Google), for editing', draw: true }, { id: RW_FILL, name: 'FLUX.1 Fill [pro], for repair', draw: true }]; }
     if (p === 'openrouter') { const [a, b] = await Promise.all([call(`${OR}/models`, { headers: orHead(k) }, p), call(`${OR}/models?output_modalities=image`, { headers: orHead(k) }, p).catch(() => ({ data: [] }))]); const seen = new Set(); return [...(a.data || []), ...(b.data || [])].filter((m) => !seen.has(m.id) && seen.add(m.id) && !/:(?!free$)/.test(m.id)).map((m) => { const inp = m.architecture?.input_modalities || [], outp = m.architecture?.output_modalities || []; return { id: m.id, name: m.name || m.id, see: inp.includes('image') && outp.includes('text') && !outp.includes('image'), draw: outp.includes('image') }; }).filter((m) => m.see || m.draw); }
     const j = await call('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${k}` } }, p);
     return (j.data || []).map((m) => ({ id: m.id, name: m.id, see: /^(gpt-4o|gpt-4\.1|gpt-5|o3|o4)/.test(m.id) && !/audio|realtime|transcribe|tts|search/.test(m.id), draw: /^(gpt-image|dall-e)/.test(m.id) })).filter((m) => m.see || m.draw);
@@ -120,6 +135,7 @@
     const k = cfg.keys[p].trim(); if (!k) throw new Error(`No ${NAMES[p]} key yet: add it in AI settings › Cloud AI (the AI button in the status bar).`);
     const prompt = REGEN + (colour ? ' Give it natural, realistic colour.' : ' Keep its own colours (or its black and white or sepia tone).') + (text ? ' What it shows: ' + text : ''), b64 = jpeg(img, 1536);
     if (p === 'openrouter') return orImage(k, model, prompt, `data:image/jpeg;base64,${b64}`);
+    if (p === 'runware') return edit(img, p, model, prompt);
     if (p === 'gemini') {
       const j = await call(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(k)}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ contents: [{ parts: [{ inline_data: { mime_type: 'image/jpeg', data: b64 } }, { text: prompt }] }], generationConfig: { responseModalities: ['IMAGE', 'TEXT'] } }) }, p);
       const part = ((j.candidates || [])[0]?.content?.parts || []).find((x) => x.inline_data || x.inlineData), d = part && (part.inline_data || part.inlineData);
@@ -150,6 +166,7 @@
       const j = await call(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(k)}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ contents: [{ parts: [{ inline_data: { mime_type: 'image/png', data: await b64Of(await pngOf(img)) } }, { text: prompt }] }], generationConfig: { responseModalities: ['IMAGE', 'TEXT'] } }) }, p);
       const part = ((j.candidates || [])[0]?.content?.parts || []).find((x) => x.inline_data || x.inlineData), d = part && (part.inline_data || part.inlineData);
       if (!d) throw new Error(`${NAMES[p]} sent no picture back (choose a model with "image" in its name).`); out = await toImageData(d.data, d.mime_type || d.mimeType || 'image/png');
+    } else if (p === 'runware') { const d = await rw(k, { taskType: 'imageInference', model: model && model !== RW_FILL ? model : RW_EDIT, positivePrompt: prompt, resolution: Math.max(img.width, img.height) > 1300 ? '2K' : '1K', inputs: { referenceImages: [dataUrlOf(img)] }, outputType: 'base64Data', outputFormat: 'PNG', includeCost: true }); out = await rwPicture(d);
     } else if (p === 'openrouter') { const c = document.createElement('canvas'); c.width = img.width; c.height = img.height; c.getContext('2d').putImageData(img, 0, 0); out = await orImage(k, model, prompt, c.toDataURL('image/png'));
     } else throw new Error('Claude describes pictures but does not draw them: choose Gemini, OpenAI or OpenRouter.');
     return out.width === img.width && out.height === img.height ? out : scaled(out, img.width, img.height);
@@ -197,7 +214,8 @@
     const small = scaled(crop, sw, sh), hs = new Float32Array(sw * sh); for (let y = 0; y < sh; y++) for (let x = 0; x < sw; x++) hs[y * sw + x] = hc[Math.min(ch - 1, Math.floor(((y + 0.5) * ch) / sh)) * cw + Math.min(cw - 1, Math.floor(((x + 0.5) * cw) / sw))];
     const what = text ? ` The photo shows: ${text}` : '';
     let back;
-    if (p === 'openai') { const mask = new ImageData(sw, sh); for (let i = 0; i < sw * sh; i++) mask.data[i * 4 + 3] = hs[i] > 0.5 ? 0 : 255; back = await edit(small, p, model, `Fill in the transparent (masked) areas of this old photograph so they match the surrounding photo exactly: same people, clothing, textures, lighting, colour and grain. Change nothing else.${what}`, mask); }
+    if (p === 'runware') { const mask = new ImageData(sw, sh); for (let i = 0; i < sw * sh; i++) { const v = hs[i] > 0.5 ? 255 : 0; mask.data[i * 4] = mask.data[i * 4 + 1] = mask.data[i * 4 + 2] = v; mask.data[i * 4 + 3] = 255; } const d = await rw(k0(p), { taskType: 'imageInference', model: RW_FILL, positivePrompt: `Fill in the masked areas so they match the photo around them exactly: same people, clothing, textures, lighting, colour and grain.${what}`, inputs: { seedImage: dataUrlOf(small), maskImage: dataUrlOf(mask) }, outputType: 'base64Data', outputFormat: 'PNG', includeCost: true }); back = await rwPicture(d); if (back.width !== sw || back.height !== sh) back = scaled(back, sw, sh); }
+    else if (p === 'openai') { const mask = new ImageData(sw, sh); for (let i = 0; i < sw * sh; i++) mask.data[i * 4 + 3] = hs[i] > 0.5 ? 0 : 255; back = await edit(small, p, model, `Fill in the transparent (masked) areas of this old photograph so they match the surrounding photo exactly: same people, clothing, textures, lighting, colour and grain. Change nothing else.${what}`, mask); }
     else { const shown = new ImageData(new Uint8ClampedArray(small.data), sw, sh); for (let i = 0; i < sw * sh; i++) if (hs[i] > 0.5) { shown.data[i * 4] = 255; shown.data[i * 4 + 1] = 0; shown.data[i * 4 + 2] = 255; } back = await edit(shown, p, model, `The bright magenta areas of this old photograph are damage. Repaint only those areas so they match the photo around them exactly (same people, clothing, textures, lighting, colour and grain) and leave everything else exactly as it is. No magenta may remain.${what}`); }
     return layBack(img, scaled(back, cw, ch), hc, x0, y0, cw, ch, Math.max(2, Math.round(3 / k)));
   }
@@ -261,11 +279,12 @@
   const face = (crop, p, model) => edit(crop, p, model, 'Restore this old, blurred or damaged face photo so it looks sharp and natural, like a modern photo of the same person. Keep the identity, expression, pose, hair, age and framing exactly the same. Do not change the background or the crop.');
 
   // which services can do a job, given the keys; which of their models to use (the person's choice, or a good default)
-  const engines = (job) => lastIn(({ fill: ['openai', 'gemini', 'openrouter'], colour: ['gemini', 'openai', 'openrouter'], masks: ['gemini', 'openrouter'], edit: ['openai', 'gemini', 'openrouter'], locate: ['openai', 'openrouter', 'anthropic'], face: ['gemini', 'openai', 'openrouter'] }[job] || []).filter(has));
+  const engines = (job) => lastIn(({ fill: ['openai', 'runware', 'gemini', 'openrouter'], colour: ['gemini', 'runware', 'openai', 'openrouter'], masks: ['gemini', 'openrouter'], edit: ['openai', 'runware', 'gemini', 'openrouter'], locate: ['openai', 'openrouter', 'anthropic'], face: ['gemini', 'runware', 'openai', 'openrouter'] }[job] || []).filter(has));
   // the newest model that fits (by the version numbers in its name), so retired models (gemini-2.5-flash) are never chosen
   const ver = (id) => (String(id).match(/\d+(?:\.\d+)?/g) || []).map(Number);
   const newest = (ms) => ms.slice().sort((a, b) => { const x = ver(a.id), y = ver(b.id); for (let i = 0; i < Math.max(x.length, y.length); i++) { const d = (y[i] || 0) - (x[i] || 0); if (d) return d; } return a.id.length - b.id.length; })[0];
-  const drawModel = async (p) => { const want = cfg.models['draw:' + p], ms = (await models(p)).filter((x) => x.draw); if (want && ms.some((x) => x.id === want)) return want; const pick = newest(ms.filter((x) => /^gpt-image/.test(x.id) && !/mini/.test(x.id))) || newest(ms.filter((x) => /flash-image/.test(x.id) && !/preview/.test(x.id))) || newest(ms.filter((x) => /flash-image|gpt-image/.test(x.id))) || ms[0]; if (!pick) throw new Error(`${NAMES[p]}: this key has no model that can draw pictures.`); return pick.id; };
+  const k0 = (p) => (cfg.keys[p] || '').trim();
+  const drawModel = async (p) => { if (p === 'runware') return RW_EDIT; const want = cfg.models['draw:' + p], ms = (await models(p)).filter((x) => x.draw); if (want && ms.some((x) => x.id === want)) return want; const pick = newest(ms.filter((x) => /^gpt-image/.test(x.id) && !/mini/.test(x.id))) || newest(ms.filter((x) => /flash-image/.test(x.id) && !/preview/.test(x.id))) || newest(ms.filter((x) => /flash-image|gpt-image/.test(x.id))) || ms[0]; if (!pick) throw new Error(`${NAMES[p]}: this key has no model that can draw pictures.`); return pick.id; };
   const seeModel = async (p) => { const want = cfg.models['see:' + p], all = (await models(p)).filter((x) => x.see && !x.draw), free = all.filter((x) => /:free$/.test(x.id)), ms = p === 'openrouter' ? (unpaid.has(p) && free.length ? free : all.filter((x) => !/:free$/.test(x.id))) : all; if (want && ms.some((x) => x.id === want)) return want; const plain = (x) => !/lite|image|tts|live|audio|thinking|preview|exp/.test(x.id); const pick = newest(ms.filter((x) => /^gemini-[\d.]+-flash$/.test(x.id))) || newest(ms.filter((x) => /flash/.test(x.id) && plain(x))) || newest(ms.filter(plain)) || ms[0]; if (!pick) throw new Error(`${NAMES[p]}: this key has no model that can look at pictures.`); return pick.id; };
 
   const passable = (e) => /high demand|overloaded|try again later|paid credit|quota|no longer available|not found|could not be reached|sent no picture|did not answer/i.test(e.message);
@@ -274,5 +293,5 @@
   async function tryEach(list, fn) { list = lastIn(list); let last = null; for (const p of list) { try { return await fn(p); } catch (e) { last = e; if (/paid credit|quota/i.test(e.message)) unpaid.add(p); if (!passable(e) || p === list[list.length - 1]) throw e; if (window.ICLOG) ICLOG.add('info', `Cloud: ${NAMES[p]} could not do it (${e.message.slice(0, 120)}); trying ${NAMES[list[list.indexOf(p) + 1]]}`); } } throw last; }
   // a job with this service first, then the others that can do it
   const orderFrom = (job, first) => { const l = engines(job); return first && l.includes(first) ? [first, ...l.filter((x) => x !== first)] : l; };
-  IC.cloud = { PROVIDERS, JOBS, job, tryEach, orderFrom, log, onLog, task: setTask, cfg, save, has, NAMES, models, describe, regenerate, edit, fill, layBack, colourise, segment, segmentMany, locate, face, engines, drawModel, seeModel };
+  IC.cloud = { upscale, removeBg, PROVIDERS, JOBS, job, tryEach, orderFrom, log, onLog, task: setTask, cfg, save, has, NAMES, models, describe, regenerate, edit, fill, layBack, colourise, segment, segmentMany, locate, face, engines, drawModel, seeModel };
 })();
