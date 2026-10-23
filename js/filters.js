@@ -452,6 +452,41 @@
   // between the background colour and the strongest colour near it is that much background, so it becomes that much
   // see-through and gets the colour back. A real lighter shade (a gradient) has its own hue, off that line: it stays.
   // Magic wand: the pixels like the clicked one (each colour within tolerance, as Photoshop), joined to it or anywhere
+  // ------------------------------------------------------------------ chroma key (green / blue screen)
+  // The screen colour found by itself: the strongest saturated colour round the picture's edges (a green or blue screen
+  // fills the borders), else a standard green
+  function screenColour(img) {
+    const W = img.width, H = img.height, d = img.data, b = Math.max(2, Math.round(Math.min(W, H) * 0.06)), bins = new Map();
+    const look = (x, y) => { const i = (y * W + x) * 4, r = d[i], g = d[i + 1], bl = d[i + 2], mx = Math.max(r, g, bl), mn = Math.min(r, g, bl); if (mx - mn < 40) return; const k = `${r >> 4},${g >> 4},${bl >> 4}`, e = bins.get(k) || [0, 0, 0, 0]; e[0] += r; e[1] += g; e[2] += bl; e[3]++; bins.set(k, e); };
+    for (let y = 0; y < H; y += 2) for (let x = 0; x < W; x += 2) if (x < b || y < b || x >= W - b || y >= H - b) look(x, y);
+    let best = null; for (const e of bins.values()) if (!best || e[3] > best[3]) best = e;
+    return best ? [best[0] / best[3], best[1] / best[3], best[2] / best[3]].map(Math.round) : [0, 177, 64];
+  }
+  // How see-through each pixel is, from how much the screen's own channel stands out above the other two (as pro keyers
+  // do): uneven light and shadows on the screen still key, and a person's colours (where that channel does not stand out)
+  // stay solid. Clip black / white tidy the matte; choke pulls the edge in; soften blurs it; spill takes the screen's cast
+  // off hair and skin.
+  function chromaKey(img, { rgb, clipBlack = 10, clipWhite = 90, choke = 0, soften = 1, despill = 100, view = 'result', back = '' } = {}) {
+    const W = img.width, H = img.height, n = W * H, d = img.data, S = rgb || screenColour(img);
+    const k = S[1] >= S[0] && S[1] >= S[2] ? 1 : S[2] >= S[0] ? 2 : 0, o1 = (k + 1) % 3, o2 = (k + 2) % 3, ref = Math.max(1, S[k] - Math.max(S[o1], S[o2])) / Math.max(1, S[k]), floor = Math.max(8, S[k] * 0.25);  /* the screen's channel dominance, as a share of its brightness (a shadow on the screen is the same green, darker) */
+    let a = new Float32Array(n); const cb = clipBlack / 100, cw = Math.max(cb + 0.01, clipWhite / 100);
+    for (let p = 0; p < n; p++) { const i = p * 4, sd = d[i + k] - Math.max(d[i + o1], d[i + o2]), raw = 1 - Math.max(0, sd) / Math.max(d[i + k], floor) / ref;  /* very dark pixels are measured against a floor, so dark clothing with a hint of green stays */ a[p] = Math.max(0, Math.min(1, (raw - cb) / (cw - cb))) * (d[i + 3] / 255); }
+    if (choke > 0) { // the edge pulled in: the smallest value nearby
+      const r = Math.round(choke), t = new Float32Array(n);
+      for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { let m = 1; for (let i = Math.max(0, x - r); i <= Math.min(W - 1, x + r); i++) m = Math.min(m, a[y * W + i]); t[y * W + x] = m; }
+      for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { let m = 1; for (let j = Math.max(0, y - r); j <= Math.min(H - 1, y + r); j++) m = Math.min(m, t[j * W + x]); a[y * W + x] = m; }
+    }
+    if (soften > 0) a = boxMean(a, W, H, Math.round(soften));
+    const out = new ImageData(W, H), o = out.data, s = despill / 100, bk = back ? [1, 3, 5].map((j) => parseInt(back.slice(j, j + 2), 16)) : null;
+    for (let p = 0; p < n; p++) {
+      const i = p * 4;
+      if (view === 'matte') { const v = Math.round(a[p] * 255); o[i] = o[i + 1] = o[i + 2] = v; o[i + 3] = 255; continue; }
+      let c = [d[i], d[i + 1], d[i + 2]]; const lim = Math.max(c[o1], c[o2]); if (s && c[k] > lim) c[k] = Math.round(c[k] - (c[k] - lim) * s); // spill taken off
+      if (bk) { for (let q = 0; q < 3; q++) o[i + q] = Math.round(bk[q] + (c[q] - bk[q]) * a[p]); o[i + 3] = 255; }
+      else { o[i] = c[0]; o[i + 1] = c[1]; o[i + 2] = c[2]; o[i + 3] = Math.round(a[p] * 255); }
+    }
+    return out;
+  }
   function wandRegion(img, x0, y0, { tolerance = 32, contiguous = true } = {}) {
     const W = img.width, H = img.height, d = img.data, n = W * H, m = new Uint8Array(n), i0 = (y0 * W + x0) * 4, r = d[i0], g = d[i0 + 1], b = d[i0 + 2], a = d[i0 + 3], t = tolerance;
     const like = (p) => { const q = p * 4; return Math.abs(d[q] - r) <= t && Math.abs(d[q + 1] - g) <= t && Math.abs(d[q + 2] - b) <= t && Math.abs(d[q + 3] - a) <= Math.max(t, 24); };
@@ -810,5 +845,5 @@
     return o;
   }
 
-  IC.filters = { wandRegion, distanceTo, artMask, outline, trimArt, colourOut, bleedColour, cornerBg, defringe, dotsOff, paperClean, toneFrom, colourFrom, colourise, mmpx, deband, chromaRebuild, guidedBy, cas, dehaze, hazeLevel, isToned, shadowRecover, guided, autoColour, clarity, pyramidBlend, aliasCheck, antialias, light, colour, autoLevels, autoFix, whiteBalance, greyscale, sepia, invert, threshold, posterize, blur, sharpen, denoise, median, despeckle, deblock, undither, pixelate, resize, scale2x, scale3x, rotate: rotateAny, rotate90: rotate, flip, crop, trimBox, canvasSize, makeClear, flatten, copy, canvasOf };
+  IC.filters = { screenColour, chromaKey, wandRegion, distanceTo, artMask, outline, trimArt, colourOut, bleedColour, cornerBg, defringe, dotsOff, paperClean, toneFrom, colourFrom, colourise, mmpx, deband, chromaRebuild, guidedBy, cas, dehaze, hazeLevel, isToned, shadowRecover, guided, autoColour, clarity, pyramidBlend, aliasCheck, antialias, light, colour, autoLevels, autoFix, whiteBalance, greyscale, sepia, invert, threshold, posterize, blur, sharpen, denoise, median, despeckle, deblock, undither, pixelate, resize, scale2x, scale3x, rotate: rotateAny, rotate90: rotate, flip, crop, trimBox, canvasSize, makeClear, flatten, copy, canvasOf };
 })();
