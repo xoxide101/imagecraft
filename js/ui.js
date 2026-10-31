@@ -2239,5 +2239,7 @@
 
   renderProps(); status();
   // for testing and the command layer: the same things the buttons do
-  window.ImageCraft = { setRepairMarks: (m) => { repairPaint = m; }, recipeOf: () => pic() && recipeOf(pic()), runRecipe: (rec) => runRecipe(rec), snapShapes, openFiles, addPic, openTool, applyTool, closeTool, quick, openSave, openBatch, undo, redo, sample, pics: () => pics, current: () => pic(), tool: () => tool, view, prepared, TOOLS };
+  // the inside of the app, for the command layer (js/craftapi.js): the same calls the GUI uses
+  const API_INNER = { pics: () => pics, pic, now, select, addPic, goStep, undo, redo: () => redo(), runSteps, pushDeep, push, afterChange, TOOLS, QUICK, recipeOf, runRecipe, kindOf, setKind: (k) => { const p = pic(); if (p) { p.kind = k; p.kindGuessed = false; } }, fixEverything, closeTool: (q) => closeTool(q), hideKindTiles, aiMode: () => aiMode, bitsFor: (fmt) => bitsFor(fmt), prepared: (img, fmt, o) => prepared(img, fmt, o) };
+  window.ImageCraft = { _inner: API_INNER, setRepairMarks: (m) => { repairPaint = m; }, recipeOf: () => pic() && recipeOf(pic()), runRecipe: (rec) => runRecipe(rec), snapShapes, openFiles, addPic, openTool, applyTool, closeTool, quick, openSave, openBatch, undo, redo, sample, pics: () => pics, current: () => pic(), tool: () => tool, view, prepared, TOOLS };
 })();

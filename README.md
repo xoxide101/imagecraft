@@ -276,6 +276,17 @@ It is a **genuine clean-room build**, not a decompiled or AI-rebuilt copy of any
 
 Open-source libraries it uses are listed with their licences in Credits.
 
+## For agents and scripts: window.craftAPI
+
+ImageCraft has a command layer (js/craftapi.js) following the craftapi spec (github.com/xoxide101/craftapi), so people and AI agents (Claude, Copilot or Gemini through the craftapi MCP server, or a script in the page) drive the same calls the GUI uses. Answers are JSON with a short report in words, and a small preview when asked; pictures never leave as raw pixels.
+
+- `describe()`: every task, tool (with its settings), score and format.
+- `open({ name, dataUrl | base64 })`, `state()`, `summary({ preview })`.
+- `apply([ops], { preview })`: `{ op:'task', name, ... }` (fixPhoto, removeBackground, keyGreenScreen, traceToSvg, makeBigger, splitSheet), `{ op:'tool', id, s }`, `{ op:'quick', name }`, `select`, `goto`, `undo`, `redo`, `kind`. A batch that fails is rolled back completely.
+- `snapshot(label)`, `restore(id)` (as a new step), `snapshots()`, `diff(a, b)`.
+- `score(name, args)`: colours, transparency, noise, blur, jagged, fileSize, fidelity (PSNR against a snapshot or step), refDiff (against a reference picture).
+- `render({ max })`, `export(format, opts)` (the file as base64), `recipe()`, `runRecipe(recipe)`.
+
 ## Credits
 
 - **RasterTrace** by bradsec (MIT), https://github.com/bradsec/rastertrace: its preprocessing, palette code and VTracer 1.0 WebAssembly build, bundled as lib/craft-rastertrace.js (with its licence and third-party licences), for To SVG outlines; its PDF and DXF writers too. The EPS writer follows **GetVect** by craigjmidwinter (MIT), https://github.com/craigjmidwinter/getvect.
