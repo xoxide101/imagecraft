@@ -494,12 +494,13 @@
       } },
     assess: { title: 'Ask AI what it needs', icon: IK.modern, viewOnly: true, s: {}, run: (img) => img,
       fields: [{ t: 'custom', render: (into, t) => assessPanel(into, t) }] },
-    sheet: { title: 'Split a sheet into pictures', icon: IK.grid, live: true, viewOnly: true, s: { gap: 0, min: 0.2, pad: 6, see: true, names: '', svg: true },
+    sheet: { title: 'Split a sheet into pictures', icon: IK.grid, live: true, viewOnly: true, s: { gap: 0, min: 0.2, pad: 6, see: true, names: '', svg: true, category: '' },
       fields: [range('gap', 'Join parts closer than (pixels; 0 = automatic)', 0, 80), range('min', 'Smallest item (% of the sheet)', 0, 5, 0.05), range('pad', 'Room round each (pixels)', 0, 60), chk('see', 'See-through background, clean edges'),
         { t: 'custom', render: (into, t) => { const n = t.sheet ? t.sheet.items.length : 0, d = document.createElement('div'); d.className = 'field'; d.innerHTML = `<span>Names, in order <small class="hint">(one per line or separated by commas; ${n} item${n === 1 ? '' : 's'} found)</small></span><textarea class="input" rows="4" data-names placeholder="Barn, Bible, Buffalo…">${esc(t.s.names)}</textarea>`; d.oninput = (e) => { t.s.names = e.target.value; clearTimeout(t.nmT); t.nmT = setTimeout(() => schedule(0), 400); }; into.append(d); } },
+        { t: 'custom', render: (into, t) => { const d = document.createElement('label'); d.className = 'field'; d.innerHTML = `<span>Category <small class="hint">(for the clip-art library, e.g. Americana)</small></span><input class="input" data-cat value="${esc(t.s.category)}" placeholder="${esc(baseName(pic().name))}">`; d.oninput = (e) => { t.s.category = e.target.value; }; into.append(d); } },
         chk('svg', 'Also trace each to SVG (RasterTrace) in the library'),
-        { t: 'btns', buttons: [{ label: 'Save the clip-art library (ZIP)…', primary: true, run: () => sheetSave() }, { label: 'Open as pictures', run: () => sheetOpen() }] },
-        note('For sheets of clip art, icons or stickers on a plain background. Each item gets a number on the sheet, in reading order; names are given in that order. The library ZIP has each item as PNG (and SVG) plus library.json (names, sizes, files), ready to import.')],
+        { t: 'btns', buttons: [{ label: 'Add to the clip-art library', primary: true, run: () => sheetLibrary() }, { label: 'Save as a ZIP…', run: () => sheetSave() }, { label: 'Open as pictures', run: () => sheetOpen() }] },
+        note('For sheets of clip art, icons or stickers on a plain background. Each item gets a number on the sheet, in reading order; names are given in that order. <b>Add to the clip-art library</b> puts them straight into the library every Craft app shares (open ClipArtCraft to see and sort them). The ZIP has each item as PNG (and SVG) plus library.json, ready to import anywhere.')],
       run: (img, s) => { const t = tool; const sh = X.splitSheet(img, { gap: +s.gap, min: s.min / 100 }); if (t) { const changed = !t.sheet || t.sheet.items.length !== sh.items.length; t.sheet = sh; if (changed) setTimeout(() => { if (tool === t) renderProps(); }, 0); }
         const c = X.canvasOf(img), x = c.getContext('2d'), names = sheetNames(s), lw = Math.max(2, Math.round(Math.max(img.width, img.height) / 400)), fs = Math.max(12, Math.round(Math.max(img.width, img.height) / 60));
         x.lineWidth = lw; x.font = `700 ${fs}px system-ui, sans-serif`; x.textBaseline = 'top';
@@ -897,11 +898,29 @@
   function sheetCuts() { const t = tool; if (!t || !t.sheet || !t.sheet.items.length) { toast('No items found yet.'); return null; } const base = t.base, s = t.s, names = sheetNames(s), seen = {};
     return t.sheet.items.map((it, i) => { let nm = safeName(names[i] || `${baseName(pic().name)} ${i + 1}`); seen[nm] = (seen[nm] || 0) + 1; if (seen[nm] > 1) nm += ` ${seen[nm]}`; return { name: nm, img: X.sheetItem(base, t.sheet, it, { pad: +s.pad, see: s.see }), box: { x: it.x, y: it.y, w: it.w, h: it.h } }; }); }
   function sheetOpen() { const cuts = sheetCuts(); if (!cuts) return; closeTool(true); cuts.forEach((c) => addPic(c.name + '.png', c.img, { format: 'Cut from a sheet', bits: 32 })); toast(`${cuts.length} pictures opened.`); }
+  // each cut as a PNG blob and (if asked) traced SVG text
+  async function sheetPrepare(cuts, s, verb) {
+    const out = [];
+    for (let i = 0; i < cuts.length; i++) { const c = cuts[i]; busyNow(`${verb} ${i + 1} of ${cuts.length}: ${c.name}…`); await wait(0);
+      const o = { ...c, png: await new Promise((r) => X.canvasOf(c.img).toBlob(r, 'image/png')), svg: null };
+      if (s.svg && window.CRAFT_RASTERTRACE) { try { const r = CRAFT_RASTERTRACE.traceImage(c.img, { profile: 'icon' }); o.svg = r.svg; o.colours = r.colours; } catch (e) { logFail(`Tracing ${c.name} failed`, e); } }
+      out.push(o); }
+    return out;
+  }
+  async function sheetLibrary() {
+    if (!window.CraftClipart) { toast('The clip-art library is not available here.'); return; }
+    const cuts = sheetCuts(); if (!cuts) return; const s = tool.s, category = String(s.category || '').trim() || baseName(pic().name);
+    try { const done = await sheetPrepare(cuts, s, 'Adding');
+      for (const c of done) await CraftClipart.put(await CraftClipart.makeItem({ name: c.name, category, png: c.png, svg: c.svg, source: 'ImageCraft: ' + pic().name }));
+      busy(null); toast(`${done.length} items added to the clip-art library, in “${category}”. Open ClipArtCraft to see them.`);
+    } catch (e) { busy(null); logFail('Adding to the clip-art library failed', e); toast('Adding to the clip-art library failed: ' + (e.message || e)); }
+  }
   async function sheetSave() {
-    const cuts = sheetCuts(); if (!cuts) return; const s = tool.s, files = [], list = [], enc = new TextEncoder();
-    for (let i = 0; i < cuts.length; i++) { const c = cuts[i]; busyNow(`Saving ${i + 1} of ${cuts.length}: ${c.name}…`); await wait(0);
-      const png = new Uint8Array(await (await new Promise((r) => X.canvasOf(c.img).toBlob(r, 'image/png'))).arrayBuffer()); files.push({ name: `${c.name}.png`, bytes: png }); const entry = { name: c.name, png: `${c.name}.png`, width: c.img.width, height: c.img.height, onSheet: c.box };
-      if (s.svg && window.CRAFT_RASTERTRACE) { try { const r = CRAFT_RASTERTRACE.traceImage(c.img, { profile: 'icon' }); files.push({ name: `${c.name}.svg`, bytes: enc.encode(r.svg) }); entry.svg = `${c.name}.svg`; entry.colours = r.colours; } catch (e) { logFail(`Tracing ${c.name} failed`, e); } }
+    const cuts = sheetCuts(); if (!cuts) return; const s = tool.s, files = [], list = [], enc = new TextEncoder(), category = String(s.category || '').trim();
+    for (const c of await sheetPrepare(cuts, s, 'Saving')) {
+      files.push({ name: `${c.name}.png`, bytes: new Uint8Array(await c.png.arrayBuffer()) }); const entry = { name: c.name, png: `${c.name}.png`, width: c.img.width, height: c.img.height, onSheet: c.box };
+      if (category) entry.category = category;
+      if (c.svg) { files.push({ name: `${c.name}.svg`, bytes: enc.encode(c.svg) }); entry.svg = `${c.name}.svg`; entry.colours = c.colours; }
       list.push(entry); }
     files.push({ name: 'library.json', bytes: enc.encode(JSON.stringify({ library: baseName(pic().name), made: new Date().toISOString(), by: 'ImageCraft', items: list }, null, 2)) });
     busy(null); download(F.zip(files), `${safeName(baseName(pic().name))} clip art.zip`); toast(`Library saved: ${cuts.length} items${s.svg ? ', PNG and SVG' : ''}.`);
@@ -2145,6 +2164,7 @@
         ['Edit', [{ col: [B('Undo', I.undo, undo, { key: 'Ctrl+Z', disabled: () => !canUndo() && !tool }), B('Redo', I.redo, redo, { key: 'Ctrl+Y', disabled: () => !canRedo() }), B('Back to the original', IK.revert, () => { if (pic().at) goStep(0); })] }]],
         ['Plan', [B('Process a photo', IK.auto, T('process'), { big: true, title: 'Say what you are doing (edits, bigger, colour, repair); the photo is measured and a plan made for it' })]],
         ['Quick', [B('Auto fix', IK.auto, () => quick('Auto fix', (i) => X.autoFix(i)), { big: true, title: 'Levels, a little colour and sharpening, in one click' }), B('Modernise', IK.modern, T('modern'), { big: true, title: 'Clean up and enlarge pixel art, old screens, old photos or blocky JPEGs' }), B('Compare', IK.compare, toggleCompare, { big: true, pressed: () => view.compare, title: 'Before and after, side by side (drag the line)' })]],
+        ['Clip art', [B('Split a sheet', IK.grid, T('sheet'), { big: true, title: 'Clip art, icon or sticker sheets: each item cut out, named and added to the clip-art library' })]],
         ['Help', [B('How to use', I.help, help, { big: true, always: true })]],
       ] },
       { id: 'image', label: 'Image', hue: '#2f7fdd', groups: [
