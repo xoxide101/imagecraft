@@ -452,6 +452,50 @@
   // between the background colour and the strongest colour near it is that much background, so it becomes that much
   // see-through and gets the colour back. A real lighter shade (a gradient) has its own hue, off that line: it stays.
   // Magic wand: the pixels like the clicked one (each colour within tolerance, as Photoshop), joined to it or anywhere
+  // ------------------------------------------------------------------ split a sheet into pictures (clip art sheets)
+  // The items on a plain background: everything unlike the background, with parts closer than `gap` joined into one
+  // item (smoke with its chimney, wheels with their wagon), specks smaller than `min` (share of the sheet) left out;
+  // in reading order (rows top to bottom, each left to right). Returns the items and a label map (which item each pixel is).
+  function splitSheet(img, { gap = 0, min = 0.002, tolerance = 40 } = {}) {
+    const W = img.width, H = img.height, n = W * H, d = img.data, bg = cornerBg(img), m = new Uint8Array(n); let clear = false;
+    for (let p = 0; p < n; p++) if (d[p * 4 + 3] < 250) { clear = true; break; }
+    // the paper as it really is (texture, darker edges, a vignette): learnt from the sheet's border (its range of lightness
+    // and of colour, in Lab); a pixel is background when it is paper-coloured and paper-light. Wood, leather and ink can
+    // share the paper's hue, but are darker or richer, so they stay with the items.
+    const b0 = Math.max(2, Math.round(Math.min(W, H) * 0.03)), Ls = [], As = [], Bs = [];
+    if (!clear) for (let y = 0; y < H; y += 2) for (let x = 0; x < W; x += 2) { if (x >= b0 && y >= b0 && x < W - b0 && y < H - b0) continue; const i = (y * W + x) * 4, q = toLab(d[i] / 255, d[i + 1] / 255, d[i + 2] / 255); Ls.push(q[0]); As.push(q[1]); Bs.push(q[2]); }
+    const pct = (a, t) => { const s2 = a.slice().sort((u, v) => u - v); return s2[Math.min(s2.length - 1, Math.floor(t * s2.length))]; }, tl = tolerance / 40;
+    const Lmin = clear ? 0 : pct(Ls, 0.03) - 6 * tl, Alo = clear ? 0 : pct(As, 0.03) - 4 * tl, Ahi = clear ? 0 : pct(As, 0.97) + 4 * tl, Blo = clear ? 0 : pct(Bs, 0.03) - 5 * tl, Bhi = clear ? 0 : pct(Bs, 0.97) + 5 * tl;
+    for (let p = 0; p < n; p++) { const i = p * 4; if (clear) { m[p] = d[i + 3] >= 64 ? 1 : 0; continue; } const q = toLab(d[i] / 255, d[i + 1] / 255, d[i + 2] / 255); m[p] = q[0] >= Lmin && q[1] >= Alo && q[1] <= Ahi && q[2] >= Blo && q[2] <= Bhi ? 0 : 1; }
+    const g = gap || Math.max(3, Math.round(Math.max(W, H) / 250)), grown = new Uint8Array(n); /* parts closer than g join: each grows by half of it */
+    { const D = distanceTo(m, W, H); for (let p = 0; p < n; p++) grown[p] = D[p] <= g / 2 ? 1 : 0; }
+    const lab = new Int32Array(n), st = new Int32Array(n), boxes = []; let id = 0;
+    for (let s0 = 0; s0 < n; s0++) { if (!grown[s0] || lab[s0]) continue; id++; let top = 0, x0 = W, y0 = H, x1 = -1, y1 = -1, area = 0; st[top++] = s0; lab[s0] = id;
+      while (top) { const p = st[--top], x = p % W, y = (p / W) | 0; if (m[p]) { area++; if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+        for (const q of [x > 0 ? p - 1 : -1, x < W - 1 ? p + 1 : -1, y > 0 ? p - W : -1, y < H - 1 ? p + W : -1]) if (q >= 0 && grown[q] && !lab[q]) { lab[q] = id; st[top++] = q; } }
+      if (x1 >= 0 && area >= min * n) boxes.push({ id, x: x0, y: y0, w: x1 - x0 + 1, h: y1 - y0 + 1, area }); }
+    // reading order: an item starts a new row when it is below the middle of the row so far
+    boxes.sort((a, b) => a.y - b.y); const rows = [];
+    for (const b of boxes) { const r = rows.find((row) => b.y < row.mid); if (r) { r.items.push(b); } else rows.push({ mid: b.y + b.h * 0.6, items: [b] }); }
+    const items = rows.flatMap((r) => r.items.sort((a, b) => a.x - b.x));
+    return { items, lab, bg, clear, m };
+  }
+  // one item cut out: its box with padding, the other items' pixels taken away, the background see-through with clean edges
+  function sheetItem(img, sheet, item, { pad = 6, see = true } = {}) {
+    const W = img.width, H = img.height, x0 = Math.max(0, item.x - pad), y0 = Math.max(0, item.y - pad), x1 = Math.min(W, item.x + item.w + pad), y1 = Math.min(H, item.y + item.h + pad), w = x1 - x0, h = y1 - y0;
+    let o = new ImageData(w, h); const bg = sheet.bg, solid = new Uint8Array(w * h), out = new Uint8Array(w * h), st = new Int32Array(w * h); let top = 0;
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const p = (y0 + y) * W + x0 + x, i = p * 4, q = (y * w + x) * 4; o.data[q] = img.data[i]; o.data[q + 1] = img.data[i + 1]; o.data[q + 2] = img.data[i + 2]; o.data[q + 3] = img.data[i + 3]; solid[y * w + x] = sheet.lab[p] === item.id && sheet.m[p] ? 1 : 0; }
+    if (!see) { for (let k = 0; k < w * h; k++) if (!solid[k] && sheet.lab[(y0 + ((k / w) | 0)) * W + x0 + (k % w)] !== item.id) { o.data[k * 4] = bg[0]; o.data[k * 4 + 1] = bg[1]; o.data[k * 4 + 2] = bg[2]; } return o; }
+    // only the background reachable from outside the item is taken away: light colours inside it (white walls, smoke,
+    // highlights) stay, even when they are close to the paper's colour
+    const push = (k) => { if (!solid[k] && !out[k]) { out[k] = 1; st[top++] = k; } };
+    for (let x = 0; x < w; x++) { push(x); push((h - 1) * w + x); } for (let y = 0; y < h; y++) { push(y * w); push(y * w + w - 1); }
+    while (top) { const k = st[--top], x = k % w, y = (k / w) | 0; if (x > 0) push(k - 1); if (x < w - 1) push(k + 1); if (y > 0) push(k - w); if (y < h - 1) push(k + w); }
+    for (let k = 0; k < w * h; k++) if (out[k]) o.data[k * 4 + 3] = 0;
+    if (!sheet.clear) o = defringe(o, bg, { reach: 2 });
+    return o;
+  }
+
   // ------------------------------------------------------------------ chroma key (green / blue screen)
   // The screen colour found by itself: the strongest saturated colour round the picture's edges (a green or blue screen
   // fills the borders), else a standard green
@@ -845,5 +889,5 @@
     return o;
   }
 
-  IC.filters = { screenColour, chromaKey, wandRegion, distanceTo, artMask, outline, trimArt, colourOut, bleedColour, cornerBg, defringe, dotsOff, paperClean, toneFrom, colourFrom, colourise, mmpx, deband, chromaRebuild, guidedBy, cas, dehaze, hazeLevel, isToned, shadowRecover, guided, autoColour, clarity, pyramidBlend, aliasCheck, antialias, light, colour, autoLevels, autoFix, whiteBalance, greyscale, sepia, invert, threshold, posterize, blur, sharpen, denoise, median, despeckle, deblock, undither, pixelate, resize, scale2x, scale3x, rotate: rotateAny, rotate90: rotate, flip, crop, trimBox, canvasSize, makeClear, flatten, copy, canvasOf };
+  IC.filters = { splitSheet, sheetItem, screenColour, chromaKey, wandRegion, distanceTo, artMask, outline, trimArt, colourOut, bleedColour, cornerBg, defringe, dotsOff, paperClean, toneFrom, colourFrom, colourise, mmpx, deband, chromaRebuild, guidedBy, cas, dehaze, hazeLevel, isToned, shadowRecover, guided, autoColour, clarity, pyramidBlend, aliasCheck, antialias, light, colour, autoLevels, autoFix, whiteBalance, greyscale, sepia, invert, threshold, posterize, blur, sharpen, denoise, median, despeckle, deblock, undither, pixelate, resize, scale2x, scale3x, rotate: rotateAny, rotate90: rotate, flip, crop, trimBox, canvasSize, makeClear, flatten, copy, canvasOf };
 })();
