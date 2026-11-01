@@ -10,7 +10,10 @@
   const KEY = 'imagecraft-cloud';
   let cfg = { keys: { anthropic: '', gemini: '', openai: '', openrouter: '', runware: '' }, models: {}, workspace: '' }; // workspace: Anthropic workspace ID, for keys not tied to one workspace
   try { const s = JSON.parse(localStorage.getItem(KEY) || 'null'); if (s) cfg = { keys: { ...cfg.keys, ...(s.keys || {}) }, models: s.models || {}, workspace: s.workspace || '' }; } catch (e) { /* blocked storage */ }
-  const save = () => { try { localStorage.setItem(KEY, JSON.stringify(cfg)); } catch (e) { /* blocked storage */ } };
+  // the keys every Craft app shares (AI settings, the key in the title bar): they fill in this one's, and saving here shares them
+  const save = () => { try { localStorage.setItem(KEY, JSON.stringify(cfg)); } catch (e) { /* blocked storage */ } if (window.CraftKeys) CraftKeys.share({ keys: cfg.keys, workspace: cfg.workspace }); };
+  const fromShared = () => { if (!window.CraftKeys) return; const s = CraftKeys.shared(); for (const p of Object.keys(cfg.keys)) if (s.keys[p]) cfg.keys[p] = s.keys[p]; if (s.workspace) cfg.workspace = s.workspace; };
+  fromShared(); window.addEventListener('craft-keys', (e) => { if (e.detail && e.detail.forget) { for (const p of Object.keys(cfg.keys)) cfg.keys[p] = ''; try { localStorage.setItem(KEY, JSON.stringify(cfg)); } catch (err) { /* blocked */ } return; } fromShared(); });
   const NAMES = { anthropic: 'Claude (Anthropic)', gemini: 'Gemini (Google)', openai: 'GPT (OpenAI)', openrouter: 'OpenRouter (many models)', runware: 'Runware (Nano Banana, FLUX, upscalers)' };
   const PROVIDERS = ['anthropic', 'gemini', 'openai', 'openrouter', 'runware'];
   // Runware: one key for many image models. Each request is a list of tasks; the answers come back in data[].
