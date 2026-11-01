@@ -104,3 +104,7 @@ More sources: a hybrid adaptive / decision-based median filter paper (Scientific
 - **Ask box (WebLLM)**: the user's in-browser LLM could choose tools and settings from a description of the picture and its damage, through the same command layer.
 - Fourier pattern removal (halftone dots and paper texture on scanned prints); total variation smoothing; colourising and face repair with AI (talk first: model licences).
 - Animated GIF frames (open, save), more classic formats (Spectrum 512, Amiga HAM writing, C64 Art Studio, MSX, Apple IIgs), colour cycling preview, 16-bit-per-channel PNG.
+
+## Start (wizard)
+
+The wand in the title bar's quick buttons and the Start button, first on the Home tab, bring back the start page at any time; over an open picture it shows a “welcome back” line and hides the kind tiles until you pick one.
