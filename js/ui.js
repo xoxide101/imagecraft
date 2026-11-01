@@ -100,14 +100,22 @@
   const noteSpeed = (k, ms) => { speed[k] = Math.round(ms); try { localStorage.setItem(SPEED_KEY, JSON.stringify(speed)); } catch (e) { /* blocked storage */ } };
   const baseName = (n) => (n || 'picture').replace(/\.[a-z0-9]+$/i, '');
   const MAX_STEPS = 24;
+  // the start page over an open picture (Start); opening a picture, or Back, closes it
+  let startOpen = false;
+  function showStart(on = true) {
+    const was = startOpen; startOpen = on && pics.length > 0; $('welcome').hidden = !!pic() && !startOpen; $('stage').hidden = !pic() || startOpen; const b = $('welcome-back'); if (b) b.hidden = !startOpen;
+    // the "what kind of picture" panel waits behind the start page, and comes back after it
+    const kt = $('kindtiles'); if (startOpen && !was) { kt.dataset.wasOpen = kt.hidden ? '' : '1'; kt.hidden = true; } else if (!startOpen && was && kt.dataset.wasOpen === '1') { kt.hidden = false; kt.dataset.wasOpen = ''; }
+  }
   function addPic(name, img, info, size, deep) {
+    startOpen = false;
     pics.push({ name, info: info || {}, size: size || 0, steps: [{ label: `Opened (${info && info.format ? info.format : 'picture'})`, img, deep: deep || undefined }], at: 0, dirty: false });
     select(pics.length - 1, true);
   }
   function select(i, fresh) {
     if (tool) closeTool(true); if (mapView) { mapView = null; $('mapbar').hidden = true; }
     cur = i; view.fit = true; renderPics(); renderHist(); renderProps(); show(); fitView(); status();
-    $('welcome').hidden = !!pic(); $('stage').hidden = !pic();
+    showStart(startOpen);
     if (fresh) colourCount();
     if (fresh) setTimeout(() => showKindTiles(), 50); else hideKindTiles();
     renderInfo(); renderMaps(); // the Maps tab, if it is showing, follows the picture
@@ -202,6 +210,7 @@
   const openInput = $('open-input'); openInput.accept = F.ACCEPT;
   const pickFiles = () => { openInput.value = ''; openInput.click(); };
   openInput.onchange = () => openFiles(openInput.files);
+  $('welcome-back').onclick = () => showStart(false);
   $('welcome-open').onclick = pickFiles; $('pics-open').onclick = pickFiles;
   ['dragenter', 'dragover'].forEach((t) => $('desk').addEventListener(t, (e) => { e.preventDefault(); $('desk').classList.add('over'); }));
   ['dragleave', 'drop'].forEach((t) => $('desk').addEventListener(t, (e) => { e.preventDefault(); if (t === 'drop' || e.target === $('desk')) $('desk').classList.remove('over'); }));
@@ -2160,6 +2169,7 @@
     mount: $('app'), storageKey: 'imagecraft', extraEls: [toggleL, toggleR],
     tabs: [
       { id: 'home', label: 'Home', hue: '#5b4bdb', groups: [
+        ['Start', [B('Start', I.wand, () => showStart(true), { big: true, always: true, title: 'The start page: open pictures, try a sample, see what ImageCraft can do' })]],
         ['File', [B('Open', I.folder, pickFiles, { big: true, always: true, key: 'Ctrl+O', title: 'Open pictures (several at once if you like)' }), B('Save as', I.save, openSave, { big: true, key: 'Ctrl+S', title: 'Save in any format and colour depth' }), { col: [B('Copy picture', I.copy, copyPicture), B('Close picture', I.close, () => closePic(cur))] }]],
         ['Edit', [{ col: [B('Undo', I.undo, undo, { key: 'Ctrl+Z', disabled: () => !canUndo() && !tool }), B('Redo', I.redo, redo, { key: 'Ctrl+Y', disabled: () => !canRedo() }), B('Back to the original', IK.revert, () => { if (pic().at) goStep(0); })] }]],
         ['Plan', [B('Process a photo', IK.auto, T('process'), { big: true, title: 'Say what you are doing (edits, bigger, colour, repair); the photo is measured and a plan made for it' })]],
@@ -2222,6 +2232,7 @@
   const tb = window.CraftTitlebar({
     appName: 'ImageCraft', storageKey: 'imagecraft', colors: ['#6a5cff', '#4a3cc8'], mount: $('app'), toast, logo: LOGO, menus: () => MENUS, ribbon,
     quick: [
+      { icon: 'wand', title: 'Start (wizard)', run: () => showStart(true) },
       { icon: 'open', title: 'Open', key: 'Ctrl+O', run: pickFiles },
       { icon: 'save', title: 'Save as', key: 'Ctrl+S', run: openSave, disabled: has },
       { icon: 'undo', title: 'Undo', key: 'Ctrl+Z', run: undo, disabled: () => !canUndo() && !tool },
