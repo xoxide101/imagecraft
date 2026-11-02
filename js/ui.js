@@ -125,6 +125,7 @@
   const actThumb = (img) => { try { const k = Math.min(1, 200 / Math.max(img.width, img.height)), c = document.createElement('canvas'); c.width = Math.max(1, Math.round(img.width * k)); c.height = Math.max(1, Math.round(img.height * k)); const s = document.createElement('canvas'); s.width = img.width; s.height = img.height; s.getContext('2d').putImageData(img, 0, 0); c.getContext('2d').drawImage(s, 0, 0, c.width, c.height); return c.toDataURL('image/jpeg', 0.8); } catch (e) { return ''; } };
   function noteStep(label, before, after, ms) { localLog.unshift({ kind: 'step', at: Date.now(), label, secs: ms && ms < 1e8 ? ms / 1000 : null, size: `${after.width} × ${after.height}`, before: before ? actThumb(before) : '', after: actThumb(after), state: 'done' }); if (localLog.length > 60) localLog.pop(); localChanged(); }
   function localChanged() {
+    if (window.CraftKeys) CraftKeys.setWorking('local', localLog.filter((e) => e.state === 'running').length); // (the light beside the computer)
     const el = $('st-local'); if (el) { const run = localLog.filter((e) => e.state === 'running').length; el.querySelector('b').textContent = localLog.length || ''; el.classList.toggle('sending', !!run); el.title = run ? `Running on this computer now: ${localLog.find((e) => e.state === 'running').model}… click to watch` : `Local activity: ${localLog.length} this session`; }
     if ($('locallog') && !$('locallog').hidden) drawLocalLog();
   }
@@ -1897,6 +1898,8 @@
   $('dbg-save').onclick = () => { const d = new Date(), p2 = (n) => String(n).padStart(2, '0'); download(new Blob([ICLOG.text()], { type: 'text/plain;charset=utf-8' }), `ImageCraft debug ${d.getFullYear()}.${p2(d.getMonth() + 1)}.${p2(d.getDate())}.${p2(d.getHours())}.${p2(d.getMinutes())}.txt`); };
   const openDebug = () => { $('tab-debug').hidden = false; renderLog(); };
   // for the activity (bug) icon every Craft app has: ImageCraft's own windows
+  // the light beside the cloud: lit while a call is on its way
+  if (window.CraftKeys) IC.cloud.onLog((log) => CraftKeys.setWorking('cloud', log.filter((e) => e.state === 'sending').length));
   IC.openLocalLog = () => openLocalLog(); IC.openCloudLog = () => openCloudLog(); IC.openDebug = () => openDebug();
   $('dbg-close').onclick = () => { $('tab-debug').hidden = true; };
   $('tab-debug').addEventListener('click', (e) => { if (e.target === $('tab-debug')) $('tab-debug').hidden = true; });
