@@ -112,3 +112,8 @@ The wand in the title bar's quick buttons and the Start button, first on the Hom
 ## AI settings (shared)
 
 - js/craft-keys.js (the same file in every Craft app; ShiftCraft and LabelCraft have it inline): where AI runs (local only / both / cloud, localStorage craft-ai-mode) and the cloud keys (craft-ai-keys), shared by every Craft app opened from files; a switch with computer, computer + cloud, cloud, key and bug icons put before the title bar search box and at the end of the status bar by itself. Keys can be saved to craft-ai-keys.json (locked with a password: AES-GCM, PBKDF2 250k) and loaded back. The bug opens Activity (local AI, cloud AI, debug: errors and warnings caught for the session, keys masked).
+
+
+## Clip art (shared picker)
+
+- js/clipart-picker.js (window.CraftClipartPicker, the same file in every Craft app; LabelCraft has it inline): a window showing the clip-art server (the one ClipArtCraft uses, or one beside this app on its website: browsed from its thumbnails, only the picture inserted is fetched) and this browser's library (IndexedDB craft-clipart); search, categories, Same DNA / style; Insert or double-click hands the app a File (SVG when it takes SVG, else PNG). Its window and the AI windows are pinned to the visible window (fixed top/left 100vw x 100vh) with a height that fits it (a picker as tall as its contents was centred off-screen in SiteCraft).

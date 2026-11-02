@@ -197,6 +197,8 @@
   }
 
   // ------------------------------------------------------------------ opening
+  // a picture from the clip-art library, opened to work on (the PNG: ImageCraft works on pixels)
+  const openClipart = () => window.CraftClipartPicker && CraftClipartPicker.open({ app: 'ImageCraft', svg: false, onPick: (p) => openFiles([p.file]) });
   async function openFiles(files) {
     const list = [...files].filter(Boolean); let n = 0;
     for (const f of list) {
@@ -2180,7 +2182,7 @@
     tabs: [
       { id: 'home', label: 'Home', hue: '#5b4bdb', groups: [
         ['Start', [B('Start', I.wand, () => showStart(true), { big: true, always: true, title: 'The start page: open pictures, try a sample, see what ImageCraft can do' })]],
-        ['File', [B('Open', I.folder, pickFiles, { big: true, always: true, key: 'Ctrl+O', title: 'Open pictures (several at once if you like)' }), B('Save as', I.save, openSave, { big: true, key: 'Ctrl+S', title: 'Save in any format and colour depth' }), { col: [B('Copy picture', I.copy, copyPicture), B('Close picture', I.close, () => closePic(cur))] }]],
+        ['File', [B('Open', I.folder, pickFiles, { big: true, always: true, key: 'Ctrl+O', title: 'Open pictures (several at once if you like)' }), B('Clip art', I.folder, () => openClipart(), { always: true, title: 'Open a picture from the clip-art library (ClipArtCraft) to work on' }), B('Save as', I.save, openSave, { big: true, key: 'Ctrl+S', title: 'Save in any format and colour depth' }), { col: [B('Copy picture', I.copy, copyPicture), B('Close picture', I.close, () => closePic(cur))] }]],
         ['Edit', [{ col: [B('Undo', I.undo, undo, { key: 'Ctrl+Z', disabled: () => !canUndo() && !tool }), B('Redo', I.redo, redo, { key: 'Ctrl+Y', disabled: () => !canRedo() }), B('Back to the original', IK.revert, () => { if (pic().at) goStep(0); })] }]],
         ['Plan', [B('Process a photo', IK.auto, T('process'), { big: true, title: 'Say what you are doing (edits, bigger, colour, repair); the photo is measured and a plan made for it' })]],
         ['Quick', [B('Auto fix', IK.auto, () => quick('Auto fix', (i) => X.autoFix(i)), { big: true, title: 'Levels, a little colour and sharpening, in one click' }), B('Modernise', IK.modern, T('modern'), { big: true, title: 'Clean up and enlarge pixel art, old screens, old photos or blocky JPEGs' }), B('Compare', IK.compare, toggleCompare, { big: true, pressed: () => view.compare, title: 'Before and after, side by side (drag the line)' })]],
@@ -2230,7 +2232,7 @@
     ],
   });
   const MENUS = [
-    ['File', [{ label: 'Open…', key: 'Ctrl+O', run: pickFiles }, { label: 'Save as…', key: 'Ctrl+S', run: openSave, disabled: has }, { label: 'Batch convert…', run: openBatch, disabled: () => !pics.length }, '-', { label: 'Copy picture', run: copyPicture, disabled: has }, { label: 'Close picture', run: () => closePic(cur), disabled: has }]],
+    ['File', [{ label: 'Open…', key: 'Ctrl+O', run: pickFiles }, { label: 'Open clip art from the library…', run: () => openClipart() }, { label: 'Save as…', key: 'Ctrl+S', run: openSave, disabled: has }, { label: 'Batch convert…', run: openBatch, disabled: () => !pics.length }, '-', { label: 'Copy picture', run: copyPicture, disabled: has }, { label: 'Close picture', run: () => closePic(cur), disabled: has }]],
     ['Edit', [{ label: 'Undo', key: 'Ctrl+Z', run: undo, disabled: () => !canUndo() }, { label: 'Redo', key: 'Ctrl+Y', run: redo, disabled: () => !canRedo() }, { label: 'Back to the original', run: () => goStep(0), disabled: () => !pic() || !pic().at }]],
     ['Image', [['Resize…', 'resize'], ['Crop…', 'crop'], ['Canvas size…', 'canvas'], ['Straighten…', 'straighten']].map(([l, k]) => ({ label: l, run: T(k), disabled: has })).concat([{ label: 'Turn left', run: () => quick('Turn left', (i) => X.rotate90(i, 270)), disabled: has }, { label: 'Turn right', run: () => quick('Turn right', (i) => X.rotate90(i, 90)), disabled: has }, { label: 'Flip across', run: () => quick('Flip across', (i) => X.flip(i, true)), disabled: has }])],
     ['Adjust', [{ label: 'Auto fix', run: () => quick('Auto fix', (i) => X.autoFix(i)), disabled: has }, ...[['Brightness and contrast…', 'light'], ['Colour…', 'colour'], ['Fix a colour cast…', 'balance'], ['Sharpen…', 'sharpen'], ['Blur…', 'blur'], ['Threshold…', 'threshold'], ['Posterize…', 'posterize']].map(([l, k]) => ({ label: l, run: T(k), disabled: has }))]],
