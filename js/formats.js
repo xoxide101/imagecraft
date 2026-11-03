@@ -83,6 +83,13 @@
   }
 
   // ------------------------------------------------------------------ the browser's own formats
+  // an SVG's own units: its viewBox, else its width and height (not percentages)
+  function svgUnits(text) {
+    const root = new DOMParser().parseFromString(text, 'image/svg+xml').documentElement; if (!root || root.nodeName !== 'svg') return null;
+    const v = (root.getAttribute('viewBox') || '').trim().split(/[\s,]+/).map(Number);
+    if (v.length === 4 && v.every((n) => isFinite(n)) && v[2] > 0 && v[3] > 0) return { w: v[2], h: v[3] };
+    const w = parseFloat(root.getAttribute('width')), h = parseFloat(root.getAttribute('height')); return w > 0 && h > 0 && !/%/.test(root.getAttribute('width') + root.getAttribute('height')) ? { w, h } : null;
+  }
   async function viaBrowser(blob) {
     let bmp;
     try { bmp = await createImageBitmap(blob, { colorSpaceConversion: 'none', premultiplyAlpha: 'none' }); }
@@ -94,6 +101,9 @@
     }
     let w = bmp.naturalWidth || bmp.width, h = bmp.naturalHeight || bmp.height;
     if (!w || !h) { w = 800; h = 600; }
+    // an SVG is drawn at a whole number of pixels per unit of its own (1 mm = 5 px stays 5 px: edges on pixels, no rounding
+    // drift), as many as reach about 2,400 pixels on the longer side; its own size is often an icon's
+    if (blob.type === 'image/svg+xml') { const u = svgUnits(await blob.text()); if (u) { const k = Math.max(1, Math.round(2400 / Math.max(u.w, u.h))); w = Math.max(1, Math.round(u.w * k)); h = Math.max(1, Math.round(u.h * k)); } }
     const c = document.createElement('canvas'); c.width = w; c.height = h;
     const x = c.getContext('2d', { willReadFrequently: true }); x.drawImage(bmp, 0, 0, w, h);
     return x.getImageData(0, 0, w, h);
