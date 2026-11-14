@@ -2253,7 +2253,7 @@
     getTitle: () => (pic() ? pic().name : 'ImageCraft'),
     getStatus: () => (pic() ? (pic().dirty ? { text: 'Changed, not saved yet', dirty: true } : { text: 'Not changed' }) : { text: '' }),
     getInfo: () => (pic() ? [{ text: pic().info.format || 'Picture', title: 'The format it was opened from' }, { text: `${now().width} × ${now().height}`, title: 'Size in pixels' }] : []),
-    rightEls: [THEME_BTN], onHelp: help,
+    rightEls: [window.CraftAccount && CraftAccount.button && CraftAccount.button(), THEME_BTN], onHelp: help,
   });
   window.__tb = tb;
   const app = $('app'); app.prepend(ribbon.el); app.prepend(tb.el);
