@@ -1,7 +1,9 @@
 /* ImageCraft – Ask AI (IC.ollama): a vision model running in Ollama on this computer looks at the picture and says
    what it is and what is wrong with it. That choice of tools is shown as ticked steps to run. Nothing leaves this
    computer, and nothing is redrawn: the model only describes; ImageCraft's own measured tools do the work.
-     IC.ollama.models() → [{ name, gb }] (vision models only, best first)   assess(img, { model, onStep }) → assessment
+     IC.ollama.models() → [{ name, gb, where }] (vision models only, best first)   assess(img, { model, onStep }) → assessment
+   With the shared AI settings (craft-ai-settings.js) it asks every AI server you have: Ollama, LM Studio and llama.cpp, on this
+   computer or your network (AccountCraft › Local AI), by name; a model is then 'name@address'. LM Studio is often quickest.
      recipe(assessment) → [{ id, why, on, s }]   ORIGIN_HELP: how to let this page talk to Ollama
    A page opened from a file has no web address ("null"), which Ollama refuses until OLLAMA_ORIGINS allows it. */
 (function () {
@@ -23,7 +25,21 @@
     if (!r.ok) { const t = (await r.text()).slice(0, 300); throw new Error(/does not support image input/.test(t) ? 'That model cannot look at pictures: choose another (the ones that can include kimi-k3 in the cloud, qwen3.5 and gemma3 on this computer).' : `Ollama said ${r.status}: ${t}`); }
     return r.json();
   }
+  const servers = {};   // 'model@address' → { kind, base, label }
+  const key = (m, base) => `${m}@${base}`;
   async function models() {
+    if (window.CraftAISettings) {
+      const found = await CraftAISettings.scan({ force: true }), list = [];
+      for (const s of found) for (const m of s.models) {
+        if (m.incomplete || m.paints) continue;
+        if (m.cloud) { if (cfg.cloud && (!IC.aiMode || IC.aiMode() !== 'local')) { servers[key(m.id, s.base)] = { kind: s.kind, base: s.base, label: s.label || s.name }; list.push({ name: key(m.id, s.base), model: m.id, gb: 0, cloud: true, where: s.label || s.name }); } continue; }
+        if (!m.sees) continue;
+        servers[key(m.id, s.base)] = { kind: s.kind, base: s.base, label: s.label || s.name };
+        list.push({ name: key(m.id, s.base), model: m.id, gb: m.gb || 0, loaded: !!m.loaded, where: (s.label || s.name) + (/localhost|127\.0\.0\.1/.test(s.base) ? '' : ' · ' + s.base.replace(/^https?:\/\//, '')) });
+      }
+      if (found.length) return list.sort((a, b) => (b.cloud && /^kimi/.test(b.model) ? 1 : 0) - (a.cloud && /^kimi/.test(a.model) ? 1 : 0) || (b.loaded ? 1 : 0) - (a.loaded ? 1 : 0) || rank(a.model) - rank(b.model) || a.gb - b.gb);
+      const err = new Error('No AI server answered'); err.blocked = true; throw err;
+    }
     const tags = await api('/api/tags'), list = [];
     for (const m of tags.models || []) {
       if (/:cloud$/.test(m.name) || !m.size) { if (cfg.cloud && (!IC.aiMode || IC.aiMode() !== 'local')) list.push({ name: m.name, gb: 0, cloud: true }); continue; } // cloud models send the picture away: only when allowed (Ollama does not say which can see; one that cannot says so when asked)
@@ -57,8 +73,16 @@
   async function assess(img, { model = cfg.model, onStep } = {}) {
     if (!model) throw new Error('Choose a model first.');
     cfg.model = model; save();
-    const t0 = performance.now(), tick = setInterval(() => onStep && onStep(`${model} is looking at the picture… ${Math.round((performance.now() - t0) / 1000)} s (the first time loads the model)`), 1000);
+    const t0 = performance.now(), tick = setInterval(() => onStep && onStep(`${model.replace(/@.*$/, '')} is looking at the picture… ${Math.round((performance.now() - t0) / 1000)} s (the first time loads the model)`), 1000);
     try {
+      const srv = servers[model];
+      if (srv && window.CraftAISettings) {   // any of your AI servers, through the shared AI settings (with its key, if it has one)
+        const name = model.slice(0, model.lastIndexOf('@')), txt = await CraftAISettings.ask({ kind: srv.kind === 'openai-style' ? 'llamacpp' : srv.kind, base: srv.base, model: name, prompt: PROMPT + (srv.kind === 'ollama' ? '' : ' Answer with JSON only.'), image: jpegOf(img), schema: SCHEMA, ms: 300000 });
+        let a; try { a = JSON.parse(txt); } catch (e) { const m = String(txt).match(/\{[\s\S]*\}/); if (!m) throw new Error('The model did not answer in the expected form.'); a = JSON.parse(m[0]); }
+        a.problems = (a.problems || []).filter((p) => PROBLEMS.includes(p)); a.seconds = (performance.now() - t0) / 1000; a.model = `${name} (${srv.label})`;
+        if (/^one (line|sentence)$/i.test(a.subject || '')) throw new Error(`${name} answered without looking at the picture. Try another model.`);
+        return a;
+      }
       // a short context keeps the model on the graphics card (Ollama's default for qwen3.5 is 262k, which spills to the processor)
       const r = await api('/api/chat', { model, stream: false, format: SCHEMA, think: false, keep_alive: '10m', options: { temperature: 0.2, num_ctx: 8192 },
         messages: [{ role: 'user', content: PROMPT, images: [jpegOf(img)] }] });
