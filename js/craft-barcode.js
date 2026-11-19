@@ -3,7 +3,8 @@
    Barcodes are made as SVG in real units (millimetres), so they print sharp at any size; a PNG is drawn from that at the
    DPI asked for (whole pixels per module where it can).
      CraftBarcode.TYPES                         the barcode types: { id, name, sample, kind: linear | 2d | postal, bcid, group }
-     CraftBarcode.make({ type, value, wmm, hmm, text: true, fg, ecc, cols }) → { svg, wmm, hmm, type, value }
+     CraftBarcode.make({ type, value, wmm, hmm, text: true, fg, ecc, cols, logo, logoPct }) → { svg, wmm, hmm, type, value }
+       logo: a picture in the middle of a QR code (a data: URL, kept in the barcode itself), logoPct: its width (% of the code)
      CraftBarcode.png(made, dpi) → Promise<Blob>         CraftBarcode.dataUrl(made, dpi) → Promise<string>
      CraftBarcode.vcard({ name, phone, email, org, title }) → the text of a contact card (for a QR code)
      CraftBarcode.addSource(name, () => [{ label, value, type?, group? }])   information this app offers to the window
@@ -126,9 +127,24 @@
     const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${num(W)}mm" height="${num(H)}mm" viewBox="0 0 ${num(W)} ${num(H)}">`
       + (o.bg && o.bg !== 'none' ? `<rect width="${num(W)}" height="${num(H)}" fill="${esc(o.bg)}"/>` : '')
       + `<g transform="translate(${num(padX)} ${num(padY)}) scale(${num(iw / vw)} ${num(barsH / vh)}) translate(${-vb[0]} ${-vb[1]})" shape-rendering="crispEdges">${shapes}</g>`
+      + (o.logo && t.id === 'QRCODE' && /^data:image\//.test(o.logo) ? logoSvg(o.logo, padX, padY, iw, barsH, o.logoPct, o.bg) : '')
       + (textH ? `<text x="${num(W / 2)}" y="${num(barsH + textH * 0.86)}" font-family="'Courier New', Consolas, monospace" font-size="${num(font)}" text-anchor="middle" fill="${esc(o.fg)}">${esc(o.value)}</text>` : '')
       + '</svg>';
-    return { svg, wmm: num(W), hmm: num(H), type: t.id, value: String(o.value), text: !!o.text, fg: o.fg, bg: o.bg, ecc: o.ecc, cols: o.cols };
+    return { svg, wmm: num(W), hmm: num(H), type: t.id, value: String(o.value), text: !!o.text, fg: o.fg, bg: o.bg, ecc: o.ecc, cols: o.cols, ...(o.logo && t.id === 'QRCODE' ? { logo: o.logo, logoPct: o.logoPct || 22, logoName: o.logoName || '' } : {}) };
+  }
+  // the picture in the middle: on a plain patch (the code's background), its share of the code's width (at most 30%, so
+  // a phone still reads it: use error correction H with a picture)
+  function logoSvg(src, x0, y0, w, h, pct, bg) {
+    const k = Math.min(30, Math.max(8, +pct || 22)) / 100, s = w * k, pad = s * 0.12, cx = x0 + w / 2, cy = y0 + h / 2;
+    return `<rect x="${num(cx - s / 2 - pad)}" y="${num(cy - s / 2 - pad)}" width="${num(s + 2 * pad)}" height="${num(s + 2 * pad)}" rx="${num(pad)}" fill="${esc(bg && bg !== 'none' ? bg : '#ffffff')}"/>`
+      + `<image x="${num(cx - s / 2)}" y="${num(cy - s / 2)}" width="${num(s)}" height="${num(s)}" preserveAspectRatio="xMidYMid meet" href="${esc(src)}"/>`;
+  }
+  // a picture made into data for a barcode: an SVG as it is when small, else a PNG at most 512 pixels across
+  async function logoData(file) {
+    if (/svg/.test(file.type) && file.size < 80000) { const t = await file.text(); return 'data:image/svg+xml;base64,' + btoa(Array.from(new TextEncoder().encode(t), (b) => String.fromCharCode(b)).join('')); }
+    const url = URL.createObjectURL(file);
+    try { const img = new Image(); img.src = url; await img.decode(); const n = Math.max(img.naturalWidth, img.naturalHeight) || 512, k = Math.min(1, 512 / n), c = document.createElement('canvas'); c.width = Math.max(1, Math.round((img.naturalWidth || 512) * k)); c.height = Math.max(1, Math.round((img.naturalHeight || 512) * k)); c.getContext('2d').drawImage(img, 0, 0, c.width, c.height); return c.toDataURL('image/png'); }
+    finally { URL.revokeObjectURL(url); }
   }
   async function canvasOf(m, dpi = 300) {
     const W = Math.max(1, Math.round(m.wmm / 25.4 * dpi)), H = Math.max(1, Math.round(m.hmm / 25.4 * dpi));
@@ -136,7 +152,7 @@
     try {
       const img = await new Promise((ok, no) => { const i = new Image(); i.onload = () => ok(i); i.onerror = () => no(new Error('The barcode could not be drawn.')); i.src = url; });
       const c = document.createElement('canvas'); c.width = W; c.height = H; const g = c.getContext('2d');
-      g.imageSmoothingEnabled = false; g.drawImage(img, 0, 0, W, H); return c;
+      g.imageSmoothingEnabled = !!m.logo; g.drawImage(img, 0, 0, W, H); return c;
     } finally { URL.revokeObjectURL(url); }
   }
   const png = async (m, dpi) => new Promise(async (ok) => (await canvasOf(m, dpi)).toBlob(ok, 'image/png'));
@@ -155,7 +171,7 @@
   const library = () => { try { return JSON.parse(localStorage.getItem(LIB) || '[]'); } catch (e) { return []; } };
   const acct = () => (window.CraftAccount && CraftAccount.user() ? CraftAccount : null);
   function keep(list) { try { localStorage.setItem(LIB, JSON.stringify(list)); } catch (e) { /* full */ } const A = acct(); if (A) A.put('craft', 'barcodes', list).catch(() => {}); window.dispatchEvent(new CustomEvent('craft-barcodes')); }
-  function save(entry) { const list = library().filter((x) => x.id !== entry.id); const e = { id: entry.id || 'b' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), name: entry.name || entry.value, type: entry.type, value: entry.value, wmm: entry.wmm, hmm: entry.hmm, text: entry.text, fg: entry.fg, ecc: entry.ecc, saved: new Date().toISOString() }; list.unshift(e); keep(list); return e; }
+  function save(entry) { const list = library().filter((x) => x.id !== entry.id); const e = { id: entry.id || 'b' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), name: entry.name || entry.value, type: entry.type, value: entry.value, wmm: entry.wmm, hmm: entry.hmm, text: entry.text, fg: entry.fg, ecc: entry.ecc, ...(entry.logo ? { logo: entry.logo, logoPct: entry.logoPct, logoName: entry.logoName } : {}), saved: new Date().toISOString() }; list.unshift(e); keep(list); return e; }
   function remove(id) { keep(library().filter((x) => x.id !== id)); }
   // logged in: the account's library and this browser's are put together (newest of each kept)
   async function pull() { const A = acct(); if (!A) return; try { const got = (await A.get('craft', 'barcodes')) || []; const all = new Map(); [...got, ...library()].forEach((x) => { const o = all.get(x.id); if (!o || (x.saved || '') > (o.saved || '')) all.set(x.id, x); }); const list = [...all.values()].sort((a, b) => (b.saved || '').localeCompare(a.saved || '')); try { localStorage.setItem(LIB, JSON.stringify(list)); } catch (e) { /* full */ } if (list.length !== got.length) A.put('craft', 'barcodes', list).catch(() => {}); } catch (e) { /* later */ } }
@@ -165,17 +181,19 @@
   function css() {
     if (document.getElementById('cbc-css')) return;
     const s = document.createElement('style'); s.id = 'cbc-css'; s.textContent = `
-.cbc-back{position:fixed;inset:0;background:rgba(0,0,0,.5);display:grid;place-items:center;z-index:9999;padding:16px}
-.cbc{background:var(--panel,#1f2129);color:var(--text,var(--fg,#e8e9ee));border:1px solid var(--line,#3a3e4c);border-radius:12px;width:min(900px,100%);max-height:92vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.5);font:14px/1.45 "Segoe UI",system-ui,sans-serif}
+.cbc-back{position:fixed;inset:0;background:rgba(0,0,0,.5);display:grid;place-items:center;z-index:9999;padding:16px;overscroll-behavior:contain}
+.cbc{background:var(--panel,#1f2129);color:var(--text,var(--fg,#e8e9ee));border:1px solid var(--line,#3a3e4c);border-radius:12px;width:min(900px,100%);max-height:92vh;max-height:92dvh;min-height:0;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.5);font:14px/1.45 "Segoe UI",system-ui,sans-serif}
 .cbc header{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--line,#3a3e4c)}.cbc header b{font-size:16px}
-.cbc .body{display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:14px 16px;overflow:auto}@media(max-width:700px){.cbc .body{grid-template-columns:1fr}}
+.cbc .body{display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:14px 16px;overflow:auto;min-height:0;flex:1 1 auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;touch-action:pan-y}@media(max-width:700px){.cbc .body{grid-template-columns:minmax(0,1fr)}}
+@media(max-width:520px){.cbc-back{padding:6px}.cbc{border-radius:10px;max-height:98vh;max-height:98dvh}.cbc header,.cbc footer{padding:10px 12px}.cbc .body{padding:10px 12px;gap:10px}.cbc .prev{min-height:120px}.cbc footer button{flex:1 1 auto}.cbc input,.cbc select,.cbc textarea{font-size:16px}}
+@media(pointer:coarse){.cbc button,.cbc select,.cbc input{min-height:40px}}
 .cbc label{display:grid;gap:3px;margin:0 0 9px}.cbc .two{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 .cbc input,.cbc select,.cbc textarea{padding:6px 8px;border-radius:7px;border:1px solid var(--line,#3a3e4c);background:var(--panel-2,var(--bg,#2a2d38));color:inherit;font:inherit;width:100%;box-sizing:border-box}
 .cbc button{padding:6px 12px;border-radius:7px;border:1px solid var(--line,#3a3e4c);background:var(--panel-2,transparent);color:inherit;font:inherit;cursor:pointer}
 .cbc button.main{background:var(--accent,#2f6fdd);border-color:var(--accent,#2f6fdd);color:#fff}
 .cbc .prev{background:#fff;border-radius:8px;min-height:180px;display:grid;place-items:center;padding:12px}.cbc .prev img{max-width:100%;max-height:260px}
 .cbc .err{color:#f87171;min-height:1.4em}.cbc .dim{color:var(--muted,var(--dim,#9aa0b0));font-size:12.5px}
-.cbc .lib{display:flex;flex-direction:column;gap:4px;max-height:160px;overflow:auto;margin-top:6px}.cbc .lib button{text-align:left;display:flex;justify-content:space-between;gap:8px}
+.cbc .lib{display:flex;flex-direction:column;gap:4px;max-height:160px;overflow:auto;margin-top:6px;overscroll-behavior:contain;touch-action:pan-y}.cbc .lib button{text-align:left;display:flex;justify-content:space-between;gap:8px}
 .cbc footer{display:flex;gap:8px;justify-content:flex-end;padding:12px 16px;border-top:1px solid var(--line,#3a3e4c);flex-wrap:wrap}`; document.head.append(s);
   }
   function open({ app = 'Craft', value, type, entry, onInsert, title = 'Insert a barcode', insertLabel = 'Insert' } = {}) {
@@ -194,6 +212,7 @@
         <div class="two"><label><span>Width (mm)</span><input data-f="wmm" type="number" min="5" max="500" step="0.5"></label><label data-only="lin"><span>Height (mm)</span><input data-f="hmm" type="number" min="3" max="300" step="0.5"></label></div>
         <div class="two"><label data-only="lin" style="display:flex;gap:6px;align-items:center"><input data-f="text" type="checkbox" style="width:auto"> Text under the bars</label><label><span>Colour</span><input data-f="fg" type="color" value="#000000" style="height:34px;padding:2px"></label></div>
         <label data-only="qr"><span>Error correction (QR)</span><select data-f="ecc"><option value="L">L: 7% (smallest)</option><option value="M" selected>M: 15%</option><option value="Q">Q: 25%</option><option value="H">H: 30% (survives damage, logos)</option></select></label>
+        <div data-only="qr" style="display:grid;gap:3px;margin:0 0 9px"><span>Picture in the middle</span><div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center"><span data-f="logoName" class="dim">None</span>${window.CraftClipartPicker ? '<button type="button" data-a="logoClip">Clip art…</button>' : ''}<button type="button" data-a="logoFile">Picture file…</button><button type="button" data-a="logoOff" hidden>Remove</button><select data-f="logoPct" title="Its size" hidden><option value="15">Small</option><option value="22" selected>Medium</option><option value="28">Large</option></select></div></div>
       </div><div>
         <div class="prev" data-f="prev"></div><div class="err" data-f="err"></div>
         <div class="dim">Saved barcodes (every Craft app${acct() ? ', and your account' : ''})</div><div class="lib" data-f="lib"></div>
@@ -202,9 +221,13 @@
     document.body.append(back);
     const f = (k) => back.querySelector(`[data-f=${k}]`), close = () => back.remove();
     const sizeFor = (t) => (t.kind === '2d' ? { wmm: 30, hmm: 30 } : { wmm: 50, hmm: 20 });
-    const fill = () => { const t = typeOf(cur.type), sz = sizeFor(t); f('type').value = t.id; f('value').value = cur.value; f('wmm').value = cur.wmm || sz.wmm; f('hmm').value = cur.hmm || sz.hmm; f('text').checked = cur.text ?? t.kind !== '2d'; f('fg').value = cur.fg || '#000000'; f('ecc').value = cur.ecc || 'M'; shows(); };
+    const fill = () => { const t = typeOf(cur.type), sz = sizeFor(t); f('type').value = t.id; f('value').value = cur.value; f('wmm').value = cur.wmm || sz.wmm; f('hmm').value = cur.hmm || sz.hmm; f('text').checked = cur.text ?? t.kind !== '2d'; f('fg').value = cur.fg || '#000000'; f('ecc').value = cur.ecc || 'M'; logo = cur.logo || ''; logoName = cur.logo ? cur.logoName || 'A picture' : ''; f('logoPct').value = String(cur.logoPct || 22); logoShow(); shows(); };
     const shows = () => { const t = typeOf(f('type').value); back.querySelectorAll('[data-only=lin]').forEach((x) => { x.style.display = t.kind === '2d' ? 'none' : ''; }); back.querySelectorAll('[data-only=qr]').forEach((x) => { x.style.display = t.id === 'QRCODE' ? '' : 'none'; }); };
-    const read = () => ({ type: f('type').value, value: f('value').value, wmm: +f('wmm').value, hmm: +f('hmm').value, text: f('text').checked, fg: f('fg').value, ecc: f('ecc').value });
+    const read = () => ({ type: f('type').value, value: f('value').value, wmm: +f('wmm').value, hmm: +f('hmm').value, text: f('text').checked, fg: f('fg').value, ecc: f('ecc').value, ...(logo ? { logo, logoPct: +f('logoPct').value, logoName } : {}) });
+    // the picture in the middle (kept in the barcode as data): error correction goes to H, so phones still read it
+    let logo = '', logoName = '';
+    const logoShow = () => { f('logoName').textContent = logo ? logoName || 'A picture' : 'None'; back.querySelector('[data-a=logoOff]').hidden = !logo; f('logoPct').hidden = !logo; };
+    const logoSet = async (file, name) => { try { logo = await logoData(file); logoName = name || file.name.replace(/\.\w+$/, ''); if (f('ecc').value !== 'H') f('ecc').value = 'H'; logoShow(); draw(); } catch (e) { f('err').textContent = 'That picture could not be read.'; } };
     let made = null, tmr = 0;
     const draw = () => { clearTimeout(tmr); tmr = setTimeout(() => { try { made = make(read()); f('prev').innerHTML = `<img alt="Barcode preview" src="data:image/svg+xml;charset=utf-8,${encodeURIComponent(made.svg)}">`; f('err').textContent = ''; } catch (e) { made = null; f('prev').innerHTML = ''; f('err').textContent = e.message; } }, 120); };
     const libDraw = () => { const L = library(); f('lib').innerHTML = L.length ? L.slice(0, 60).map((x) => `<button type="button" data-lib="${esc(x.id)}" title="${esc(x.value)}"><span>${esc(x.name)}</span><span class="dim">${esc(typeOf(x.type).name)}</span></button>`).join('') : '<span class="dim">Nothing saved yet.</span>'; };
@@ -220,6 +243,9 @@
       const lb = e.target.closest('[data-lib]'); if (lb) { const x = library().find((y) => y.id === lb.dataset.lib); if (x) { cur = { ...x }; fill(); draw(); } return; }
       const a = e.target.closest('[data-a]'); if (!a) return;
       if (a.dataset.a === 'close') close();
+      if (a.dataset.a === 'logoClip') window.CraftClipartPicker.open({ app, svg: true, onPick: (p) => logoSet(p.file, p.name) });
+      if (a.dataset.a === 'logoFile') { const i = document.createElement('input'); i.type = 'file'; i.accept = 'image/*'; i.onchange = () => i.files[0] && logoSet(i.files[0]); i.click(); }
+      if (a.dataset.a === 'logoOff') { logo = ''; logoName = ''; logoShow(); draw(); }
       if (a.dataset.a === 'save' && made) { const name = prompt('A name for this barcode in the library:', made.value.split(/\r?\n/).find((l) => /^FN:/.test(l))?.slice(3) || made.value.slice(0, 40)); if (name != null) { save({ ...made, name: name.trim() || made.value }); libDraw(); } }
       if (a.dataset.a === 'insert' && made) { close(); if (onInsert) onInsert(entry ? { ...made, id: entry.id, name: entry.name } : made); }
     });
@@ -229,5 +255,5 @@
     return { close };
   }
 
-  window.CraftBarcode = { TYPES, make, png, dataUrl, canvas: canvasOf, vcard, addSource, library, save, remove, open };
+  window.CraftBarcode = { logoData, TYPES, make, png, dataUrl, canvas: canvasOf, vcard, addSource, library, save, remove, open };
 })();
