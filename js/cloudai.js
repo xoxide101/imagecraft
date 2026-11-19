@@ -8,14 +8,14 @@
   'use strict';
   const IC = (window.IC = window.IC || {});
   const KEY = 'imagecraft-cloud';
-  let cfg = { keys: { anthropic: '', gemini: '', openai: '', openrouter: '', runware: '' }, models: {}, workspace: '' }; // workspace: Anthropic workspace ID, for keys not tied to one workspace
+  let cfg = { keys: { anthropic: '', gemini: '', openai: '', openrouter: '', runware: '', together: '' }, models: {}, workspace: '' }; // workspace: Anthropic workspace ID, for keys not tied to one workspace
   try { const s = JSON.parse(localStorage.getItem(KEY) || 'null'); if (s) cfg = { keys: { ...cfg.keys, ...(s.keys || {}) }, models: s.models || {}, workspace: s.workspace || '' }; } catch (e) { /* blocked storage */ }
   // the keys every Craft app shares (AI settings, the key in the title bar): they fill in this one's, and saving here shares them
   const save = () => { try { localStorage.setItem(KEY, JSON.stringify(cfg)); } catch (e) { /* blocked storage */ } if (window.CraftKeys) CraftKeys.share({ keys: cfg.keys, workspace: cfg.workspace }); };
   const fromShared = () => { if (!window.CraftKeys) return; const s = CraftKeys.shared(); for (const p of Object.keys(cfg.keys)) if (s.keys[p]) cfg.keys[p] = s.keys[p]; if (s.workspace) cfg.workspace = s.workspace; };
   fromShared(); window.addEventListener('craft-keys', (e) => { if (e.detail && e.detail.forget) { for (const p of Object.keys(cfg.keys)) cfg.keys[p] = ''; try { localStorage.setItem(KEY, JSON.stringify(cfg)); } catch (err) { /* blocked */ } return; } fromShared(); });
-  const NAMES = { anthropic: 'Claude (Anthropic)', gemini: 'Gemini (Google)', openai: 'GPT (OpenAI)', openrouter: 'OpenRouter (many models)', runware: 'Runware (Nano Banana, FLUX, upscalers)' };
-  const PROVIDERS = ['anthropic', 'gemini', 'openai', 'openrouter', 'runware'];
+  const NAMES = { anthropic: 'Claude (Anthropic)', gemini: 'Gemini (Google)', openai: 'GPT (OpenAI)', openrouter: 'OpenRouter (many models)', runware: 'Runware (Nano Banana, FLUX, upscalers)', together: 'Together.ai (open models)' };
+  const PROVIDERS = ['anthropic', 'gemini', 'openai', 'openrouter', 'runware', 'together'];
   // Runware: one key for many image models. Each request is a list of tasks; the answers come back in data[].
   const RW = 'https://api.runware.ai/v1', RW_EDIT = 'google:4@3', RW_FILL = 'bfl:1@2', RW_UP = 'prunaai:p-image@upscale', RW_CUT = 'runware:112@5';
   const uuid = () => (crypto.randomUUID ? crypto.randomUUID() : 'xxxxxxxx-xxxx-4xxx-8xxx-xxxxxxxxxxxx'.replace(/x/g, () => ((Math.random() * 16) | 0).toString(16)));
@@ -109,6 +109,7 @@
     const k = cfg.keys[p].trim(); if (!k) return [];
     if (p === 'anthropic') { const j = await call('https://api.anthropic.com/v1/models?limit=100', { headers: anthHeaders(k) }, p); return (j.data || []).map((m) => ({ id: m.id, name: m.display_name || m.id, see: true })); }
     if (p === 'gemini') { const j = await call(`https://generativelanguage.googleapis.com/v1beta/models?pageSize=200&key=${encodeURIComponent(k)}`, {}, p); return (j.models || []).filter((m) => (m.supportedGenerationMethods || []).includes('generateContent')).map((m) => ({ id: m.name.replace(/^models\//, ''), name: m.displayName || m.name, see: !/embedding|aqa|tts/i.test(m.name), draw: /image/i.test(m.name) })); }
+    if (p === 'together') { const j = await call('https://api.together.xyz/v1/models', { headers: { Authorization: `Bearer ${k}` } }, p); return (Array.isArray(j) ? j : j.data || []).filter((m) => (m.type || 'chat') === 'chat' && /vision|vl\b|-vl-|llama-4|gemma-3|pixtral/i.test(m.id)).map((m) => ({ id: m.id, name: m.display_name || m.id, see: true })); }
     if (p === 'runware') { await rw(k, { taskType: 'authentication', apiKey: k }); return [{ id: RW_EDIT, name: 'Nano Banana 2 (Google), for editing', draw: true }, { id: RW_FILL, name: 'FLUX.1 Fill [pro], for repair', draw: true }]; }
     if (p === 'openrouter') { const [a, b] = await Promise.all([call(`${OR}/models`, { headers: orHead(k) }, p), call(`${OR}/models?output_modalities=image`, { headers: orHead(k) }, p).catch(() => ({ data: [] }))]); const seen = new Set(); return [...(a.data || []), ...(b.data || [])].filter((m) => !seen.has(m.id) && seen.add(m.id) && !/:(?!free$)/.test(m.id)).map((m) => { const inp = m.architecture?.input_modalities || [], outp = m.architecture?.output_modalities || []; return { id: m.id, name: m.name || m.id, see: inp.includes('image') && outp.includes('text') && !outp.includes('image'), draw: outp.includes('image') }; }).filter((m) => m.see || m.draw); }
     const j = await call('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${k}` } }, p);
@@ -126,6 +127,9 @@
       const j = await call(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(k)}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ contents: [{ parts: [{ inline_data: { mime_type: 'image/jpeg', data: b64 } }, { text: prompt }] }], generationConfig: { temperature: 0.2, responseMimeType: 'application/json' } }) }, p);
       text = ((j.candidates || [])[0]?.content?.parts || []).map((x) => x.text || '').join('');
     } else if (p === 'openrouter') { text = await orChat(k, model, b64, prompt, false);
+    } else if (p === 'together') {
+      const j = await call('https://api.together.xyz/v1/chat/completions', { method: 'POST', headers: { 'content-type': 'application/json', Authorization: `Bearer ${k}` }, body: JSON.stringify({ model, max_tokens: 1500, messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: `data:image/jpeg;base64,${b64}` } }, { type: 'text', text: prompt }] }] }) }, p);
+      text = j.choices?.[0]?.message?.content || '';
     } else {
       const j = await call('https://api.openai.com/v1/chat/completions', { method: 'POST', headers: { 'content-type': 'application/json', Authorization: `Bearer ${k}` }, body: JSON.stringify({ model, response_format: { type: 'json_object' }, messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: `data:image/jpeg;base64,${b64}` } }, { type: 'text', text: prompt }] }] }) }, p);
       text = j.choices?.[0]?.message?.content || '';

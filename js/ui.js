@@ -1344,6 +1344,7 @@
     const O = IC.ollama, CL = IC.cloud, st = (t.oll = t.oll || { status: 'checking' }), el = document.createElement('div'); into.append(el);
     const again = () => { if (tool === t) renderProps(); };
     const cloudKeys = cloudOK() ? IC.cloud.PROVIDERS.filter((k) => CL.has(k)) : [];
+    if (!t.oll.fromChoice && window.CraftAISettings && CraftAISettings.choice) { t.oll.fromChoice = true; try { const CH = CraftAISettings.choice('see'); if (CH && CH.where === 'cloud' && cloudKeys.includes(CH.provider)) { O.cfg.provider = CH.provider; } else if (CH && CH.where === 'local') { O.cfg.provider = 'ollama'; O.cfg.model = `${CH.model}@${CH.base}`; } } catch (e) { /* none */ } }
     let prov = O.cfg.provider && O.cfg.provider !== 'ollama' && cloudKeys.includes(O.cfg.provider) ? O.cfg.provider : 'ollama'; if (!localOK() && prov === 'ollama' && cloudKeys.length) prov = cloudKeys[0];
     if (cloudKeys.length) { const d = document.createElement('div'); d.className = 'field'; d.innerHTML = `<span>Who looks at it</span><div class="seg">${[...(localOK() || !cloudKeys.length ? [['ollama', 'Ollama']] : []), ...cloudKeys.map((k) => [k, CL.NAMES[k].split(' ')[0]])].map(([k, l]) => `<button type="button" class="btn" data-pv="${k}" aria-pressed="${k === prov}">${l}</button>`).join('')}</div>`; d.onclick = (e) => { const b = e.target.closest('[data-pv]'); if (!b) return; O.cfg.provider = b.dataset.pv; O.save(); t.oll = { status: 'checking' }; again(); }; el.append(d); }
     if (prov !== 'ollama') {
