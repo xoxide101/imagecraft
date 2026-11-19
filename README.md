@@ -240,6 +240,13 @@ Small AI models that run inside the browser, on the graphics card if there is on
 
 The AI models come from Hugging Face and Google. Copies of every one ImageCraft uses are kept in the [craft-models](https://github.com/xoxide101/craft-models) repository, each with its licence. If an original download fails (the file was moved or deleted, or the site is down), ImageCraft uses the copy instead: it rejoins the parts, checks the SHA-256 fingerprint, and only then uses it. It was tested with Hugging Face and Google blocked: the repair model, the finder and the face finder all loaded from the copies. The originals are always tried first.
 
+## Your account and AI
+
+ImageCraft works without a login. Logged in with a Craft account (AccountCraft), your AI keys come unlocked from your
+account, **Ask AI** lists every vision model on your own AI servers (Ollama, LM Studio, llama.cpp, on this computer or
+your network) and starts on your choice for "look at pictures", and Together.ai can describe pictures too. The Craft
+apps bar on the left goes to the other Craft apps.
+
 ## When something goes wrong
 
 The red badge in the status bar counts faults in the program in this session (the Debug log keeps earlier sessions' entries, dated, for reference). A tool saying what it needs ("No faces found", "Paint over the shadow first") is shown as a message and kept in the Debug log as a note, not counted as an error.
