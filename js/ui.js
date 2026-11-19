@@ -228,6 +228,12 @@
     const files = [...(e.clipboardData ? e.clipboardData.files : [])]; if (!files.length) return;
     e.preventDefault(); openFiles(files.map((f, i) => (f.name && f.name !== 'image.png' ? f : new File([f], `Pasted picture ${i + 1}.png`, { type: f.type }))));
   });
+  // the picture open now, kept in My pictures (the clip-art picker's: this browser and, logged in, your account) for every Craft app
+  async function keepMine() {
+    if (!now()) return;
+    const nm = String((pic() && pic().name) || 'Picture').replace(/\.\w+$/, ''), raw = pic() && (pic().file || pic().blob), isSvg = raw && /svg/.test(raw.type || '');
+    CraftClipartPicker.keepAsk({ name: nm, from: 'ImageCraft', pick: 'png', png: () => F.write(now(), 'png', { bits: 32 }), svg: isSvg ? async () => raw : undefined }).then((p) => { if (p && p.id) toast('Kept in My pictures: any Craft app has it under Clip art › My pictures.'); });
+  }
   async function copyPicture() {
     if (!now()) return;
     try { const b = await F.write(now(), 'png', { bits: 32 }); await navigator.clipboard.write([new ClipboardItem({ 'image/png': b })]); toast('Picture copied. Paste it into another program.'); }
@@ -2238,7 +2244,7 @@
     ],
   });
   const MENUS = [
-    ['File', [{ label: 'Open…', key: 'Ctrl+O', run: pickFiles }, { label: 'Open clip art from the library…', run: () => openClipart() }, { label: 'Open a barcode or QR code…', run: () => openBarcode() }, { label: 'Save as…', key: 'Ctrl+S', run: openSave, disabled: has }, { label: 'Batch convert…', run: openBatch, disabled: () => !pics.length }, '-', { label: 'Copy picture', run: copyPicture, disabled: has }, { label: 'Close picture', run: () => closePic(cur), disabled: has }]],
+    ['File', [{ label: 'Open…', key: 'Ctrl+O', run: pickFiles }, { label: 'Open clip art from the library…', run: () => openClipart() }, { label: 'Open a barcode or QR code…', run: () => openBarcode() }, { label: 'Save as…', key: 'Ctrl+S', run: openSave, disabled: has }, { label: 'Batch convert…', run: openBatch, disabled: () => !pics.length }, '-', { label: 'Copy picture', run: copyPicture, disabled: has }, { label: 'Keep in My pictures (every Craft app)', run: keepMine, disabled: () => has() || !window.CraftClipartPicker || !CraftClipartPicker.keep }, { label: 'Close picture', run: () => closePic(cur), disabled: has }]],
     ['Edit', [{ label: 'Undo', key: 'Ctrl+Z', run: undo, disabled: () => !canUndo() }, { label: 'Redo', key: 'Ctrl+Y', run: redo, disabled: () => !canRedo() }, { label: 'Back to the original', run: () => goStep(0), disabled: () => !pic() || !pic().at }]],
     ['Image', [['Resize…', 'resize'], ['Crop…', 'crop'], ['Canvas size…', 'canvas'], ['Straighten…', 'straighten']].map(([l, k]) => ({ label: l, run: T(k), disabled: has })).concat([{ label: 'Turn left', run: () => quick('Turn left', (i) => X.rotate90(i, 270)), disabled: has }, { label: 'Turn right', run: () => quick('Turn right', (i) => X.rotate90(i, 90)), disabled: has }, { label: 'Flip across', run: () => quick('Flip across', (i) => X.flip(i, true)), disabled: has }])],
     ['Adjust', [{ label: 'Auto fix', run: () => quick('Auto fix', (i) => X.autoFix(i)), disabled: has }, ...[['Brightness and contrast…', 'light'], ['Colour…', 'colour'], ['Fix a colour cast…', 'balance'], ['Sharpen…', 'sharpen'], ['Blur…', 'blur'], ['Threshold…', 'threshold'], ['Posterize…', 'posterize']].map(([l, k]) => ({ label: l, run: T(k), disabled: has }))]],
