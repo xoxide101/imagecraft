@@ -11,7 +11,8 @@
        text message, WhatsApp, Wi-Fi, contact (vCard, MeCard), calendar event, place or address on a map, plain text
      CraftBarcode.addSource(name, () => [{ label, value, type?, group? }])   information this app offers to the window
      CraftBarcode.library() / save(entry) / remove(id)   saved barcodes (this browser; logged in: your account too)
-     CraftBarcode.open({ app, value, type, onInsert(made) })   the Insert › Barcode window */
+     CraftBarcode.open({ app, value, type, content: 'vcard', onInsert(made) })   the Insert › Barcode window (content: what
+       the QR code is for at first, e.g. 'wifi', 'vcard', 'event', 'url') */
 (function () {
   'use strict';
   const TYPES = [
@@ -279,7 +280,7 @@
 .cbc .cf2{display:grid;grid-template-columns:1fr 1fr;gap:0 8px;padding:8px 10px 0;margin:0 0 9px;border:1px solid var(--line,#3a3e4c);border-radius:8px;background:color-mix(in srgb,var(--accent,#2f6fdd) 6%,transparent)}.cbc .cf2 label{margin:0 0 7px}.cbc .cf2 .wide{grid-column:1/-1}.cbc .cf2 .ck{display:flex;gap:6px;align-items:center}.cbc .cf2 .ck input{width:auto}@media(max-width:520px){.cbc .cf2{grid-template-columns:minmax(0,1fr)}}.cbc .hint{margin:-5px 0 9px}
 .cbc footer{display:flex;gap:8px;justify-content:flex-end;padding:12px 16px;border-top:1px solid var(--line,#3a3e4c);flex-wrap:wrap}`; document.head.append(s);
   }
-  function open({ app = 'Craft', value, type, entry, onInsert, title = 'Insert a barcode', insertLabel = 'Insert' } = {}) {
+  function open({ app = 'Craft', value, type, entry, content, onInsert, title = 'Insert a barcode', insertLabel = 'Insert' } = {}) {
     css(); pull();
     document.querySelectorAll('.cbc-back').forEach((x) => x.remove());
     let cur = { type: type || 'QRCODE', value: value != null ? String(value) : '' };
@@ -351,7 +352,8 @@
     });
     document.addEventListener('keydown', function k(e) { if (e.key === 'Escape') { close(); document.removeEventListener('keydown', k); } });
     window.addEventListener('craft-barcodes', function again() { if (!document.body.contains(back)) return window.removeEventListener('craft-barcodes', again); libDraw(); });
-    fill(); libDraw(); draw(); setTimeout(() => f('value').focus(), 0);
+    fill(); if (content && !entry && value == null && TAKES_CONTENT.includes(f('type').value)) { f('fmt').value = contentOf(content).id; formDraw({}); fromForm(); }
+    libDraw(); draw(); setTimeout(() => { const first = content && f('form').querySelector('[data-cf]'); (first || f('value')).focus(); }, 0);
     return { close };
   }
 
