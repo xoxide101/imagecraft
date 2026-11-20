@@ -2189,6 +2189,9 @@
   const toggleL = document.createElement('button'); toggleL.className = 'crb-small ic-toggle'; toggleL.textContent = 'Pictures'; toggleL.onclick = () => document.querySelector('.work').classList.toggle('show-left');
   const toggleR = document.createElement('button'); toggleR.className = 'crb-small ic-toggle'; toggleR.textContent = 'Settings'; toggleR.onclick = () => document.querySelector('.work').classList.toggle('show-right');
   const st = document.createElement('style'); st.textContent = '.crb .crb-small.ic-toggle { display: none; } @media (max-width: 980px) { .crb .crb-small.ic-toggle { display: inline-flex; } }'; document.head.append(st);
+  // phones and folded phones: the side panels from two buttons at the bottom corners (one open at a time)
+  if (window.CraftSideTabs) { const wk = () => document.querySelector('.work'), flip = (on, off) => { wk().classList.remove(off); wk().classList.toggle(on); };
+    window.CraftSideTabs({ width: 980, left: { label: 'Pictures', title: 'The pictures open', toggle: () => flip('show-left', 'show-right'), isOpen: () => wk().classList.contains('show-left') }, right: { label: 'Settings', title: 'The settings of the tool in use', toggle: () => flip('show-right', 'show-left'), isOpen: () => wk().classList.contains('show-right') } }); }
   const ribbon = window.CraftRibbon({
     mount: $('app'), storageKey: 'imagecraft', extraEls: [toggleL, toggleR],
     tabs: [
