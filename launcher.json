@@ -1,0 +1,9 @@
+{
+ "name": "ImageCraft",
+ "icon": "🎨",
+ "about": "Pictures: restore, convert, colour depth, classic formats, ASCII",
+ "group": "Make and design",
+ "order": 50,
+ "entry": "index.html",
+ "status": "beta"
+}
